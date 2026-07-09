@@ -88,7 +88,7 @@ def main():
             continue
 
         zb_status = zerobounce_validate(session, email)
-        if zb_status in ('valid', 'catch-all'):
+        if zb_status == 'valid':
             results.append({'lusha_email': email, 'zerobounce_status': zb_status, 'lusha_note': 'OK'})
             print(f"{i+1}/{len(df)} {first} {last} -> {email} (ZeroBounce: {zb_status})", flush=True)
         else:
