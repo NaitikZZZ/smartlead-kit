@@ -1,0 +1,127 @@
+/Users/naitikchavda/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+1/124 Neera Ridler Mayor -> No email found
+2/124 Tom Williams -> No email found
+3/124 Marc Powell -> OK
+4/124 Jacqui McBurnie -> No email found
+5/124 Michael Esau -> No email found
+6/124 Chris McLellan -> No email found
+7/124 Babatunde Ojo -> No email found
+8/124 Christopher Patnoe -> MISMATCH - email domain member.wcit.org.uk != google.com
+9/124 Emma Allen -> OK
+10/124 Céline Haffner -> OK
+11/124 Rebecca Maxwell -> OK
+12/124 Divya Singh -> No email found
+13/124 Aleksandar Lombard -> OK
+14/124 Dale Brodie -> OK
+15/124 Keiran Pedley -> OK
+16/124 Oliver Latham -> OK
+17/124 Richard Doherty -> OK
+18/124 Bernie Foley -> OK
+19/124 Stacey Thorpe -> OK
+20/124 Avichal Kulshrestha -> MISMATCH - email domain ukg.com != ukgltd.com
+21/124 Michael Burns -> OK
+22/124 Michelle Hare -> OK
+23/124 Dave Pinkney -> OK
+24/124 Charlotte Yardley -> OK
+25/124 Kirsty Waller -> OK
+26/124 Rosalyn Rudran -> OK
+27/124 Verity O'Brien -> OK
+28/124 Hannah Walton -> OK
+29/124 Gordon McFarlane -> OK
+30/124 Rob Winson -> OK
+31/124 Britt Schimmel -> OK
+32/124 Jordan Canepari -> OK
+33/124 Stephanie Coward -> OK
+34/124 Natalie Tedstone -> OK
+35/124 Richard Youngman -> MISMATCH - email domain networxrecruitment.com != iris.co.uk
+36/124 Sarah Porcelli -> OK
+37/124 Hayley Dillon -> OK
+38/124 Vic Thatcher -> OK
+39/124 Laura Burns -> OK
+40/124 Wendy Harris -> OK
+41/124 Lindi Teate -> No email found
+42/124 Jody Davies -> No email found
+43/124 Ben Carter -> No email found
+44/124 Amir Jirbandey -> No email found
+45/124 Rita Nevecakite -> No email found
+46/124 Lauren Carroll -> OK
+47/124 Lisa Purdy -> MISMATCH - email domain macmillan.co.uk != macmillan.com
+48/124 Gordon Cathcart -> No email found
+49/124 Aidan McHugh -> No email found
+50/124 Vy Tran -> No email found
+51/124 Rachel Moore -> OK
+52/124 Laura Fink -> MISMATCH - email domain hibob.io != hibob.com
+53/124 Sofia Lim-Oliver -> MISMATCH - email domain hibob.io != hibob.com
+54/124 Kevin Fitzgerald -> OK
+55/124 Alex Mahon -> MISMATCH - email domain superstruct.com != channel4.com
+56/124 Mike Everitt -> No email found
+57/124 Kevin Ryan -> MISMATCH - email domain greenhouse.io != greenhouse.com
+58/124 Steve Elcock -> MISMATCH - email domain elementsuite.com != zellis.com
+59/124 Winston Poyton -> OK
+60/124 Sasha Watson -> OK
+61/124 Jenny Hinde -> OK
+62/124 Arianne Riddell -> OK
+63/124 Adrian Martin -> OK
+64/124 Aude Ferte -> OK
+65/124 Monica Preciado -> OK
+66/124 Erkin Senbay -> OK
+67/124 Elliott Bryant-Jeffries -> MISMATCH - email domain gattacaplc.com != gattaca.com
+68/124 Stephen Joyce -> OK
+69/124 Chris Riche-Webber -> OK
+70/124 Mhr International -> No email found
+71/124 Jenny Cassidy -> MISMATCH - email domain wed2b.co.uk != wed2b.com
+72/124 Craig Steed -> OK
+73/124 Kira Blumer -> MISMATCH - email domain drink-trip.com != grind.co.uk
+74/124 Melita Gandham -> MISMATCH - email domain getflip.com != flip.id
+75/124 Native Teams -> MISMATCH - email domain nteams.com != nativeteams.com
+76/124 Milena Mladenović Krušić -> MISMATCH - email domain nteams.com != nativeteams.com
+77/124 Bastian Eichler -> OK
+78/124 Klaus Siegmann -> OK
+79/124 Hannah Mullaney -> OK
+80/124 Claire Warner -> OK
+81/124 Simon Witkiss -> OK
+82/124 Nina Carøe -> No email found
+83/124 Graeme Minshull -> OK
+84/124 Chris Tosetti -> OK
+85/124 James Proctor -> OK
+86/124 Pawan Lokwani -> OK
+87/124 Robert Doherty-Bigara -> No email found
+88/124 Oak nan -> No email found
+89/124 Katy Mogra -> OK
+90/124 Stewart MacKenzie -> MISMATCH - email domain syneluk.com != synel.co.uk
+91/124 Steve Jenkins -> MISMATCH - email domain ingentis.com != ingentis.co.nz
+92/124 Rebecca Addison -> OK
+93/124 Helen Armstrong -> No email found
+94/124 Eve Collins -> OK
+95/124 Lucy Ruck -> OK
+96/124 Fred Becker -> OK
+97/124 Peter Hall -> OK
+98/124 Rebecca Trigg -> OK
+99/124 Ben Gross -> OK
+100/124 Sven Elbert -> OK
+101/124 David Wilson -> OK
+102/124 Venessa Okonkwo -> No email found
+103/124 Liam Shah -> MISMATCH - email domain cloudscaler.com != talentinitiative.co.uk
+104/124 Joeli Brearley -> No email found
+105/124 Richard Crinson -> OK
+106/124 Ian Fuller -> OK
+107/124 Givvany Madsen -> No email found
+108/124 Giacomo Camisassa -> OK
+109/124 Thomas Lomazzi Jorgensen -> OK
+110/124 Andy Franks -> MISMATCH - email domain uptime.app != uptimeglobal.tech
+111/124 James McBriar -> No email found
+112/124 Carl Hodler -> OK
+113/124 Bob Rehill -> MISMATCH - email domain bobrehill.com != cintriq.com
+114/124 Mohit Midha -> MISMATCH - email domain hoogly.com != hoogly.ai
+115/124 SKIP Chris Tomlinson
+116/124 Zoe Wilson -> MISMATCH - email domain rethinkhr.co.uk != rethinkhrconsult.com
+117/124 Jon Ingham -> MISMATCH - email domain joningham.com != joningham.academy
+118/124 Elliott Rae -> No email found
+119/124 Alice Darbyshire -> OK
+120/124 Christine Armstrong -> No email found
+121/124 Cole Groom -> MISMATCH - email domain balance-breathing.nl != balancebreathing.nl
+122/124 Zsombor Szabo -> MISMATCH - email domain balance-breathing.nl != balancebreathing.nl
+123/124 SKIP Andrew Dowsett
+124/124 SKIP Mariangel Maldonado
+DONE

@@ -1,0 +1,37 @@
+/Users/naitikchavda/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+1/33 Jodi-Ann Love-Johnson -> not found in Lusha
+2/33 Julie Johnson -> not found in Lusha
+3/33 Soufiane Benaissa -> soufiane.benaissa@telus.com (ZeroBounce: catch-all)
+4/33 Christopher Harris -> not found in Lusha
+5/33 Giridhar V -> not found in Lusha
+6/33 Andee Guzman -> not found in Lusha
+7/33 Rosana Echigo -> rosana.echigo@nttdata.com (ZeroBounce: valid)
+8/33 Ralph Ocampo -> not found in Lusha
+9/33 SKIP iQor Philippines (no usable name)
+10/33 Hope Bynum -> not found in Lusha
+11/33 Sue Morse -> not found in Lusha
+12/33 Brenda Stone -> not found in Lusha
+13/33 Eduardo Monroy -> found but MISMATCH - email domain ppd.com != deloitte.com (needs manual review, may be a legitimate multi-domain company)
+14/33 Christina Stergianou -> not found in Lusha
+15/33 Justin Dixon -> not found in Lusha
+16/33 Gopal Krishna -> not found in Lusha
+17/33 Mark Williams -> not found in Lusha
+18/33 Christina Freckmann -> found but ZeroBounce rejected (invalid)
+19/33 Rebecca Massimini -> not found in Lusha
+20/33 John Kissel -> not found in Lusha
+21/33 Olga Lozada -> not found in Lusha
+22/33 Tom Weidenkopf -> not found in Lusha
+23/33 Deborah Koltenuk -> not found in Lusha
+24/33 Liz Sankar -> not found in Lusha
+25/33 Janice Gottesman -> not found in Lusha
+26/33 Jason Morrow -> not found in Lusha
+27/33 Caroline Emmons -> not found in Lusha
+28/33 Avyanna Brielle -> not found in Lusha
+29/33 Justin Rillorta -> not found in Lusha
+30/33 Lito Boado -> not found in Lusha
+31/33 Akberet Farr -> not found in Lusha
+32/33 Paola Giordano -> not found in Lusha
+33/33 Javier De Leon -> not found in Lusha
+
+33 contacts: 2 emails found via Lusha + ZeroBounce-validated. Lusha credits used: 11

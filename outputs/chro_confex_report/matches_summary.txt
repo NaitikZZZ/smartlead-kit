@@ -1,0 +1,10 @@
+Total Smartlead leads (4 campaigns): 259
+Unique emails: 237
+Matched in HubSpot: 227 (95.8%)
+Not matched: 10
+
+Per-campaign lead counts (from Smartlead /leads endpoint):
+  ATTENDEES (3226232):    114 leads
+  NON_ATTENDEES (3226257): 89 leads
+  SPEAKERS (3226266):      12 leads
+  PREEVENT (3144691):      44 leads

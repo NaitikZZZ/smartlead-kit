@@ -1,0 +1,92 @@
+/Users/naitikchavda/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+1/89 Deloitte -> Apollo-exact
+2/89 KPMG Law -> Apollo-exact
+3/89 Unilever -> Apollo-exact
+4/89 NHS England -> Apollo-exact
+5/89 SAP SuccessFactors -> Apollo-exact
+6/89 Google -> Apollo-exact
+7/89 Oracle -> Apollo-exact
+8/89 Swarovski International -> Unresolved
+9/89 Five Guys Europe -> Apollo-exact
+10/89 Ipsos UK -> Unresolved
+11/89 Pearson -> Apollo-exact
+12/89 Workday -> Unresolved
+13/89 UKG -> Apollo-exact
+14/89 Sage -> Apollo-exact
+15/89 Sage People -> Unresolved
+16/89 The Salvation Army UK & Ireland -> Unresolved
+17/89 The Access Group -> Apollo-exact
+18/89 London Borough Of Newham -> Unresolved
+19/89 UK Health Security Agency -> Unresolved
+20/89 Deel -> Apollo-exact
+21/89 Dayforce (ceridian) -> Unresolved
+22/89 IRIS Software Group -> Apollo-exact
+23/89 London Gatwick -> Unresolved
+24/89 Remote -> Apollo-exact
+25/89 Rippling -> Apollo-exact
+26/89 Hubexo -> Unresolved
+27/89 Inrecruiting UK / Zucchetti -> Unresolved
+28/89 Personio -> Apollo-exact
+29/89 Wesleyan -> Apollo-exact
+30/89 MacMillan Publishers -> Unresolved
+31/89 HR Path -> Apollo-exact
+32/89 OneAdvanced -> Unresolved
+33/89 HiBob -> Apollo-exact
+34/89 Employment Hero -> Apollo-exact
+35/89 Channel 4 / Superstruct Entertainment -> Apollo-exact
+36/89 Visier -> Apollo-exact
+37/89 Greenhouse -> Apollo-exact
+38/89 Zellis -> Apollo-exact
+39/89 Personal Group -> Apollo-exact
+40/89 Burges Salmon -> Unresolved
+41/89 Bipo -> Apollo-exact
+42/89 Gattaca -> Apollo-exact
+43/89 Forge Holiday Group -> Apollo-exact
+44/89 SmartRecruiters -> Unresolved
+45/89 MHR International -> Apollo-exact
+46/89 Wed2b -> Apollo-exact
+47/89 Zoomo -> Apollo-exact
+48/89 Grind -> Apollo-exact
+49/89 Flip -> Apollo-exact
+50/89 Native Teams -> Apollo-exact
+51/89 WorkMotion -> Apollo-exact
+52/89 Relocity -> Apollo-exact
+53/89 Saville Assessment -> Apollo-exact
+54/89 Ciphr -> Apollo-exact
+55/89 Zensai -> Apollo-exact
+56/89 Ex3 -> Apollo-exact
+57/89 Phase 3 -> Apollo-exact
+58/89 Recruitment Smart -> Apollo-exact
+59/89 Softworks -> Apollo-exact
+60/89 Oak -> Unresolved
+61/89 Synel UK -> Unresolved
+62/89 Ingentis -> Apollo-exact
+63/89 Silver Cloud -> Unresolved
+64/89 Business Disability Forum -> Apollo-exact
+65/89 Centuro Global -> Apollo-exact
+66/89 Cezanne -> Unresolved
+67/89 Acteon Communication And Learning -> Apollo-exact
+68/89 Electric Circus -> Apollo-exact
+69/89 Fosway Group -> Unresolved
+70/89 Dock & Bay -> Apollo-exact
+71/89 Talent Initiative -> Apollo-exact
+72/89 Pregnant Then Screwed & Growth Spurt -> Apollo-exact
+73/89 Magnisol -> Apollo-exact
+74/89 Pebl -> Apollo-exact
+75/89 Skillvue -> Apollo-exact
+76/89 Uptime -> Apollo-exact
+77/89 VettingGateway -> Unresolved
+78/89 StoryTagger -> Apollo-exact
+79/89 Cintriq -> Unresolved
+80/89 Hoogly -> Apollo-exact
+81/89 Muuto Consulting -> Unresolved
+82/89 ReThink HR -> Apollo-exact
+83/89 Strategic HR Academy -> Apollo-exact
+84/89 Parenting Out Loud & Equal Parenting Week -> Apollo-exact
+85/89 Alice Darbyshire -> Apollo-exact
+86/89 Armstrong & Partners -> Apollo-exact
+87/89 Balance Breathing -> Unresolved
+88/89 Rhabdomancy Consulting -> Unresolved
+89/89 Independent / Former Booking.com -> Unresolved
+Resolved via exact Apollo match: 63/89

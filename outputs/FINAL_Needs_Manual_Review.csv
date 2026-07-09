@@ -1,0 +1,55 @@
+First Name,Last Name,Title,Company,Domain,Domain Source,Issue
+Neera,Ridler Mayor,Director,Deloitte,deloitte.com,Apollo-exact,No email found
+Tom,Williams,Partner,KPMG Law,kpmg-law.de,Apollo-exact,No email found
+Jacqui,McBurnie,Senior Programme Manager,NHS England,england.nhs.uk,Apollo-exact,No email found
+Michael,Esau,Global HR Value Advisory,SAP SuccessFactors,sap-successfactors.com,Apollo-exact,No email found
+Chris,McLellan,Customer Advisory Leader,SAP SuccessFactors,sap-successfactors.com,Apollo-exact,No email found
+Babatunde,Ojo,Senior Solution Value Advisor,SAP SuccessFactors,sap-successfactors.com,Apollo-exact,No email found
+Christopher,Patnoe,"Lead, EMEA Accessibility & Disability Innovation",Google,google.com,Apollo-exact,MISMATCH - email domain member.wcit.org.uk != google.com
+Divya,Singh,Principal HCM Sales Consultant,Oracle,oracle.com,Apollo-exact,No email found
+Avichal,Kulshrestha,Principal Industry Insights Manager,UKG,ukgltd.com,Apollo-exact,MISMATCH - email domain ukg.com != ukgltd.com
+Richard,Youngman,Head of Recruitment,IRIS Software Group,iris.co.uk,Apollo-exact,MISMATCH - email domain networxrecruitment.com != iris.co.uk
+Lindi,Teate,Chief People and Corporate Services Officer,Hubexo,hubexo.com,Apollo-candidate,No email found
+Jody,Davies,Country Manager,Inrecruiting UK / Zucchetti,in-recruiting.com,Web Search,No email found
+Ben,Carter,"Principal, Strategy & Corporate Development",Personio,audif1.com,Apollo-exact,No email found
+Amir,Jirbandey,Head of International Marketing,Personio,audif1.com,Apollo-exact,No email found
+Rita,Nevecakite,Solutions Expert,Personio,audif1.com,Apollo-exact,No email found
+Lisa,Purdy,Head of HR,MacMillan Publishers,macmillan.com,Web Search,MISMATCH - email domain macmillan.co.uk != macmillan.com
+Gordon,Cathcart,Workday Manager,HR Path,hr-path.com,Apollo-exact,No email found
+Aidan,McHugh,Partner,HR Path,hr-path.com,Apollo-exact,No email found
+Vy,Tran,Workday Functional & Analytics Solution Architect,HR Path,hr-path.com,Apollo-exact,No email found
+Laura,Fink,People & Culture Director,HiBob,hibob.com,Apollo-exact,MISMATCH - email domain hibob.io != hibob.com
+Sofia,Lim-Oliver,Director of Leadership Development,HiBob,hibob.com,Apollo-exact,MISMATCH - email domain hibob.io != hibob.com
+Alex,Mahon,Former CEO,Channel 4 / Superstruct Entertainment,channel4.com,Apollo-exact,MISMATCH - email domain superstruct.com != channel4.com
+Mike,Everitt,EMEA Solution Consulting Manager,Visier,visier.com,Apollo-exact,No email found
+Kevin,Ryan,"Senior Director, International Marketing",Greenhouse,greenhouse.com,Apollo-exact,MISMATCH - email domain greenhouse.io != greenhouse.com
+Steve,Elcock,Director of Product – AI,Zellis,zellis.com,Apollo-exact,MISMATCH - email domain elementsuite.com != zellis.com
+Elliott,Bryant-Jeffries,Head of People,Gattaca,gattaca.com,Apollo-exact,MISMATCH - email domain gattacaplc.com != gattaca.com
+Mhr,International,Product Director,MHR International,mhrinternational.com,Apollo-exact,No email found
+Jenny,Cassidy,Co-Founder & Director,Wed2b,wed2b.com,Apollo-exact,MISMATCH - email domain wed2b.co.uk != wed2b.com
+Kira,Blumer,Director of People and Culture,Grind,grind.co.uk,Apollo-exact,MISMATCH - email domain drink-trip.com != grind.co.uk
+Melita,Gandham,Digital Employee Experience Manager,Flip,flip.id,Apollo-exact,MISMATCH - email domain getflip.com != flip.id
+Native,Teams,VP of HR,Native Teams,nativeteams.com,Apollo-exact,MISMATCH - email domain nteams.com != nativeteams.com
+Milena,Mladenović Krušić,VP of HR,Native Teams,nativeteams.com,Apollo-exact,MISMATCH - email domain nteams.com != nativeteams.com
+Nina,Carøe,Chief Human Success Officer,Zensai,zensaisobe.com,Apollo-exact,No email found
+Robert,Doherty-Bigara,Head of Business Development,Softworks,softworks.com,Apollo-exact,No email found
+Oak,,Customer Success Manager,Oak,oak.com,Web Search,No email found
+Stewart,MacKenzie,Director of Customer Operations,Synel UK,synel.co.uk,Apollo-candidate,MISMATCH - email domain syneluk.com != synel.co.uk
+Steve,Jenkins,"VP Sales & Partnering, UKI & MEA",Ingentis,ingentis.co.nz,Apollo-exact,MISMATCH - email domain ingentis.com != ingentis.co.nz
+Helen,Armstrong,CEO & Founder,Silver Cloud,silvercloudhr.co.uk,Apollo-candidate,No email found
+Liam,Shah,HR Transformation Leader,Talent Initiative,talentinitiative.co.uk,Apollo-exact,MISMATCH - email domain cloudscaler.com != talentinitiative.co.uk
+Joeli,Brearley,Founder & CEO,Pregnant Then Screwed & Growth Spurt,pregnantthenscrewed.com,Apollo-exact,No email found
+Givvany,Madsen,"Strategic Growth Leader, EMEA & APAC",Pebl,hellopebl.com,Apollo-exact,No email found
+Andy,Franks,Commercial Director,Uptime,uptimeglobal.tech,Apollo-exact,MISMATCH - email domain uptime.app != uptimeglobal.tech
+James,McBriar,Head of Sales,VettingGateway,vettinggateway.com,Web Search,No email found
+Bob,Rehill,Founder & CEO,Cintriq,cintriq.com,Web Search,MISMATCH - email domain bobrehill.com != cintriq.com
+Mohit,Midha,CEO & Founder,Hoogly,hoogly.ai,Apollo-exact,MISMATCH - email domain hoogly.com != hoogly.ai
+Chris,Tomlinson,Managing Director,Muuto Consulting,,Unresolved,Skipped - Not Ready (no domain)
+Zoe,Wilson,Director and Founder,ReThink HR,rethinkhrconsult.com,Apollo-exact,MISMATCH - email domain rethinkhr.co.uk != rethinkhrconsult.com
+Jon,Ingham,HR Leader & Consultant,Strategic HR Academy,joningham.academy,Apollo-exact,MISMATCH - email domain joningham.com != joningham.academy
+Elliott,Rae,Founder,Parenting Out Loud & Equal Parenting Week,parentingoutloud.com,Apollo-exact,No email found
+Christine,Armstrong,"Author, Speaker & Vlogger",Armstrong & Partners,armstrongfluidtechnology.com,Apollo-exact,No email found
+Cole,Groom,Co-Founder & Wellbeing Coach,Balance Breathing,balancebreathing.nl,Apollo-candidate,MISMATCH - email domain balance-breathing.nl != balancebreathing.nl
+Zsombor,Szabo,Co-Founder & Breathwork Coach,Balance Breathing,balancebreathing.nl,Apollo-candidate,MISMATCH - email domain balance-breathing.nl != balancebreathing.nl
+Andrew,Dowsett,Intergenerationalist,Rhabdomancy Consulting,,Unresolved,Skipped - Not Ready (no domain)
+Mariangel,Maldonado,Clinical & Org Psychologist,Independent / Former Booking.com,,Unresolved,Skipped - Not Ready (no domain)

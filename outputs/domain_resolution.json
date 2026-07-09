@@ -1,0 +1,536 @@
+{
+  "Deloitte": {
+    "domain": "deloitte.com",
+    "linkedin": "http://www.linkedin.com/company/deloitte",
+    "matched_name": "Deloitte",
+    "source": "Apollo"
+  },
+  "KPMG Law": {
+    "domain": "kpmg-law.de",
+    "linkedin": "http://www.linkedin.com/company/kpmg-law-germany",
+    "matched_name": "KPMG Law",
+    "source": "Apollo"
+  },
+  "Unilever": {
+    "domain": "unilever.com",
+    "linkedin": "http://www.linkedin.com/company/unilever",
+    "matched_name": "unilever (1564)",
+    "source": "Apollo"
+  },
+  "NHS England": {
+    "domain": "england.nhs.uk",
+    "linkedin": "http://www.linkedin.com/company/nhsengland",
+    "matched_name": "Nhs England",
+    "source": "Apollo"
+  },
+  "SAP SuccessFactors": {
+    "domain": null,
+    "linkedin": "http://www.linkedin.com/company/sapsuccessfactors",
+    "matched_name": "SAP SuccessFactors",
+    "source": "Apollo"
+  },
+  "Google": {
+    "domain": "google.com",
+    "linkedin": "http://www.linkedin.com/company/google",
+    "matched_name": "Google",
+    "source": "Apollo"
+  },
+  "Oracle": {
+    "domain": "oracle.com",
+    "linkedin": "http://www.linkedin.com/company/oracle",
+    "matched_name": "Oracle (594)",
+    "source": "Apollo"
+  },
+  "Swarovski International": {
+    "domain": "",
+    "linkedin": "",
+    "matched_name": "",
+    "source": "Unresolved"
+  },
+  "Five Guys Europe": {
+    "domain": "fiveguys.co.uk",
+    "linkedin": "http://www.linkedin.com/company/five-guys-uk",
+    "matched_name": "Five Guys Europe",
+    "source": "Apollo"
+  },
+  "Ipsos UK": {
+    "domain": null,
+    "linkedin": "http://www.linkedin.com/company/ipsos-uk",
+    "matched_name": "Ipsos UK",
+    "source": "Apollo"
+  },
+  "Pearson": {
+    "domain": "pearson.com",
+    "linkedin": "http://www.linkedin.com/company/pearson",
+    "matched_name": "Pearson PLC",
+    "source": "Apollo"
+  },
+  "Workday": {
+    "domain": "workday.com",
+    "linkedin": "http://www.linkedin.com/company/workday",
+    "matched_name": "Workday Benefits",
+    "source": "Apollo"
+  },
+  "UKG": {
+    "domain": "ukg.com",
+    "linkedin": "http://www.linkedin.com/company/ukg",
+    "matched_name": "Ukg Pro Benefits",
+    "source": "Apollo"
+  },
+  "Sage": {
+    "domain": "sage.com",
+    "linkedin": "http://www.linkedin.com/company/sage-software",
+    "matched_name": "Sage",
+    "source": "Apollo"
+  },
+  "Sage People": {
+    "domain": "",
+    "linkedin": null,
+    "matched_name": "Sage People",
+    "source": "Apollo"
+  },
+  "The Salvation Army UK & Ireland": {
+    "domain": "salvationarmy.org.uk",
+    "linkedin": "http://www.linkedin.com/company/salvation-army-uk-ie",
+    "matched_name": "The Salvation Army Uk And Ireland Territory",
+    "source": "Apollo"
+  },
+  "The Access Group": {
+    "domain": "theaccessgroup.com",
+    "linkedin": "http://www.linkedin.com/company/accessgroup",
+    "matched_name": "The Access Group",
+    "source": "Apollo"
+  },
+  "London Borough Of Newham": {
+    "domain": "",
+    "linkedin": "",
+    "matched_name": "",
+    "source": "Unresolved"
+  },
+  "UK Health Security Agency": {
+    "domain": null,
+    "linkedin": "http://www.linkedin.com/company/uk-health-security-agency",
+    "matched_name": "UK Health Security Agency",
+    "source": "Apollo"
+  },
+  "Deel": {
+    "domain": "deel.com",
+    "linkedin": "http://www.linkedin.com/company/deel",
+    "matched_name": "Deel",
+    "source": "Apollo"
+  },
+  "Dayforce (ceridian)": {
+    "domain": "",
+    "linkedin": "",
+    "matched_name": "",
+    "source": "Unresolved"
+  },
+  "IRIS Software Group": {
+    "domain": "iris.co.uk",
+    "linkedin": "http://www.linkedin.com/company/iris-software-group",
+    "matched_name": "IRIS Software Group",
+    "source": "Apollo"
+  },
+  "London Gatwick": {
+    "domain": null,
+    "linkedin": "http://www.linkedin.com/company/hilton-london-gatwick-airport",
+    "matched_name": "Hilton London Gatwick Airport",
+    "source": "Apollo"
+  },
+  "Remote": {
+    "domain": "remote.com",
+    "linkedin": "http://www.linkedin.com/company/remote.com",
+    "matched_name": "Remote",
+    "source": "Apollo"
+  },
+  "Rippling": {
+    "domain": "rippling.com",
+    "linkedin": "http://www.linkedin.com/company/rippling",
+    "matched_name": "rippling",
+    "source": "Apollo"
+  },
+  "Hubexo": {
+    "domain": "cisireland.com",
+    "linkedin": "http://www.linkedin.com/company/construction-information-services-cis",
+    "matched_name": "CIS | Powered by Hubexo",
+    "source": "Apollo"
+  },
+  "Inrecruiting UK / Zucchetti": {
+    "domain": "",
+    "linkedin": "",
+    "matched_name": "",
+    "source": "Unresolved"
+  },
+  "Personio": {
+    "domain": "audif1.com",
+    "linkedin": "http://www.linkedin.com/company/audi-revolut-f1-team",
+    "matched_name": "Personio",
+    "source": "Apollo"
+  },
+  "Wesleyan": {
+    "domain": "indwes.edu",
+    "linkedin": "http://www.linkedin.com/school/indiana-wesleyan",
+    "matched_name": "Indiana Wesleyan University",
+    "source": "Apollo"
+  },
+  "MacMillan Publishers": {
+    "domain": "",
+    "linkedin": null,
+    "matched_name": "Macmillan Science and Education and Macmillan Publishers",
+    "source": "Apollo"
+  },
+  "HR Path": {
+    "domain": "hr-path.com",
+    "linkedin": "http://www.linkedin.com/company/hr-path",
+    "matched_name": "Hr Path",
+    "source": "Apollo"
+  },
+  "OneAdvanced": {
+    "domain": "oneadvanced.com",
+    "linkedin": "http://www.linkedin.com/company/one-advanced",
+    "matched_name": "oneadvanced.com",
+    "source": "Apollo"
+  },
+  "HiBob": {
+    "domain": "hibob.com",
+    "linkedin": "http://www.linkedin.com/company/hibob",
+    "matched_name": "HiBob",
+    "source": "Apollo"
+  },
+  "Employment Hero": {
+    "domain": "employmenthero.com",
+    "linkedin": "http://www.linkedin.com/company/employment-hero",
+    "matched_name": "employment hero",
+    "source": "Apollo"
+  },
+  "Channel 4 / Superstruct Entertainment": {
+    "domain": "channel4.com",
+    "linkedin": "http://www.linkedin.com/company/channel-4",
+    "matched_name": "Channel 4",
+    "source": "Apollo"
+  },
+  "Visier": {
+    "domain": "visier.com",
+    "linkedin": "http://www.linkedin.com/company/visier-analytics",
+    "matched_name": "Visier",
+    "source": "Apollo"
+  },
+  "Greenhouse": {
+    "domain": "greenhouse.com",
+    "linkedin": "http://www.linkedin.com/company/greenhouse-inc-",
+    "matched_name": "Greenhouse",
+    "source": "Apollo"
+  },
+  "Zellis": {
+    "domain": "zellis.com",
+    "linkedin": "http://www.linkedin.com/company/zellisukltd",
+    "matched_name": "Zellis",
+    "source": "Apollo"
+  },
+  "Personal Group": {
+    "domain": "personalgroup.com",
+    "linkedin": "http://www.linkedin.com/company/personal-group",
+    "matched_name": "Personal Group",
+    "source": "Apollo"
+  },
+  "Burges Salmon": {
+    "domain": "burges-salmon.com",
+    "linkedin": "http://www.linkedin.com/company/burges-salmon-llp",
+    "matched_name": "Burges Salmon Llp",
+    "source": "Apollo"
+  },
+  "Bipo": {
+    "domain": "biposervice.com",
+    "linkedin": "http://www.linkedin.com/company/bipo-svc",
+    "matched_name": "Bipo Service Limited",
+    "source": "Apollo"
+  },
+  "Gattaca": {
+    "domain": "gattacaplc.com",
+    "linkedin": "http://www.linkedin.com/company/gattacaplc",
+    "matched_name": "Gattaca Plc",
+    "source": "Apollo"
+  },
+  "Forge Holiday Group": {
+    "domain": "forgeholidays.com",
+    "linkedin": "http://www.linkedin.com/company/forge-holiday-group",
+    "matched_name": "Forge Holiday Group",
+    "source": "Apollo"
+  },
+  "SmartRecruiters": {
+    "domain": null,
+    "linkedin": "http://www.linkedin.com/company/smartrecruiters",
+    "matched_name": "Smartrecruiters",
+    "source": "Apollo"
+  },
+  "MHR International": {
+    "domain": "mhrinternational.com",
+    "linkedin": "http://www.linkedin.com/company/mhr-international",
+    "matched_name": "MHR International",
+    "source": "Apollo"
+  },
+  "Wed2b": {
+    "domain": "wed2b.com",
+    "linkedin": "http://www.linkedin.com/company/wed2b",
+    "matched_name": "Wed2b",
+    "source": "Apollo"
+  },
+  "Zoomo": {
+    "domain": "ridezoomo.com",
+    "linkedin": "http://www.linkedin.com/company/ridezoomo",
+    "matched_name": "Zoomo",
+    "source": "Apollo"
+  },
+  "Grind": {
+    "domain": "startupgrind.com",
+    "linkedin": "http://www.linkedin.com/company/startup-grind",
+    "matched_name": "Startup Grind",
+    "source": "Apollo"
+  },
+  "Flip": {
+    "domain": "flipkart.com",
+    "linkedin": "http://www.linkedin.com/company/flipkart",
+    "matched_name": "Flipkart Internet Private Limited (10586)",
+    "source": "Apollo"
+  },
+  "Native Teams": {
+    "domain": "nativeteams.com",
+    "linkedin": "http://www.linkedin.com/company/nativeteams",
+    "matched_name": "Native Teams",
+    "source": "Apollo"
+  },
+  "WorkMotion": {
+    "domain": "workmotion.com",
+    "linkedin": "http://www.linkedin.com/company/workmotionglobal",
+    "matched_name": "Workmotion",
+    "source": "Apollo"
+  },
+  "Relocity": {
+    "domain": "relocity.com",
+    "linkedin": "http://www.linkedin.com/company/relocity",
+    "matched_name": "Relocity, Inc..",
+    "source": "Apollo"
+  },
+  "Saville Assessment": {
+    "domain": "savilleassessment.com",
+    "linkedin": "http://www.linkedin.com/company/saville-assessment",
+    "matched_name": "Saville Assessment",
+    "source": "Apollo"
+  },
+  "Ciphr": {
+    "domain": "ciphr.com",
+    "linkedin": "http://www.linkedin.com/company/ciphr",
+    "matched_name": "Ciphr",
+    "source": "Apollo"
+  },
+  "Zensai": {
+    "domain": "zensai.io",
+    "linkedin": "http://www.linkedin.com/company/zensai-ab",
+    "matched_name": "ZensAI AB",
+    "source": "Apollo"
+  },
+  "Ex3": {
+    "domain": "weareex3.com",
+    "linkedin": "http://www.linkedin.com/company/weareex3",
+    "matched_name": "EX3",
+    "source": "Apollo"
+  },
+  "Phase 3": {
+    "domain": "phase3.co.uk",
+    "linkedin": "http://www.linkedin.com/company/phase3",
+    "matched_name": "Phase 3",
+    "source": "Apollo"
+  },
+  "Recruitment Smart": {
+    "domain": "recruitmentsmart.com",
+    "linkedin": "http://www.linkedin.com/company/recruitment-smart",
+    "matched_name": "Recruitment Smart",
+    "source": "Apollo"
+  },
+  "Softworks": {
+    "domain": "bethesda.net",
+    "linkedin": "http://www.linkedin.com/company/bethesda-softworks",
+    "matched_name": "Bethesda Softworks Llc",
+    "source": "Apollo"
+  },
+  "Oak": {
+    "domain": "oakstreethealth.com",
+    "linkedin": "http://www.linkedin.com/company/oak-street-health",
+    "matched_name": "Oak Street Health, Inc..",
+    "source": "Apollo"
+  },
+  "Synel UK": {
+    "domain": "synel.co.uk",
+    "linkedin": "http://www.linkedin.com/company/synel-industries-uk-ltd",
+    "matched_name": "Synel Industries UK",
+    "source": "Apollo"
+  },
+  "Ingentis": {
+    "domain": null,
+    "linkedin": "http://www.linkedin.com/company/ingentis-software-development",
+    "matched_name": "Ingentis",
+    "source": "Apollo"
+  },
+  "Silver Cloud": {
+    "domain": "silvercloudhr.co.uk",
+    "linkedin": "http://www.linkedin.com/company/silver-cloud-hr",
+    "matched_name": "Silver Cloud Hr",
+    "source": "Apollo"
+  },
+  "Business Disability Forum": {
+    "domain": "businessdisabilityforum.org.uk",
+    "linkedin": "http://www.linkedin.com/company/business-disability-forum",
+    "matched_name": "Business Disability Forum",
+    "source": "Apollo"
+  },
+  "Centuro Global": {
+    "domain": "centuroglobal.com",
+    "linkedin": "http://www.linkedin.com/company/centuroglobal",
+    "matched_name": "Centuro Global",
+    "source": "Apollo"
+  },
+  "Cezanne": {
+    "domain": "cezannehr.com",
+    "linkedin": "http://www.linkedin.com/company/cezanne-hr",
+    "matched_name": "Cezanne HR",
+    "source": "Apollo"
+  },
+  "Acteon Communication And Learning": {
+    "domain": "acteoncommunication.com",
+    "linkedin": "http://www.linkedin.com/company/acteon-communication-and-learning",
+    "matched_name": "Acteon Communication and Learning",
+    "source": "Apollo"
+  },
+  "Electric Circus": {
+    "domain": "electriccircus.co.uk",
+    "linkedin": "http://www.linkedin.com/company/electric-circus-digital",
+    "matched_name": "Electric Circus",
+    "source": "Apollo"
+  },
+  "Fosway Group": {
+    "domain": "",
+    "linkedin": "",
+    "matched_name": "",
+    "source": "Unresolved"
+  },
+  "Dock & Bay": {
+    "domain": "docker.com",
+    "linkedin": "http://www.linkedin.com/company/docker",
+    "matched_name": "Docker",
+    "source": "Apollo"
+  },
+  "Talent Initiative": {
+    "domain": "blacktalentinitiative.network",
+    "linkedin": "http://www.linkedin.com/company/black-talent-initiative",
+    "matched_name": "Black Talent Initiative",
+    "source": "Apollo"
+  },
+  "Pregnant Then Screwed & Growth Spurt": {
+    "domain": "pregnantthenscrewed.com",
+    "linkedin": "http://www.linkedin.com/company/pregnant-then-screwed",
+    "matched_name": "Pregnant Then Screwed",
+    "source": "Apollo"
+  },
+  "Magnisol": {
+    "domain": "magnisol.com",
+    "linkedin": "http://www.linkedin.com/company/magnisol",
+    "matched_name": "Magnisol",
+    "source": "Apollo"
+  },
+  "Pebl": {
+    "domain": "hellopebl.com",
+    "linkedin": "http://www.linkedin.com/company/hellopebl",
+    "matched_name": "Pebl",
+    "source": "Apollo"
+  },
+  "Skillvue": {
+    "domain": "skillvue.ai",
+    "linkedin": "http://www.linkedin.com/company/skillvue",
+    "matched_name": "Skillvue",
+    "source": "Apollo"
+  },
+  "Uptime": {
+    "domain": "uptimeinstitute.com",
+    "linkedin": "http://www.linkedin.com/company/uptime-institute",
+    "matched_name": "Uptime Institute",
+    "source": "Apollo"
+  },
+  "VettingGateway": {
+    "domain": "",
+    "linkedin": "",
+    "matched_name": "",
+    "source": "Unresolved"
+  },
+  "StoryTagger": {
+    "domain": "",
+    "linkedin": null,
+    "matched_name": "Storytagger.app",
+    "source": "Apollo"
+  },
+  "Cintriq": {
+    "domain": null,
+    "linkedin": "http://www.linkedin.com/company/cintriq",
+    "matched_name": "Cintriq",
+    "source": "Apollo"
+  },
+  "Hoogly": {
+    "domain": "hoogly.ai",
+    "linkedin": "http://www.linkedin.com/company/hoogly",
+    "matched_name": "Hoogly",
+    "source": "Apollo"
+  },
+  "Muuto Consulting": {
+    "domain": "",
+    "linkedin": "",
+    "matched_name": "",
+    "source": "Unresolved"
+  },
+  "ReThink HR": {
+    "domain": "rethinkhr.co.uk",
+    "linkedin": "http://www.linkedin.com/company/rethink-hr-ltd",
+    "matched_name": "ReThink HR Ltd",
+    "source": "Apollo"
+  },
+  "Strategic HR Academy": {
+    "domain": "joningham.academy",
+    "linkedin": "http://www.linkedin.com/school/strategic-hr-academy",
+    "matched_name": "Strategic HR Academy",
+    "source": "Apollo"
+  },
+  "Parenting Out Loud & Equal Parenting Week": {
+    "domain": "parentingoutloud.com",
+    "linkedin": "http://www.linkedin.com/company/parenting-out-loud",
+    "matched_name": "Parenting Out Loud",
+    "source": "Apollo"
+  },
+  "Alice Darbyshire": {
+    "domain": "alicedarbyshire.com",
+    "linkedin": "http://www.linkedin.com/company/alice-darbyshire-ltd",
+    "matched_name": "Alice Darbyshire",
+    "source": "Apollo"
+  },
+  "Armstrong & Partners": {
+    "domain": "armstrongfluidtechnology.com",
+    "linkedin": "http://www.linkedin.com/company/armstrong-fluid-technology",
+    "matched_name": "Armstrong",
+    "source": "Apollo"
+  },
+  "Balance Breathing": {
+    "domain": "balancebreathing.nl",
+    "linkedin": "http://www.linkedin.com/company/academy-for-balance-breathing",
+    "matched_name": "Academy for Balance Breathing",
+    "source": "Apollo"
+  },
+  "Rhabdomancy Consulting": {
+    "domain": "",
+    "linkedin": "",
+    "matched_name": "",
+    "source": "Unresolved"
+  },
+  "Independent / Former Booking.com": {
+    "domain": "indpt.com",
+    "linkedin": "http://www.linkedin.com/company/independent-food-company",
+    "matched_name": "Independent Food Company",
+    "source": "Apollo"
+  }
+}

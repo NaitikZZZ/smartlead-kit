@@ -1,0 +1,297 @@
+/Users/naitikchavda/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+1/293 Oindrila Ba***e -> OK
+2/293 Jessica Sc***y -> OK
+3/293 Jodi-Ann Lo***n -> No email found
+4/293 Fatima Az***d -> OK
+5/293 Julie Jo***n -> No email found
+6/293 Shawn Bu***a -> OK
+7/293 Kristina Ma***i -> OK
+8/293 Victoria Dz***a -> OK
+9/293 Mauricio Le***s -> OK
+10/293 Jennifer Ab***t -> OK
+11/293 Laura Bu***r -> OK
+12/293 Gretchen Pf***r -> OK
+13/293 Volha Mn***n -> OK
+14/293 Chandana Re***y -> OK
+15/293 Sasikala Ve***m -> OK
+16/293 Ivy Ba***e -> OK
+17/293 JN Ga***s -> OK
+18/293 Yvonne May -> OK
+19/293 Deena Ma***h -> OK
+20/293 Dan Fi***n -> OK
+21/293 Juan Ca***s -> OK
+22/293 Susannah La***r -> OK
+23/293 Ryan Ho***o -> OK
+24/293 Margarita Pe***a -> OK
+25/293 Helen Jo***n -> OK
+26/293 Genevieve Cr***z -> OK
+27/293 Ranjan Ku***r -> OK
+28/293 Inaki Ce***o -> OK
+29/293 Maria Ga***a -> OK
+30/293 Desiree St***l -> OK
+31/293 Suzette An***s -> OK
+32/293 Susana Go***s -> OK
+33/293 Sue Ma***o -> OK
+34/293 Ana Mo***n -> OK
+35/293 Carlos Li***o -> OK
+36/293 Carina Pa***s -> OK
+37/293 Petra Ar***n -> MISMATCH - email domain sykes.com != foundever.com (needs manual review, may be a legitimate multi-domain company)
+38/293 Pradipta Ga***y -> OK
+39/293 Sathya Pr***h -> OK
+40/293 Vishruta Ma***u -> OK
+41/293 Radhika Si***l -> OK
+42/293 Anugrah Sh***a -> OK
+43/293 Jasmine Kp -> OK
+44/293 Ruchika Sr***a -> OK
+45/293 Anju Sam -> OK
+46/293 Yuvraj Ba***a -> OK
+47/293 Neeru Pa***i -> OK
+48/293 Kathy Di***z -> OK
+49/293 Thenmozhi Ra***n -> OK
+50/293 Koji Ka***i -> OK
+51/293 Nicola Yo***g -> OK
+52/293 Ashley Du***n -> OK
+53/293 Rahul Me***n -> OK
+54/293 Maya Sr***r -> OK
+55/293 David He***n -> OK
+56/293 Alex Mo***r -> OK
+57/293 Putul Ma***r -> OK
+58/293 Andrea Cl***n -> OK
+59/293 Deborah Ro***s -> OK
+60/293 Miriam Ma***g -> OK
+61/293 Soufiane Be***a -> No email found
+62/293 Noreen Se***h -> OK
+63/293 Constanza Go***y -> MISMATCH - email domain telusinternational.com != telusdigital.com (needs manual review, may be a legitimate multi-domain company)
+64/293 Sara Pi***e -> OK
+65/293 Shilpa Sh***a -> OK
+66/293 Bruce Wei -> MISMATCH - email domain telusinternational.com != telusdigital.com (needs manual review, may be a legitimate multi-domain company)
+67/293 Michelle Tr***d -> OK
+68/293 Krista Ab***e -> OK
+69/293 Alison Wo***s -> OK
+70/293 Anitus Ni***n -> OK
+71/293 Liesl In***h -> OK
+72/293 Michael Fo***i -> OK
+73/293 Nancy Da***g -> OK
+74/293 Jeannie Lo***e -> OK
+75/293 Shilpa Tr***i -> OK
+76/293 Prashanth M -> OK
+77/293 Gene Qu***n -> OK
+78/293 Nickle La***x -> OK
+79/293 Gian Ca***o -> OK
+80/293 Ipsita Go***i -> OK
+81/293 Adam Bo***e -> OK
+82/293 Stephen Ke***y -> OK
+83/293 Kelli Jo***n -> OK
+84/293 Helen Zh***g -> OK
+85/293 Alex St***r -> OK
+86/293 Christopher Ha***s -> No email found
+87/293 Michelle Ch***m -> OK
+88/293 Giridhar V -> No email found
+89/293 Shanthala Br***v -> OK
+90/293 Parvez Al***m -> OK
+91/293 Marvel Go***n -> OK
+92/293 Rajesh Ku***p -> MISMATCH - email domain hgs.cx != hgs.com (needs manual review, may be a legitimate multi-domain company)
+93/293 Ranjith Me***n -> OK
+94/293 Saurav Du***a -> MISMATCH - email domain hgs.cx != hgs.com (needs manual review, may be a legitimate multi-domain company)
+95/293 Saket Ku***r -> OK
+96/293 Claudia Br***w -> OK
+97/293 Andee Gu***n -> No email found
+98/293 Swaminathan Ra***i -> OK
+99/293 Arti Na***r -> OK
+100/293 Rujutta Wa***r -> OK
+101/293 Aniruddha Li***e -> OK
+102/293 Badari Na***a -> OK
+103/293 Rajendra Ra***t -> OK
+104/293 Leann Co***r -> OK
+105/293 Shreya Sh***y -> OK
+106/293 Eshani Ch***a -> OK
+107/293 Priya Ma***n -> OK
+108/293 Mohamed Es***m -> OK
+109/293 Preeti Ja***n -> OK
+110/293 Marsha Mi***l -> OK
+111/293 Daniela Ga***o -> OK
+112/293 Nicole Na***c -> OK
+113/293 Imran Kh***n -> OK
+114/293 Jojo Ma***s -> OK
+115/293 Michael Ca***n -> OK
+116/293 Nidhi Ba***j -> OK
+117/293 Mrinal Ka***l -> OK
+118/293 Chie Ao***i -> OK
+119/293 Akinori Sh***e -> OK
+120/293 Prerana Sh***g -> OK
+121/293 Francesca An***a -> OK
+122/293 Rosana Ec***o -> No email found
+123/293 Gourav Sa***i -> OK
+124/293 Anne-Christine Ma***e -> OK
+125/293 Stephanie Ga***a -> OK
+126/293 Dori La***e -> OK
+127/293 Wynne Or***i -> OK
+128/293 Mery Cr***z -> MISMATCH - email domain acquirebpo.com != acquire.ai (needs manual review, may be a legitimate multi-domain company)
+129/293 Ralph Oc***o -> No email found
+130/293 John Ong -> OK
+131/293 Zendel Di***t -> OK
+132/293 Erikka Jo***e -> OK
+133/293 Natalie Da***s -> OK
+134/293 Maria Ga***z -> MISMATCH - email domain hirebooth.com != boothandpartners.com (needs manual review, may be a legitimate multi-domain company)
+135/293 Michelle H -> OK
+136/293 Dionne Ba***a -> OK
+137/293 Sheila La***s -> OK
+138/293 Ishie Ap***y -> OK
+139/293 Ian Ca***l -> OK
+140/293 Krystle Ma***e -> OK
+141/293 Saenz None -> No email found
+142/293 Hope By***m -> No email found
+143/293 Cristal Ga***a -> OK
+144/293 Angelo Vi***i -> OK
+145/293 Rocio So***a -> OK
+146/293 Raquel Fe***z -> OK
+147/293 Daphny Gr***o -> MISMATCH - email domain dbos.com.ph != dbos.com.au (needs manual review, may be a legitimate multi-domain company)
+148/293 Umair Us***i -> OK
+149/293 Kareen Ma***r -> OK
+150/293 Anil Joy -> OK
+151/293 Alejandro Ri***s -> OK
+152/293 Priyanka Mo***y -> OK
+153/293 Niranjan Hu***h -> OK
+154/293 Sue Mo***e -> No email found
+155/293 Whitney Su***d -> OK
+156/293 Malibongwe Bo***i -> OK
+157/293 Brenda St***e -> No email found
+158/293 Ina Pe***n -> OK
+159/293 Matthias Ve***t -> OK
+160/293 Andrew Bi***y -> MISMATCH - email domain deloitte.co.uk != deloitte.com (needs manual review, may be a legitimate multi-domain company)
+161/293 Pete Ro***s -> OK
+162/293 Mark La***n -> OK
+163/293 Jade Eva -> MISMATCH - email domain deloitte.co.uk != deloitte.com (needs manual review, may be a legitimate multi-domain company)
+164/293 Eduardo Mo***y -> No email found
+165/293 Pascal Oc***n -> MISMATCH - email domain deloitte.ca != deloitte.com (needs manual review, may be a legitimate multi-domain company)
+166/293 Sandra Mu***e -> OK
+167/293 Mariette Los -> OK
+168/293 Carlos An***a -> OK
+169/293 Daniele Co***o -> OK
+170/293 Christina St***u -> No email found
+171/293 Ashissh Ka***r -> OK
+172/293 Patricia Al***s -> OK
+173/293 Laura Ma***n -> OK
+174/293 Mais Ka***t -> OK
+175/293 Maureen Yo***s -> OK
+176/293 Arnika Ja***a -> OK
+177/293 Amanda St***t -> OK
+178/293 Lashana Ja***n -> OK
+179/293 Marisa Bu***r -> OK
+180/293 Arronima None -> OK
+181/293 Swati Kh***l -> OK
+182/293 Justin Di***n -> No email found
+183/293 Renu Bi***t -> OK
+184/293 Amit La***a -> OK
+185/293 Bhawna Ch***a -> OK
+186/293 Shreesh Dw***i -> OK
+187/293 Marvin Vi***o -> OK
+188/293 Pritam Si***h -> OK
+189/293 Anisha Ra***v -> OK
+190/293 Jo Ro***o -> OK
+191/293 Laura Mo***o -> OK
+192/293 Sharonica Bo***n -> OK
+193/293 Courtney Ve***i -> OK
+194/293 Trudy St***n -> OK
+195/293 Stuart Co***k -> OK
+196/293 Drew Eh***n -> OK
+197/293 Smita Na***r -> OK
+198/293 Jyoti Sh***a -> OK
+199/293 Kim Mo***t -> OK
+200/293 Angela Ry***n -> OK
+201/293 Angela Ya***g -> OK
+202/293 Lucia Ra***a -> OK
+203/293 Stefano Br***i -> OK
+204/293 Sally Hu***y -> OK
+205/293 Kenneth Fe***y -> OK
+206/293 Paul Ca***y -> OK
+207/293 Lee Ga***d -> OK
+208/293 Stuart Cu***s -> OK
+209/293 Susie Mc***y -> OK
+210/293 Hwee Ng -> OK
+211/293 Gopal Kr***a -> No email found
+212/293 John Ca***t -> OK
+213/293 Dandan Qin -> OK
+214/293 Simon Ba***e -> OK
+215/293 Sarah Yo***g -> OK
+216/293 Monina Za***a -> OK
+217/293 Elisha Wr***t -> OK
+218/293 Shiran Da***s -> OK
+219/293 Dawn Hi***h -> OK
+220/293 Sandy Es***a -> OK
+221/293 Ruby Ro***r -> OK
+222/293 Maryanne Wa***r -> OK
+223/293 Steve O'***n -> OK
+224/293 Anne Me***e -> OK
+225/293 Aparna Va***i -> OK
+226/293 Melissa Pe***o -> OK
+227/293 Hari Pa***u -> OK
+228/293 Schelley An***n -> OK
+229/293 Mark Wi***s -> No email found
+230/293 Christina Fr***n -> No email found
+231/293 Narasimha Re***y -> OK
+232/293 Kelsey Bo***n -> OK
+233/293 Leahy Tr***y -> OK
+234/293 Rebecca Ma***i -> No email found
+235/293 Courtney Ok***c -> OK
+236/293 Christina Be***y -> OK
+237/293 Nancy Ry***n -> OK
+238/293 Andrea Me***r -> OK
+239/293 Tim Sc***g -> OK
+240/293 John Ki***l -> No email found
+241/293 Olga Lo***a -> No email found
+242/293 Tom We***f -> No email found
+243/293 Colleen Co***s -> OK
+244/293 Deborah Ko***k -> No email found
+245/293 Christy Be***d -> OK
+246/293 Liz Sa***r -> No email found
+247/293 Janice Go***n -> No email found
+248/293 Carla St***t -> OK
+249/293 Jessica Mi***i -> OK
+250/293 Jason Mo***w -> No email found
+251/293 Caroline Em***s -> No email found
+252/293 Michelle O'***a -> OK
+253/293 Tory Dr***d -> OK
+254/293 Julie Le***d -> OK
+255/293 Beth Toy -> OK
+256/293 Maria Va***n -> OK
+257/293 Avyanna Br***e -> No email found
+258/293 Devann St***e -> OK
+259/293 Jennifer Ro***e -> OK
+260/293 Ericka O'***l -> OK
+261/293 Linda Ja***s -> OK
+262/293 Dan Do***h -> OK
+263/293 Tracy Co***y -> OK
+264/293 Cristen Eb***y -> OK
+265/293 Krista Pe***t -> OK
+266/293 Lauren Mc***r -> OK
+267/293 Kelly Cu***m -> OK
+268/293 Samir Ba***j -> OK
+269/293 Julie Ma***e -> OK
+270/293 Sheree He***x -> MISMATCH - email domain anthem.com != elevancehealth.com (needs manual review, may be a legitimate multi-domain company)
+271/293 Debra Co***n -> OK
+272/293 Emerson Vi***e -> MISMATCH - email domain centurypacificgroup.com != centurypacific.com.ph (needs manual review, may be a legitimate multi-domain company)
+273/293 Salvador Ce***a -> OK
+274/293 Marie Vi***l -> OK
+275/293 Irwin Mo***o -> OK
+276/293 Azrul Ra***i -> OK
+277/293 Justin Ri***a -> No email found
+278/293 Lito Bo***o -> No email found
+279/293 Kimberly Ha***r -> MISMATCH - email domain nidec-motor.com != nidec.com (needs manual review, may be a legitimate multi-domain company)
+280/293 Xiuli Sh***o -> MISMATCH - email domain nidec-mk.com != nidec.com (needs manual review, may be a legitimate multi-domain company)
+281/293 Akberet Fa***r -> No email found
+282/293 Paola Gi***o -> No email found
+283/293 Ligia Ca***n -> OK
+284/293 Steven Ho***d -> MISMATCH - email domain nidec-motor.com != nidec.com (needs manual review, may be a legitimate multi-domain company)
+285/293 Javier Le***n -> No email found
+286/293 Hufriz Ka***a -> OK
+287/293 Laura Pr***r -> OK
+288/293 Julie Wi***m -> OK
+289/293 Megan Li***n -> OK
+290/293 Thomas Sc***z -> OK
+291/293 Shweta Sh***a -> OK
+292/293 Pooja Mo***e -> OK
+293/293 Elizabeth Se***t -> OK
+
+293 contacts: 244 OK, 16 domain mismatch (manual review), 33 no email found, 0 skipped (no domain).
