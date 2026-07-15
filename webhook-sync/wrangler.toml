@@ -1,0 +1,9 @@
+name = "smartlead-heyreach-pause-sync"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# Set these with: wrangler secret put <NAME>
+# SMARTLEAD_API_KEY
+# HEYREACH_API_KEY
+# WEBHOOK_SECRET
+# CAMPAIGN_MAP   (JSON string, see campaign-map.example.json)
