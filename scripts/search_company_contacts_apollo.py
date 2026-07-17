@@ -29,6 +29,12 @@ from dotenv import load_dotenv
 load_dotenv()
 APOLLO_KEY = os.environ.get('APOLLO_API_KEY')
 MAX_PER_COMPANY = 10
+# Optional override for one-off runs targeting a persona set other than the
+# built-in HR-function list (e.g. a product/partnerships persona list for a
+# non-HR segment). Titles outside PERSONA_TIERS's keywords just fall back to
+# tier 99 (unranked, has_email tiebreak only) - no separate tier map needed
+# for a run that doesn't reuse this persona set again.
+_personas_file = os.environ.get('PERSONAS_FILE')
 MIN_AIM = 7  # informational only - we report the shortfall, never fabricate
 
 PERSONAS = [
@@ -61,6 +67,10 @@ PERSONA_TIERS = [
     ('head of culture', 6), ('head of engagement', 6),
     ('head of talent', 6),
 ]
+
+if _personas_file:
+    with open(_personas_file) as _f:
+        PERSONAS = [line.strip() for line in _f if line.strip()]
 
 
 def persona_tier(title):

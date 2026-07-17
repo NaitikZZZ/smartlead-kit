@@ -36,7 +36,7 @@ load_dotenv()
 APOLLO_KEY = os.environ.get('APOLLO_API_KEY')
 CACHE_PATH = os.path.join(os.path.dirname(__file__), '..', 'reference', 'company_domain_cache.csv')
 
-CACHE_FIELDS = ['company_key', 'company_name', 'domain', 'linkedin', 'source', 'notes']
+CACHE_FIELDS = ['company_key', 'company_name', 'domain', 'linkedin', 'country', 'city', 'source', 'notes']
 
 
 _LEGAL_SUFFIX_RE = re.compile(
@@ -110,6 +110,14 @@ def apollo_search(session, query_name):
         return []
 
 
+def geo_of(account):
+    """HQ country/city, preferring the firmographic organization_* fields
+    over the account-record's own address override (a CRM-synced account can
+    carry a different, contact-specific address in city/country)."""
+    return account.get('organization_country') or account.get('country') or '', \
+        account.get('organization_city') or account.get('city') or ''
+
+
 def resolve(session, cache, company_name, employee_raw):
     # Full name first - most accurate. Only fall back to a '/' split for
     # genuine dual-listings like "Channel 4 / Superstruct Entertainment".
@@ -120,15 +128,23 @@ def resolve(session, cache, company_name, employee_raw):
     key = norm(full_name)
     if key in cache:
         c = cache[key]
-        return {'domain': c['domain'], 'linkedin': c['linkedin'], 'source': 'Cache', 'candidates': []}
+        return {'domain': c['domain'], 'linkedin': c['linkedin'], 'country': c.get('country', ''), 'city': c.get('city', ''), 'source': 'Cache', 'candidates': []}
     slash_key = norm(full_name.split('/')[0].strip())
     if slash_key != key and slash_key in cache:
         c = cache[slash_key]
-        return {'domain': c['domain'], 'linkedin': c['linkedin'], 'source': 'Cache', 'candidates': []}
+        return {'domain': c['domain'], 'linkedin': c['linkedin'], 'country': c.get('country', ''), 'city': c.get('city', ''), 'source': 'Cache', 'candidates': []}
 
     query_candidates = [full_name]
     if '/' in full_name:
         query_candidates.append(full_name.split('/')[0].strip())
+    stripped = strip_legal_suffix(full_name)
+    if stripped and stripped not in query_candidates:
+        # Apollo's org search is a literal-ish match on q_organization_name,
+        # not a fuzzy one - "Klarna Bank AB" returns zero results even though
+        # "Klarna" (the record's actual stored name) is right there. Retrying
+        # with the suffix stripped recovers these instead of flagging every
+        # non-English legal-entity name Unresolved.
+        query_candidates.append(stripped)
 
     accounts, qn, query_name = [], norm(full_name), full_name
     for q in query_candidates:
@@ -142,7 +158,7 @@ def resolve(session, cache, company_name, employee_raw):
 
     if not exact:
         cands = [{'name': a.get('name'), 'domain': a.get('primary_domain'), 'linkedin': a.get('linkedin_url')} for a in accounts[:3]]
-        return {'domain': '', 'linkedin': '', 'source': 'Unresolved', 'candidates': cands}
+        return {'domain': '', 'linkedin': '', 'country': '', 'city': '', 'source': 'Unresolved', 'candidates': cands}
 
     if len(exact) == 1:
         best = exact[0]
@@ -163,7 +179,7 @@ def resolve(session, cache, company_name, employee_raw):
         if target_emp is None:
             # No employee signal to disambiguate - flag instead of guessing
             cands = [{'name': a.get('name'), 'domain': a.get('primary_domain'), 'employees': a.get('estimated_num_employees')} for a in exact]
-            return {'domain': '', 'linkedin': '', 'source': 'Ambiguous - multiple exact-name matches, no employee signal', 'candidates': cands}
+            return {'domain': '', 'linkedin': '', 'country': '', 'city': '', 'source': 'Ambiguous - multiple exact-name matches, no employee signal', 'candidates': cands}
 
         with_emp = [a for a in exact if a.get('estimated_num_employees') is not None]
         if not with_emp:
@@ -173,7 +189,7 @@ def resolve(session, cache, company_name, employee_raw):
             # wrong company before: all 3 candidates had employees=None, and
             # picking "first in Apollo's list" is not a real signal).
             cands = [{'name': a.get('name'), 'domain': a.get('primary_domain'), 'employees': None} for a in exact]
-            return {'domain': '', 'linkedin': '', 'source': 'Ambiguous - multiple exact-name matches, none have employee data', 'candidates': cands}
+            return {'domain': '', 'linkedin': '', 'country': '', 'city': '', 'source': 'Ambiguous - multiple exact-name matches, none have employee data', 'candidates': cands}
 
         def gap(a):
             return abs(a.get('estimated_num_employees') - target_emp) / max(target_emp, 1)
@@ -182,12 +198,15 @@ def resolve(session, cache, company_name, employee_raw):
         best, second = ranked[0], ranked[1] if len(ranked) > 1 else None
         if second is not None and gap(best) > 0.5 and abs(gap(best) - gap(second)) < 0.15:
             cands = [{'name': a.get('name'), 'domain': a.get('primary_domain'), 'employees': a.get('estimated_num_employees')} for a in ranked]
-            return {'domain': '', 'linkedin': '', 'source': 'Ambiguous - employee count did not clearly disambiguate', 'candidates': cands}
+            return {'domain': '', 'linkedin': '', 'country': '', 'city': '', 'source': 'Ambiguous - employee count did not clearly disambiguate', 'candidates': cands}
         result_source = 'Apollo-exact-employee-ranked'
 
+    country, city = geo_of(best)
     return {
         'domain': best.get('primary_domain', ''),
         'linkedin': best.get('linkedin_url', ''),
+        'country': country,
+        'city': city,
         'source': result_source,
         'candidates': [],
     }
@@ -215,10 +234,11 @@ def main():
             key = norm(str(name).strip())
             cache[key] = {
                 'company_key': key, 'company_name': name, 'domain': res['domain'],
-                'linkedin': res['linkedin'], 'source': res['source'], 'notes': ''
+                'linkedin': res['linkedin'], 'country': res.get('country', ''), 'city': res.get('city', ''),
+                'source': res['source'], 'notes': ''
             }
             new_cache_entries += 1
-        print(f"{name} -> {res['source']}: {res['domain']}", flush=True)
+        print(f"{name} -> {res['source']}: {res['domain']} ({res.get('country','')})", flush=True)
         if res['source'] != 'Cache':
             time.sleep(0.2)
 

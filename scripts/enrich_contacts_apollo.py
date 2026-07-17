@@ -133,6 +133,7 @@ def main():
             'real_first_name': p.get('first_name', ''),
             'real_last_name': p.get('last_name', ''),
             'email': email,
+            'raw_email': raw_email,  # kept even on MISMATCH - never silently discard a found email, just gate it
             'email_status': p.get('email_status', ''),
             'linkedin_apollo': p.get('linkedin_url', ''),
             'apollo_title': p.get('title', ''),

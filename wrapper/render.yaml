@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: abm-wrapper-backend
+    runtime: python
+    rootDir: wrapper/backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: APOLLO_API_KEY
+        sync: false
+      - key: HUBSPOT_PRIVATE_APP_TOKEN
+        sync: false
+      - key: HUBSPOT_WRITE_TOKEN
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        sync: false
+      - key: GITHUB_BASE_BRANCH
+        value: main
+      - key: ACCOUNT_MAPPING_SHEET_PATH
+        sync: false
+
+  - type: web
+    name: abm-wrapper-frontend
+    runtime: static
+    rootDir: wrapper/frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_BASE
+        sync: false  # set to the deployed backend's URL, e.g. https://abm-wrapper-backend.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

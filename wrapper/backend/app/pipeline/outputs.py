@@ -1,0 +1,278 @@
+"""Assembles the deliverable files for a run:
+  01_accounts_processed.csv   - normalized + domain-resolved + exclusion-checked account list
+  02_enriched_contacts.csv    - full Apollo enrichment (OK-to-reach-out accounts only)
+  03_hubspot_import_ready.csv - verified-email subset, mapped to HubSpot properties + campaign_title
+  SUMMARY.md                  - human-readable run summary: what happened and why
+"""
+from __future__ import annotations
+import re
+import math
+from pathlib import Path
+
+import pandas as pd
+
+try:
+    from datetime import datetime, UTC
+except ImportError:  # Python <3.11 has no datetime.UTC
+    from datetime import datetime, timezone
+    UTC = timezone.utc
+
+SENIORITY_MAP = {"c_suite": "C suite", "vp": "VP", "head": "Head", "director": "Director", "manager": "Manager"}
+
+
+def bucket_employees(n):
+    if n is None or (isinstance(n, float) and math.isnan(n)):
+        return None
+    n = int(n)
+    if n <= 50:
+        return "0 - 50"
+    if n <= 200:
+        return "51 - 200"
+    if n <= 500:
+        return "201 - 500"
+    if n <= 1000:
+        return "501 - 1000"
+    if n <= 5000:
+        return "1001 - 5000"
+    if n <= 10000:
+        return "5001 - 10000"
+    return "10000+"
+
+
+def strip_url_prefix(domain):
+    if not domain or (isinstance(domain, float) and math.isnan(domain)):
+        return domain
+    return re.sub(r"^https?://(www\.)?", "", str(domain)).rstrip("/")
+
+
+def build_hubspot_import_file(enriched_df: pd.DataFrame, campaign_title: str) -> pd.DataFrame:
+    """Mirrors the mapping validated against the live Xoxoday HubSpot portal
+    this session - only fields with a confirmed HubSpot property, company_domain
+    excluded (it's a locked picklist unrelated to arbitrary domains in this portal)."""
+    verified = enriched_df[enriched_df.get("email_status") == "verified"].copy() if "email_status" in enriched_df.columns else enriched_df.copy()
+
+    def clean(v):
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return None
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+    rows = []
+    for _, row in verified.iterrows():
+        rows.append({
+            "firstname": clean(row.get("first_name")),
+            "lastname": clean(row.get("last_name")),
+            "email": clean(row.get("email")),
+            "jobtitle": clean(row.get("title")),
+            "phone": clean(row.get("Phone Number")),
+            "hs_linkedin_url": clean(row.get("linkedin_url")),
+            "company": clean(row.get("organization_name") or row.get("search_company")),
+            "company_linkedin_url": clean(row.get("organization_linkedin_url")),
+            "industry": clean(row.get("organization_industry")),
+            "numemployees": bucket_employees(row.get("organization_estimated_num_employees")),
+            "annualrevenue": clean(row.get("organization_annual_revenue")),
+            "total_funding": clean(row.get("organization_total_funding")),
+            "technologies": clean(row.get("technologies")),
+            "seniority_level": SENIORITY_MAP.get(row.get("seniority")),
+            "country": clean(row.get("country")),
+            "state": clean(row.get("state")),
+            "address": clean(row.get("formatted_address")),
+            "city": clean(row.get("city")),
+            "department___job_function__apollo_": clean(row.get("departments")),
+            "campaign_title": campaign_title,
+        })
+    return pd.DataFrame(rows)
+
+
+def _clean_cell(v):
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return None
+    if isinstance(v, str) and not v.strip():
+        return None
+    return v
+
+
+def _company_of(row):
+    return _clean_cell(row.get("organization_name") or row.get("search_company"))
+
+
+def build_channel_files(enriched_df: pd.DataFrame, campaign_title: str) -> dict[str, pd.DataFrame]:
+    """Splits the enriched contacts into three channel-specific upload files:
+
+      email_upload.csv    - verified-email contacts only (HubSpot-ready shape).
+                            Guarantees no blank-email rows ever reach HubSpot.
+      linkedin_upload.csv  - contacts that have a LinkedIn URL (HeyReach import).
+      calling_upload.csv   - contacts that have a phone number (dialer/SDR list).
+
+    A contact can legitimately land in more than one file - that's expected,
+    each channel gets whoever it can actually reach on that channel.
+    """
+    if enriched_df is None or enriched_df.empty:
+        empty = pd.DataFrame()
+        return {"email": empty, "linkedin": empty, "calling": empty}
+
+    # Email file reuses the validated HubSpot mapping (verified email only).
+    email_df = build_hubspot_import_file(enriched_df, campaign_title)
+    email_df = email_df[email_df["email"].apply(lambda v: bool(_clean_cell(v)))].copy()
+
+    linkedin_rows, calling_rows = [], []
+    for _, row in enriched_df.iterrows():
+        first = _clean_cell(row.get("first_name"))
+        last = _clean_cell(row.get("last_name"))
+        company = _company_of(row)
+        title = _clean_cell(row.get("title"))
+        domain = _clean_cell(row.get("company_domain")) or strip_url_prefix(_clean_cell(row.get("Domain")))
+        li = _clean_cell(row.get("linkedin_url"))
+        phone = _clean_cell(row.get("Phone Number"))
+
+        if li:
+            linkedin_rows.append({
+                "first_name": first, "last_name": last, "company_name": company,
+                "job_title": title, "linkedin_url": li, "company_domain": domain,
+                "campaign_title": campaign_title,
+            })
+        if phone:
+            calling_rows.append({
+                "first_name": first, "last_name": last, "company_name": company,
+                "job_title": title, "phone": phone, "email": _clean_cell(row.get("email")),
+                "company_domain": domain, "campaign_title": campaign_title,
+            })
+
+    return {
+        "email": email_df,
+        "linkedin": pd.DataFrame(linkedin_rows),
+        "calling": pd.DataFrame(calling_rows),
+    }
+
+
+def _pct(n, total):
+    return f"{(n / total * 100):.1f}%" if total else "-"
+
+
+def build_summary_markdown(campaign_title: str, stats: dict, accounts_processed: pd.DataFrame, import_result: dict | None = None) -> str:
+    lines = [
+        f"# Run summary: {campaign_title}",
+        "",
+        f"Generated: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}",
+        "",
+    ]
+
+    norm = stats.get("normalization", {})
+    if norm.get("notes"):
+        lines += ["## Normalization", ""] + [f"- {n}" for n in norm["notes"]] + [""]
+
+    completeness = stats.get("completeness", {})
+    lines.append("## Completeness check")
+    if completeness.get("skipped"):
+        lines.append(f"- Skipped: {completeness.get('reason', 'n/a')}")
+    else:
+        lines.append(f"- Filled {completeness.get('filled', 0)} gap(s) across fields: {', '.join(completeness.get('fields_tracked', []))}")
+        if completeness.get("errors"):
+            lines.append(f"- {len(completeness['errors'])} lookup error(s) (not fatal, those rows just stayed blank)")
+    if completeness.get("second_pass") and not completeness["second_pass"].get("skipped"):
+        lines.append(f"- Second pass (pre-Apollo): filled {completeness['second_pass'].get('filled', 0)} more")
+    lines.append("")
+
+    exclusion = stats.get("exclusion", {})
+    lines.append("## Exclusion check")
+    if exclusion.get("skipped"):
+        lines.append(f"- Skipped by user - all {exclusion.get('total', '?')} account(s) treated as OK to reach out")
+    else:
+        total = exclusion.get("total", 0)
+        excluded = exclusion.get("excluded", 0)
+        lines.append(f"- Master sheet used: `{exclusion.get('master_sheet_used', 'n/a')}`")
+        lines.append(f"- {total} checked -> **{excluded} excluded** ({_pct(excluded, total)}), {exclusion.get('ok_to_reach_out', 0)} OK to reach out")
+        if excluded and "Exclusion Status" in accounts_processed.columns:
+            name_col = next((c for c in ["Cleaned Company Name", "Company Name for Emails", "Company Name", "Company"] if c in accounts_processed.columns), None)
+            excluded_rows = accounts_processed[accounts_processed["Exclusion Status"] == "Excluded"]
+            if name_col:
+                lines.append("")
+                lines.append("| Company | Reason |")
+                lines.append("|---|---|")
+                for _, row in excluded_rows.iterrows():
+                    reason = str(row.get("Exclusion Reason", "")).replace("|", "/")
+                    lines.append(f"| {row[name_col]} | {reason} |")
+    lines.append("")
+
+    search = stats.get("apollo_search", {})
+    enrich = stats.get("apollo_enrich", {})
+    phone = stats.get("apollo_phone", {})
+    lines.append("## Enrichment")
+    if search.get("skipped") and enrich.get("skipped"):
+        reason = search.get("reason") or enrich.get("reason") or "skipped by user"
+        lines.append(f"- Skipped: {reason}")
+    else:
+        if not search.get("skipped"):
+            lines.append(f"- Searched {search.get('companies_searched', 0)} account(s), found {search.get('candidates_found', 0)} candidate(s)")
+            if search.get("zero_match_companies"):
+                lines.append(f"- **{len(search['zero_match_companies'])} account(s) had zero Apollo matches**: {', '.join(search['zero_match_companies'])}")
+        contacts_enriched = enrich.get("contacts_enriched") or enrich.get("total", 0)
+        has_email = enrich.get("has_email", 0)
+        lines.append(f"- {contacts_enriched} contact(s) processed, {has_email} with a verified email ({_pct(has_email, contacts_enriched)})")
+        if not phone.get("skipped"):
+            phone_total = phone.get("total", contacts_enriched)
+            lines.append(f"- {phone.get('phones_found', 0)} with a phone number ({_pct(phone.get('phones_found', 0), phone_total)})")
+    lines.append("")
+
+    channels = stats.get("channel_counts")
+    if channels:
+        lines.append("## Channel files")
+        lines.append(f"- Email (HubSpot-ready, verified email only): {channels.get('email', 0)}")
+        lines.append(f"- LinkedIn (HeyReach import): {channels.get('linkedin', 0)}")
+        lines.append(f"- Calling (dialer list): {channels.get('calling', 0)}")
+        lines.append("")
+
+    lines.append("## HubSpot")
+    lines.append(f"- {stats.get('hubspot_ready_count', 0)} contact(s) ready for import (verified email only)")
+    if import_result:
+        lines.append(f"- Imported: {import_result['total']} total ({import_result['new']} new, {import_result['updated']} updated)")
+        if import_result.get("list"):
+            lines.append(f"- Added to list: {import_result['list']['list_url']}")
+        for kind, assoc in import_result.get("associations", {}).items():
+            lines.append(f"- Associated with {kind} `{assoc['record_id']}`: {assoc['associated']} contact(s)")
+        hr = import_result.get("heyreach") or {}
+        if hr.get("status") == "pushed":
+            lines.append(f"- HeyReach list `{hr.get('list_name')}` (id {hr.get('list_id')}): {hr.get('pushed', 0)} LinkedIn lead(s) pushed")
+        elif hr.get("status") not in (None, "skipped"):
+            lines.append(f"- HeyReach: {hr.get('message', hr.get('status'))}")
+    else:
+        lines.append("- Not yet imported")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def write_outputs(run_dir: Path, accounts_processed: pd.DataFrame, enriched: pd.DataFrame, campaign_title: str, stats: dict):
+    run_dir.mkdir(parents=True, exist_ok=True)
+    p1 = run_dir / "01_accounts_processed.csv"
+    p2 = run_dir / "02_enriched_contacts.csv"
+    p4 = run_dir / "SUMMARY.md"
+
+    accounts_processed.to_csv(p1, index=False)
+    enriched.to_csv(p2, index=False)
+
+    # Three channel-specific deliverables. The email file IS the HubSpot import.
+    channels = build_channel_files(enriched, campaign_title)
+    email_path = run_dir / "email_upload.csv"
+    linkedin_path = run_dir / "linkedin_upload.csv"
+    calling_path = run_dir / "calling_upload.csv"
+    channels["email"].to_csv(email_path, index=False)
+    channels["linkedin"].to_csv(linkedin_path, index=False)
+    channels["calling"].to_csv(calling_path, index=False)
+
+    stats["channel_counts"] = {
+        "email": int(len(channels["email"])),
+        "linkedin": int(len(channels["linkedin"])),
+        "calling": int(len(channels["calling"])),
+    }
+    p4.write_text(build_summary_markdown(campaign_title, stats, accounts_processed))
+
+    return {
+        "01_accounts_processed.csv": str(p1),
+        "02_enriched_contacts.csv": str(p2),
+        "email_upload.csv": str(email_path),
+        "linkedin_upload.csv": str(linkedin_path),
+        "calling_upload.csv": str(calling_path),
+        "SUMMARY.md": str(p4),
+    }, channels["email"]
