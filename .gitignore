@@ -4,3 +4,8 @@ __pycache__/
 dashboard/
 .DS_Store
 outputs/
+
+# Enrichment runtime caches (local, churn constantly)
+reference/company_domain_cache.csv
+reference/domain_aliases.csv
+reference/phone_reveal_cache.csv
