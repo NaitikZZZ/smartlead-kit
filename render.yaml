@@ -14,6 +14,7 @@ services:
         value: app-na2.hubspot.com
       - key: HUBSPOT_EXCLUSION_LIST_ID
         value: "28280"
+        sync: false
       - key: EXCLUSION_CACHE_TTL_HOURS
         value: "24"
     disk:

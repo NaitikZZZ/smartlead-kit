@@ -21,10 +21,16 @@ HUBSPOT_READ_TOKEN = os.environ.get("HUBSPOT_PRIVATE_APP_TOKEN", "")
 HUBSPOT_WRITE_TOKEN = os.environ.get("HUBSPOT_WRITE_TOKEN", "")
 HEYREACH_API_KEY = os.environ.get("HEYREACH_API_KEY", "")
 
-# Exclusion source is the HubSpot "ABM EXCLSIONS - DNU" contacts list (28280).
-# Its members' email domains are the do-not-use set. The list is huge (~120k),
-# so its domain set is cached on disk and refreshed on a schedule rather than
+# ⚠️ MANDATORY: Exclusion source is the HubSpot "ABM EXCLSIONS - DNU" contacts list (28280).
+# Portal: https://app-na2.hubspot.com/contacts/6512810/objectLists/28280/filters
+#
+# This list contains ~120k existing clients. EVERY team member MUST use this list.
+# Do NOT change this ID without explicit authorization.
+# Its members' email domains/names/LinkedIn URLs are the do-not-use set. The list is huge (~120k),
+# so its data set is cached on disk and refreshed daily at 2 AM rather than
 # pulled per run - see pipeline/hubspot_exclusion.py.
+#
+# See EXCLUSION_LIST_MANDATORY.md for full documentation.
 HUBSPOT_EXCLUSION_LIST_ID = os.environ.get("HUBSPOT_EXCLUSION_LIST_ID", "28280")
 EXCLUSION_CACHE_TTL_HOURS = int(os.environ.get("EXCLUSION_CACHE_TTL_HOURS", "24"))
 # Association dropdowns (Project/Partner/Event) are cached from HubSpot and
