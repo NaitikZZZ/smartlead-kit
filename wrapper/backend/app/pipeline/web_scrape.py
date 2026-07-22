@@ -124,7 +124,11 @@ def _extract_via_cli(prompt: str, timeout: int = 300) -> str:
     account. Requires the CLI to be present and logged in for this process."""
     execpath = os.environ.get("CLAUDE_CODE_EXECPATH")
     if not execpath or not os.path.exists(execpath):
-        raise ValueError("No Claude CLI found and no ANTHROPIC_API_KEY set - can't auto-extract.")
+        raise ValueError(
+            "Auto-extract from web pages requires an Anthropic API key. "
+            "Either: (1) Open the list, save it as CSV/Excel, then upload it below, OR "
+            "(2) Contact naitik.chavda@xoxoday.com to enable API key on the server."
+        )
     try:
         proc = subprocess.run(
             [execpath, "-p", prompt, "--allowedTools", "WebFetch,WebSearch"],
@@ -135,8 +139,9 @@ def _extract_via_cli(prompt: str, timeout: int = 300) -> str:
     out = (proc.stdout or "").strip()
     if "Not logged in" in out or (proc.returncode != 0 and not out):
         raise ValueError(
-            "Your Claude CLI isn't logged in for this process. Run `claude login` in a terminal "
-            "(or set ANTHROPIC_API_KEY in the backend .env), then retry."
+            "Auto-extract from web pages requires authentication. Either: "
+            "(1) Open the list, save it as CSV/Excel, then upload it, OR "
+            "(2) Contact naitik.chavda@xoxoday.com to enable auto-extraction on the server."
         )
     return out
 
@@ -180,7 +185,11 @@ def scrape_accounts_from_url(url: str, concept: str = "", max_chars: int = DEFAU
             out_text = _extract_via_api(prompt, use_web_search=not page_text)
             method = f"api:{'page-text' if page_text else 'web-search'}"
         else:
-            raise ValueError("Auto-extract needs the Claude CLI (logged in) or ANTHROPIC_API_KEY. Upload the list as CSV instead.")
+            raise ValueError(
+                "Auto-extract from web pages is not configured. "
+                "Open the list, save it as CSV/Excel, then upload it below. "
+                "To enable auto-extraction, contact naitik.chavda@xoxoday.com"
+            )
 
         new_rows = []
         for rec in _parse_records(out_text):
