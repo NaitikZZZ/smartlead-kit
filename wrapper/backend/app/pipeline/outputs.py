@@ -86,6 +86,10 @@ def build_hubspot_import_file(enriched_df: pd.DataFrame, campaign_title: str) ->
 
 
 def _clean_cell(v):
+    # Handle pandas Series (extract scalar value)
+    if isinstance(v, pd.Series):
+        return None if v.empty else _clean_cell(v.iloc[0]) if len(v) > 0 else None
+
     if v is None or (isinstance(v, float) and math.isnan(v)):
         return None
     if isinstance(v, str) and not v.strip():
