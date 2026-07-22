@@ -532,7 +532,7 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
             ]
             _step(stats, "exclusion", "Exclusion Check", "done",
                   f"{exclusion_stats['excluded']} excluded, {exclusion_stats['ok_to_reach_out']} OK "
-                  f"(of {exclusion_stats['total']}); matched vs {exclusion_stats['dnu_domains']} DNU domains from list {exclusion_stats['dnu_list_id']}.",
+                  f"(of {exclusion_stats['total']}); matched vs {exclusion_stats['dnu_record_count']} DNU records from list {exclusion_stats['dnu_list_id']}.",
                   seconds=estimates.estimate_seconds("exclusion", len(df)))
         else:
             df["Exclusion Status"] = "OK to reach out"
