@@ -12,6 +12,7 @@ the JSON answer mechanism.
 """
 from __future__ import annotations
 import threading
+import time
 import traceback
 import uuid
 from pathlib import Path
@@ -23,7 +24,7 @@ from ..models import RunStage
 from . import (
     input_sources, normalize, domain_resolution, apollo_enrich,
     outputs, github_pr, web_completeness, naming, association_resolve,
-    hubspot_lists, hubspot_import, estimates, hubspot_exclusion, heyreach,
+    hubspot_lists, hubspot_import, estimates, hubspot_exclusion, heyreach, web_scrape,
 )
 
 JOBS: dict[str, dict] = {}
@@ -45,18 +46,33 @@ STEP_DEFS = [
 
 
 def _step(stats: dict, key: str, title: str, status: str, summary=None, seconds=None, cost=None):
-    """Upsert a step's status/summary/time/cost into stats["steps"] (ordered)."""
-    entry = {
-        "key": key, "title": title, "status": status, "summary": summary,
-        "time": estimates.humanize_seconds(seconds) if seconds is not None else None,
-        "cost": cost,
-    }
+    """Upsert a step's status/summary/time/cost into stats["steps"] (ordered).
+    Tracks REAL elapsed time: stamps started_at when a step goes 'running', and
+    on 'done'/'skipped' reports the measured duration (falls back to the passed
+    estimate only if the step never had a running phase)."""
     steps = stats.setdefault("steps", [])
-    for i, s in enumerate(steps):
-        if s["key"] == key:
-            steps[i] = entry
-            return
-    steps.append(entry)
+    prev = next((s for s in steps if s["key"] == key), None)
+    started_at = prev.get("started_at") if prev else None
+    now = time.time()
+    if status == "running" and not started_at:
+        started_at = now
+
+    if seconds is not None:
+        time_str = estimates.humanize_seconds(seconds)
+    else:
+        time_str = prev.get("time") if prev else None
+    elapsed_s = prev.get("elapsed_s") if prev else None
+
+    if status in ("done", "skipped") and started_at:
+        elapsed_s = round(now - started_at, 1)
+        time_str = estimates.humanize_seconds(elapsed_s)  # measured wins over estimate
+
+    entry = {"key": key, "title": title, "status": status, "summary": summary,
+             "time": time_str, "elapsed_s": elapsed_s, "cost": cost, "started_at": started_at}
+    if prev is not None:
+        steps[steps.index(prev)] = entry
+    else:
+        steps.append(entry)
 
 
 def _accrue_cost(stats: dict, block: dict):
@@ -68,7 +84,41 @@ def _accrue_cost(stats: dict, block: dict):
 
 def _update(run_id: str, **kwargs):
     with _LOCK:
-        JOBS[run_id].update(kwargs)
+        job = JOBS[run_id]
+        # Capture every distinct status message into a timestamped activity log
+        # so the UI can show what's happening and how long each thing takes.
+        if "message" in kwargs and kwargs["message"]:
+            msg = kwargs["message"]
+            log = job.setdefault("log", [])
+            if not log or log[-1]["msg"] != msg:
+                started = job.get("started_at")
+                elapsed = round(time.time() - started, 1) if started else 0.0
+                log.append({"elapsed_s": elapsed, "msg": msg})
+        job.update(kwargs)
+
+
+def _set_message(run_id: str, msg: str):
+    """Update the live status message WITHOUT appending to the activity log -
+    for high-frequency per-item progress (e.g. 'Resolving domains 42/300')."""
+    with _LOCK:
+        if run_id in JOBS:
+            JOBS[run_id]["message"] = msg
+
+
+def _make_progress(run_id: str, label: str):
+    """Returns a progress(done, total, name) callback that streams a live
+    count + ETA to the header and logs a milestone line every 20 items."""
+    t0 = time.time()
+
+    def _p(done, total, name=""):
+        elapsed = time.time() - t0
+        rate = done / elapsed if elapsed > 0 else 0
+        eta = (total - done) / rate if rate > 0 else 0
+        _set_message(run_id, f"{label} {done}/{total} - {str(name)[:24]} - ETA {estimates.humanize_seconds(eta)}")
+        if done == 1 or done % 20 == 0 or done == total:
+            _update(run_id, message=f"{label}: {done}/{total} in {estimates.humanize_seconds(elapsed)}")
+
+    return _p
 
 
 def get_job(run_id: str) -> dict | None:
@@ -133,7 +183,7 @@ def start_run(
     JOBS[run_id] = {
         "run_id": run_id, "stage": RunStage.queued, "message": "Queued", "error": None,
         "stats": {}, "output_files": [], "pr_url": None, "hubspot_list_url": None,
-        "pending_question": None,
+        "pending_question": None, "started_at": time.time(), "log": [],
     }
 
     t = threading.Thread(
@@ -214,6 +264,26 @@ def _map_existing_contact_columns(df: pd.DataFrame, first_col: str, last_col: st
     return out
 
 
+def _job_change_indices(df: pd.DataFrame) -> set:
+    """Rows flagged as a job change (from a 'Job change' / 'Started role last N
+    months' / similar column). These MUST bypass the email/phone cache since
+    the person's old work data is stale for their new company."""
+    col = None
+    for c in df.columns:
+        h = str(c).strip().lower()
+        if "job change" in h or "started role" in h or "recently changed job" in h:
+            col = c
+            break
+    if col is None:
+        return set()
+    idx = set()
+    for i, v in df[col].items():
+        s = str(v).strip().lower()
+        if s and s not in ("no", "false", "0", "n", "f", "nan", "none"):
+            idx.add(i)
+    return idx
+
+
 def _blank_domain_mask(df: pd.DataFrame) -> pd.Series:
     if "Domain" not in df.columns:
         return pd.Series([True] * len(df), index=df.index)
@@ -235,14 +305,82 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
         if input_source == "csv":
             df = input_sources.read_csv_bytes(csv_bytes, csv_filename or "input.csv")
         elif input_source == "hubspot_project":
+            _update(run_id, message="Reading Project properties from HubSpot")
             project_meta = input_sources.fetch_hubspot_project(hubspot_project_id)
-            if not csv_bytes:
-                raise ValueError(
-                    "HubSpot Project source also needs the target-account CSV "
-                    f"(linked at {project_meta.get('target_list_link') or 'no link found on the record'}) - "
-                    "restart the run with it attached alongside the project ID."
-                )
-            df = input_sources.read_csv_bytes(csv_bytes, csv_filename or "input.csv")
+            if csv_bytes:
+                df = input_sources.read_csv_bytes(csv_bytes, csv_filename or "input.csv")
+            else:
+                link = project_meta.get("target_list_link")
+                kind = project_meta.get("list_link_kind")
+                copy = project_meta.get("campaign_copy_link")
+                if not link:
+                    raise ValueError(
+                        f"Project '{project_meta.get('name', '?')}' has no target-account spreadsheet linked"
+                        + (f" (the record only has a campaign copy doc: {copy})" if copy else "")
+                        + ". Upload the account spreadsheet (CSV/Excel) to continue."
+                    )
+                if kind in ("document", "presentation"):
+                    # A doc is campaign COPY, not data - don't enrich it.
+                    raise ValueError(
+                        f"The Project's linked file is a {kind} (campaign copy), not the target account list:\n{link}\n"
+                        "Upload the account spreadsheet (CSV/Excel) to enrich."
+                    )
+                if kind == "webpage":
+                    # The list is referenced as a web page (often in the concept) -
+                    # auto-extract it into account rows via the LLM.
+                    _update(run_id, message=f"Auto-extracting the list from the web page: {link[:70]}")
+                    try:
+                        df, scrape_stats = web_scrape.scrape_accounts_from_url(link, project_meta.get("campaign_concept", ""))
+                    except Exception as e:
+                        raise ValueError(
+                            f"Couldn't auto-extract the list from {link} ({e}). "
+                            "Open it, save the accounts as CSV/Excel, and upload them instead."
+                        )
+                    if df.empty:
+                        if scrape_stats.get("resumed"):
+                            raise ValueError(
+                                f"All {scrape_stats.get('total_extracted', 0)} entries from this list were already "
+                                "extracted in previous runs - nothing new to enrich. (Delete the scrape cache in "
+                                "wrapper/backend/cache/ to start the list over.)"
+                            )
+                        raise ValueError(
+                            f"Auto-extraction found no records at {link}. "
+                            "Open it, save the accounts as CSV/Excel, and upload them instead."
+                        )
+                    stats["scrape"] = scrape_stats
+                    if scrape_stats.get("truncated"):
+                        # More than one page of 500 - ask whether to enrich this batch;
+                        # a later re-run continues from where this one stopped.
+                        _off = scrape_stats.get("offset", 0)
+                        _total = scrape_stats.get("total_extracted", scrape_stats["scraped"])
+                        more_answer = ask(
+                            run_id, "scrape_truncated_confirm", "yes_no",
+                            f"This web list has more than {scrape_stats['max_records']} entries. This run extracted "
+                            f"{scrape_stats['scraped']} (#{_off + 1}-#{_total}). Enrich these now? Re-running this "
+                            f"project later continues from #{_total + 1}. (No = stop so you can upload the full list as CSV.)",
+                            default="yes", context={"step": "source", "scrape": scrape_stats},
+                        )
+                        if not _truthy(more_answer):
+                            raise ValueError(
+                                f"Stopped - the web list has more than {scrape_stats['max_records']} entries. "
+                                "Upload the full list as CSV to enrich all at once, or re-run to continue in batches."
+                            )
+                else:
+                    if not input_sources.is_link_autofetchable(link):
+                        # Behind a login (SharePoint/Drive) - don't even try (avoids a
+                        # noisy 403). Give the link, tell them to download + upload.
+                        raise ValueError(
+                            f"The Project's list is behind a login and can't be pulled automatically:\n{link}\n"
+                            "Open it, download it as CSV/Excel, then upload it and start again."
+                        )
+                    try:
+                        _update(run_id, message=f"Fetching the Project's linked list: {link[:70]}")
+                        df = input_sources.fetch_form_link(link)
+                    except Exception as e:
+                        raise ValueError(
+                            f"Couldn't auto-fetch the Project's linked list ({e}). If it's behind "
+                            "SharePoint/Drive login, download it and upload it as a CSV instead."
+                        )
         else:
             raise ValueError(f"Unknown or unsupported input_source: {input_source!r}")
 
@@ -251,7 +389,9 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
         if not company_col:
             raise ValueError(f"Could not find a company-name column. Columns present: {list(df.columns)}")
         region_col = _guess_col(df, ["Region", "Country", "region", "country"])
-        _update(run_id, stats={**stats, "project_meta": project_meta})
+        if project_meta:
+            stats["project_meta"] = project_meta  # keep in local stats so it persists across updates
+        _update(run_id, stats=dict(stats))
 
         # The vendored normalizer only does exact-name column matching - alias
         # whatever header we detected onto a name it recognizes so company
@@ -264,13 +404,28 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
         stats["normalization"] = norm_stats
         resolved_company_col = "Cleaned Company Name" if "Cleaned Company Name" in df.columns else company_col
 
-        _update(run_id, stage=RunStage.checking_completeness, message="Checking sheet completeness")
-        df, completeness_stats = web_completeness.fill_completeness_gaps(df, resolved_company_col)
-        stats["completeness"] = completeness_stats
+        # The all-rows LLM web-search completeness pass used to run here
+        # automatically - it fired one Claude+web_search call per row with a
+        # blank Industry/Employee/Domain, uncached, every run (the main hidden
+        # delay). Firmographics come from the sheet + Apollo enrichment anyway,
+        # so it's off by default. A targeted domain-only fallback still runs
+        # after domain resolution for the few rows Apollo can't place.
+        stats["completeness"] = {"skipped": True, "reason": "auto completeness disabled for speed"}
 
         src_summary = f"{input_count} row(s) read. Names & companies normalized."
-        if completeness_stats and not completeness_stats.get("skipped"):
-            src_summary += f" Filled {completeness_stats.get('filled', 0)} data gap(s)."
+        if stats.get("scrape"):
+            _sc = stats["scrape"]
+            _rnote = f"resumed from #{_sc.get('offset', 0) + 1}, " if _sc.get("resumed") else ""
+            _tnote = f" (more remain - re-run to continue from #{_sc.get('total_extracted', 0) + 1})" if _sc.get("truncated") else ""
+            src_summary = (
+                f"Auto-extracted {_rnote}{_sc['scraped']} record(s) from the linked web page "
+                f"({_sc['method']}){_tnote} - review recommended. " + src_summary
+            )
+        if project_meta:
+            src_summary = (
+                f"Project '{project_meta.get('name', '?')}' - ICP: {project_meta.get('icp') or 'n/a'}, "
+                f"region: {project_meta.get('region') or 'n/a'}. " + src_summary
+            )
         _step(stats, "source", "Input & Normalization", "done", src_summary,
               seconds=estimates.estimate_seconds("normalize", input_count))
         _update(run_id, stats=dict(stats))
@@ -286,47 +441,72 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
         missing_mask = _blank_domain_mask(df)
         missing_count = int(missing_mask.sum())
         already_present = len(df) - missing_count
-        est = estimates.cost_block("domain_resolution", missing_count)
-        dom_answer = ask(
-            run_id, "domain_resolution_needed", "yes_no",
-            f"Resolve company domains? {missing_count} of {len(df)} row(s) need a lookup "
-            f"(est. {est['credits']} Apollo credits, ${est['usd']}).",
-            default="yes", context={"step": "domain", "estimate": est},
-        )
-        if _truthy(dom_answer) and missing_count > 0:
-            _update(run_id, stage=RunStage.resolving_domains, message="Resolving company domains")
-            _step(stats, "domain", "Domain Resolution", "running")
-            resolved_subset, domain_stats = domain_resolution.resolve_domains_for_df(
-                df[missing_mask].copy(), resolved_company_col, employee_col)
-            df.loc[missing_mask, "Domain"] = resolved_subset["Domain"].values
 
-            still = _blank_domain_mask(df)
-            if still.any():
-                _update(run_id, message="Some domains still missing - web-research pass")
-                filled_subset, second = web_completeness.fill_completeness_gaps(df[still].copy(), resolved_company_col)
-                df.loc[still, filled_subset.columns] = filled_subset
-                stats["completeness"]["second_pass"] = second
-
-            resolved_now = missing_count - int(_blank_domain_mask(df).sum())
-            cost = estimates.cost_block("domain_resolution", missing_count)
-            _accrue_cost(stats, cost)
-            domain_stats["already_present"] = already_present
-            domain_stats["resolved"] = resolved_now
-            stats["domain_resolution"] = domain_stats
-            _step(stats, "domain", "Domain Resolution", "done",
-                  f"Resolved {resolved_now} domain(s); {already_present} already had one.",
-                  seconds=estimates.estimate_seconds("domain_resolution", missing_count), cost=cost)
-        else:
-            stats["domain_resolution"] = {"skipped": True, "already_present": already_present}
+        if missing_count == 0:
+            # Sheet already carries a domain on every row (standard headers,
+            # data looks complete) - resolution is unnecessary, so we don't even
+            # ask. Skip straight to exclusion.
+            stats["domain_resolution"] = {"skipped": True, "already_present": already_present,
+                                          "reason": "every row already has a domain"}
             _step(stats, "domain", "Domain Resolution", "skipped",
-                  f"Skipped - {already_present} row(s) already have a domain." if already_present else "Skipped - no domain lookup.")
-        _update(run_id, stats=dict(stats))
+                  f"Auto-skipped - all {already_present} row(s) already have a domain.")
+            _update(run_id, stats=dict(stats))
+        else:
+            uncached = domain_resolution.count_uncached(df[missing_mask], resolved_company_col)
+            est = estimates.cost_block("domain_resolution", uncached)
+            dom_answer = ask(
+                run_id, "domain_resolution_needed", "yes_no",
+                f"{missing_count} of {len(df)} rows need a domain. {uncached} need a paid Apollo lookup "
+                f"(~{est['credits']} credits, ${est['usd']}); {missing_count - uncached} are cached (free). Resolve them?",
+                default="yes", context={"step": "domain", "estimate": est, "missing": missing_count, "uncached": uncached},
+            )
+            if _truthy(dom_answer):
+                _update(run_id, stage=RunStage.resolving_domains,
+                        message=f"Resolving {missing_count} missing company domain(s) via Apollo (parallel)")
+                _step(stats, "domain", "Domain Resolution", "running")
+
+                _dom_t0 = time.time()
+
+                def _dom_progress(done, total, name):
+                    elapsed = time.time() - _dom_t0
+                    rate = done / elapsed if elapsed > 0 else 0
+                    eta = (total - done) / rate if rate > 0 else 0
+                    _set_message(run_id, f"Resolving domains {done}/{total} - {name[:28]} - ETA {estimates.humanize_seconds(eta)}")
+                    if done == 1 or done % 20 == 0 or done == total:
+                        _update(run_id, message=f"Domain resolution: {done}/{total} done in {estimates.humanize_seconds(elapsed)}")
+
+                resolved_subset, domain_stats = domain_resolution.resolve_domains_for_df(
+                    df[missing_mask].copy(), resolved_company_col, employee_col, progress=_dom_progress)
+                df.loc[missing_mask, "Domain"] = resolved_subset["Domain"].values
+
+                still = _blank_domain_mask(df)
+                if still.any():
+                    _update(run_id, message="Some domains still missing - web-research pass")
+                    filled_subset, second = web_completeness.fill_completeness_gaps(df[still].copy(), resolved_company_col)
+                    df.loc[still, filled_subset.columns] = filled_subset
+                    stats["completeness"]["second_pass"] = second
+
+                resolved_now = missing_count - int(_blank_domain_mask(df).sum())
+                cost = estimates.cost_block("domain_resolution", missing_count)
+                _accrue_cost(stats, cost)
+                domain_stats["already_present"] = already_present
+                domain_stats["resolved"] = resolved_now
+                stats["domain_resolution"] = domain_stats
+                _step(stats, "domain", "Domain Resolution", "done",
+                      f"Resolved {resolved_now} of {missing_count} missing domain(s); {already_present} already had one.",
+                      seconds=estimates.estimate_seconds("domain_resolution", missing_count), cost=cost)
+            else:
+                stats["domain_resolution"] = {"skipped": True, "already_present": already_present}
+                _step(stats, "domain", "Domain Resolution", "skipped",
+                      f"Skipped by user - {missing_count} row(s) left without a domain.")
+            _update(run_id, stats=dict(stats))
 
         # ============ Step 3: Exclusion Check (gated) ============
         exclusion_answer = ask(
             run_id, "exclusion_needed", "yes_no",
-            "Run an exclusion check against the Account Mapping Sheet (removes existing clients)?",
-            default="yes", context={"step": "exclusion"},
+            "Check these accounts against the HubSpot DNU list and drop existing clients?",
+            default="yes",
+            context={"step": "exclusion", "reference_url": config.exclusion_list_url(), "reference_label": "ABM EXCLSIONS - DNU"},
         )
         if _truthy(exclusion_answer):
             _update(run_id, stage=RunStage.checking_exclusions, message="Checking against HubSpot DNU list")
@@ -337,6 +517,19 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
 
             exclusion_domain_col = "Domain" if "Domain" in df.columns else (domain_col or _guess_col(df, ["Domain", "Website"]))
             df, exclusion_stats = hubspot_exclusion.run_exclusion_check(df, exclusion_domain_col, progress=_excl_progress)
+            exclusion_stats["dnu_list_url"] = config.exclusion_list_url()
+
+            # Capture per-account "why excluded" for the final summary (capped).
+            _excl_name_col = resolved_company_col if resolved_company_col in df.columns else company_col
+            _ex_df = df[df["Exclusion Status"] == "Excluded"]
+            exclusion_stats["excluded_rows"] = [
+                {
+                    "company": "" if pd.isna(r.get(_excl_name_col)) else str(r.get(_excl_name_col)),
+                    "domain": "" if pd.isna(r.get("Domain")) else str(r.get("Domain")),
+                    "reason": str(r.get("Exclusion Reason", "")),
+                }
+                for _, r in _ex_df.head(500).iterrows()
+            ]
             _step(stats, "exclusion", "Exclusion Check", "done",
                   f"{exclusion_stats['excluded']} excluded, {exclusion_stats['ok_to_reach_out']} OK "
                   f"(of {exclusion_stats['total']}); matched vs {exclusion_stats['dnu_domains']} DNU domains from list {exclusion_stats['dnu_list_id']}.",
@@ -352,11 +545,22 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
         accounts_processed = df.copy()
         ok_df = df[df["Exclusion Status"] == "OK to reach out"].copy()
 
-        # Does the sheet already carry named contacts (Apollo-style export)?
+        # Job changers must bypass the email/phone cache (old work data is stale).
+        job_change_idx = _job_change_indices(ok_df)
+        if job_change_idx:
+            stats["job_changes"] = len(job_change_idx)
+
+        # Does the sheet already carry named people? If so we reveal THEIR emails
+        # (existing-contact path) rather than discovering new people - true for an
+        # Apollo export, a Sales-Nav export, or an auto-scraped named list, even
+        # when emails aren't present yet.
         email_col_existing = _guess_col(ok_df, ["email", "email address"])
         resolved_first_col = "Cleaned First Name" if "Cleaned First Name" in ok_df.columns else _guess_col(ok_df, ["first name", "firstname"])
         resolved_last_col = "Cleaned Last Name" if "Cleaned Last Name" in ok_df.columns else _guess_col(ok_df, ["last name", "lastname"])
-        has_existing_contacts = bool(resolved_first_col) and bool(email_col_existing) and ok_df[email_col_existing].notna().sum() > 0
+        has_existing_contacts = (
+            bool(resolved_first_col) and bool(resolved_last_col)
+            and int(ok_df[resolved_first_col].notna().sum()) > 0
+        )
 
         core_df = pd.DataFrame()
         candidates_df = pd.DataFrame()
@@ -365,7 +569,7 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
 
         # ============ Step 4: People Discovery (gated; auto-skip if named contacts present) ============
         if has_existing_contacts:
-            named = int(ok_df[email_col_existing].notna().sum())
+            named = int(ok_df[email_col_existing].notna().sum()) if email_col_existing else 0
             stats["apollo_search"] = {"skipped": True, "reason": "sheet already had named contacts"}
             _step(stats, "discovery", "People Discovery", "skipped",
                   f"Sheet already has {named} named contact(s) - discovery not needed.")
@@ -373,8 +577,8 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
         else:
             disc_answer = ask(
                 run_id, "people_discovery_needed", "yes_no",
-                f"No named contacts in the sheet. Discover decision-makers at the {len(ok_df)} OK account(s)? "
-                "(Apollo search is free; revealing emails/phones later costs credits.)",
+                f"No contacts in the sheet. Find decision-makers at the {len(ok_df)} account(s)? "
+                "Search is free; revealing emails/phones later costs credits.",
                 default="yes", context={"step": "discovery"},
             )
             if _truthy(disc_answer):
@@ -414,28 +618,35 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
             _update(run_id, stage=RunStage.enriching, message=f"Filling emails for {len(ok_df)} existing contact(s)")
             _step(stats, "reveal", "Email Reveal & Validation", "running")
             core_df, fill_stats = apollo_enrich.enrich_existing_contacts(
-                ok_df, resolved_first_col, resolved_last_col, "Domain", email_col_existing)
-            reveal_units = fill_stats.get("filled", 0)
-            cost = estimates.cost_block("email_reveal", reveal_units)
+                ok_df, resolved_first_col, resolved_last_col, "Domain", email_col_existing,
+                force_idx=job_change_idx, progress=_make_progress(run_id, "Email reveal"))
+            paid = fill_stats.get("paid_lookups", 0)
+            cost = estimates.cost_block("email_reveal", paid)
             _accrue_cost(stats, cost)
             usable = int(core_df["email"].apply(lambda v: bool(str(v).strip()) and str(v).lower() != "nan").sum())
             stats["apollo_enrich"] = {**fill_stats, "has_email": usable}
+            jc = fill_stats.get("job_changes_refreshed", 0)
             _step(stats, "reveal", "Email Reveal & Validation", "done",
-                  f"{fill_stats.get('already_had_email', 0)} already had email, filled {fill_stats.get('filled', 0)} more. {usable} usable.",
-                  seconds=estimates.estimate_seconds("email_reveal", reveal_units), cost=cost)
+                  f"{fill_stats.get('already_had_email', 0)} already had email, {fill_stats.get('from_cache', 0)} from cache (free), "
+                  f"{fill_stats.get('filled_new', 0)} newly revealed ({paid} paid). {usable} usable."
+                  + (f" {jc} job-change refresh(es)." if jc else ""),
+                  seconds=estimates.estimate_seconds("email_reveal", paid), cost=cost)
             phone_cols = (resolved_first_col, resolved_last_col, "Domain")
             needs_existing_mapping = True
         elif not candidates_df.empty:
             _update(run_id, stage=RunStage.enriching, message=f"Revealing details for {len(candidates_df)} candidate(s)")
             _step(stats, "reveal", "Email Reveal & Validation", "running")
-            core_df, _full_df, enrich_stats = apollo_enrich.enrich_candidates(candidates_df)
+            core_df, _full_df, enrich_stats = apollo_enrich.enrich_candidates(
+                candidates_df, progress=_make_progress(run_id, "Email reveal"))
             core_df["company_domain"] = core_df["search_domain"].apply(outputs.strip_url_prefix)
-            cost = estimates.cost_block("email_reveal", enrich_stats.get("contacts_enriched", 0))
+            paid = enrich_stats.get("paid_lookups", enrich_stats.get("contacts_enriched", 0))
+            cost = estimates.cost_block("email_reveal", paid)
             _accrue_cost(stats, cost)
             stats["apollo_enrich"] = enrich_stats
             _step(stats, "reveal", "Email Reveal & Validation", "done",
-                  f"{enrich_stats['contacts_enriched']} revealed, {enrich_stats['has_email']} with a verified email.",
-                  seconds=estimates.estimate_seconds("email_reveal", enrich_stats.get("contacts_enriched", 0)), cost=cost)
+                  f"{enrich_stats['contacts_enriched']} revealed ({enrich_stats.get('from_cache', 0)} from cache, {paid} paid), "
+                  f"{enrich_stats['has_email']} with a verified email.",
+                  seconds=estimates.estimate_seconds("email_reveal", paid), cost=cost)
             phone_cols = ("first_name", "last_name", "search_domain")
         else:
             stats["apollo_enrich"] = {"skipped": True, "reason": "no contacts to reveal"}
@@ -448,18 +659,26 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
             _step(stats, "phone", "Mobile Phone", "skipped", "No revealed contacts to look up phones for.")
         else:
             n = len(core_df)
-            est = estimates.cost_block("mobile_phone", n)
+            f_col0, l_col0, d_col0 = phone_cols
+            # Job-change force only applies to the existing-contact path (its
+            # index aligns with ok_df); discovered contacts have a fresh index.
+            phone_force = job_change_idx if needs_existing_mapping else set()
+            uncached = apollo_enrich.count_uncached_phones(core_df, f_col0, l_col0, d_col0, force_idx=phone_force)
+            est = estimates.cost_block("mobile_phone", uncached)
             phone_answer = ask(
                 run_id, "mobile_phone_needed", "yes_no",
-                f"Reveal mobile/direct phone numbers for the {n} contact(s)? (est. {est['credits']} credits, ${est['usd']})",
-                default="yes", context={"step": "phone", "estimate": est},
+                f"Reveal phone numbers for {n} contact(s)? {uncached} need a paid reveal "
+                f"(~8 credits each = {est['credits']} credits, ${est['usd']}); {n - uncached} cached (free).",
+                default="yes", context={"step": "phone", "estimate": est, "uncached": uncached},
             )
             if _truthy(phone_answer):
                 _update(run_id, message="Revealing phone numbers")
                 _step(stats, "phone", "Mobile Phone", "running")
                 f_col, l_col, d_col = phone_cols
-                core_df, phone_stats = apollo_enrich.enrich_phones(core_df, f_col, l_col, d_col)
-                cost = estimates.cost_block("mobile_phone", phone_stats.get("total", n))
+                core_df, phone_stats = apollo_enrich.enrich_phones(
+                    core_df, f_col, l_col, d_col, force_idx=phone_force, progress=_make_progress(run_id, "Phone reveal"))
+                # Charge on numbers actually revealed (~8 credits each).
+                cost = estimates.cost_block("mobile_phone", phone_stats.get("phones_found", 0))
                 _accrue_cost(stats, cost)
                 stats["apollo_phone"] = phone_stats
                 _step(stats, "phone", "Mobile Phone", "done",
@@ -480,7 +699,7 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
         suggested_title = naming.suggest_campaign_title(project_meta, ok_df if not ok_df.empty else accounts_processed, region_col)
         campaign_title = ask(
             run_id, "campaign_title", "text",
-            "Name for this run (campaign_title tag / list name / PR title) - edit if needed:",
+            "Name this run (used for the campaign tag + HubSpot list). Edit if needed:",
             default=suggested_title, context={"step": "outputs"},
         )
         campaign_title = str(campaign_title).strip() or suggested_title
@@ -522,25 +741,55 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
         else:
             kinds = [k.strip() for k in str(assoc_kinds_answer).split(",") if k.strip() in ("project", "partner", "event")]
 
+        _MANUAL = "Other - enter manually"
         associations = []
         for kind in kinds:
-            label = {"partner": "Partner name, URL, or record ID", "project": "Project link (or record ID)", "event": "Event name, URL, or record ID"}[kind]
-            value = ask(run_id, f"{kind}_value", "text", f"Enter the {label}:", context={"step": "associations", "kind": kind})
-            resolved = association_resolve.resolve(kind, str(value))
-            if resolved["status"] == "ambiguous":
-                cands = resolved["candidates"]
-                chosen_name = ask(
-                    run_id, f"{kind}_disambiguate", "choice",
-                    f"Multiple {kind} records matched {value!r} - which one?",
-                    options=[c["name"] or c["id"] for c in cands],
-                    context={"step": "associations", "candidates": cands},
+            record_id = None
+            # Auto-populate a searchable dropdown from live HubSpot records.
+            _set_message(run_id, f"Loading {kind} records from HubSpot...")
+            try:
+                records = association_resolve.list_records(kind)
+            except Exception:
+                records = []
+
+            if records:
+                option_map = {}
+                options = []
+                for rec in records:
+                    disp = rec["name"] or rec["id"]
+                    if disp in option_map:  # keep names unique in the dropdown
+                        disp = f"{disp} ({rec['id']})"
+                    option_map[disp] = rec["id"]
+                    options.append(disp)
+                options.append(_MANUAL)
+                chosen = ask(
+                    run_id, f"{kind}_pick", "dropdown",
+                    f"Select the {kind} to associate these contacts with (type to filter):",
+                    options=options, context={"step": "associations", "kind": kind, "count": len(records)},
                 )
-                match = next((c for c in cands if (c["name"] or c["id"]) == chosen_name), cands[0])
-                record_id = match["id"]
-            elif resolved["status"] == "not_found":
-                raise ValueError(f"No {kind} record found matching {value!r}")
-            else:
-                record_id = resolved["record_id"]
+                if chosen and chosen != _MANUAL and chosen in option_map:
+                    record_id = option_map[chosen]
+
+            # Fallback: no records fetched, or the user chose "Other".
+            if record_id is None:
+                value = ask(run_id, f"{kind}_value", "text",
+                            f"Enter the {kind} name, URL, or record ID:",
+                            context={"step": "associations", "kind": kind})
+                resolved = association_resolve.resolve(kind, str(value))
+                if resolved["status"] == "ambiguous":
+                    cands = resolved["candidates"]
+                    chosen_name = ask(
+                        run_id, f"{kind}_disambiguate", "choice",
+                        f"Multiple {kind} records matched {value!r} - which one?",
+                        options=[c["name"] or c["id"] for c in cands],
+                        context={"step": "associations", "candidates": cands},
+                    )
+                    match = next((c for c in cands if (c["name"] or c["id"]) == chosen_name), cands[0])
+                    record_id = match["id"]
+                elif resolved["status"] == "not_found":
+                    raise ValueError(f"No {kind} record found matching {value!r}")
+                else:
+                    record_id = resolved["record_id"]
             associations.append({"kind": kind, "record_id": record_id})
 
         _step(stats, "associations", "Associations", "done",
@@ -562,7 +811,10 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
 def run_confirmed_import(run_id: str, run_dir: Path):
     ready_path = run_dir / "hubspot_ready.json"
     df = pd.read_json(ready_path, orient="records")
-    rows = df.where(pd.notna(df), None).to_dict(orient="records")
+    # astype(object) first so NaN -> None actually sticks; on a float64 column
+    # `.where(..., None)` silently keeps NaN (None can't live in float64), and
+    # NaN is not JSON-serializable -> the "Out of range float" upload error.
+    rows = df.astype(object).where(pd.notna(df), None).to_dict(orient="records")
 
     job = get_job(run_id)
     associations = job.get("_associations", [])
@@ -591,6 +843,9 @@ def run_confirmed_import(run_id: str, run_dir: Path):
     for s in final_stats.get("steps", []):
         if s["key"] == "upload":
             s["status"] = "done"
+            if s.get("started_at"):
+                s["elapsed_s"] = round(time.time() - s["started_at"], 1)
+                s["time"] = estimates.humanize_seconds(s["elapsed_s"])
             s["summary"] = f"Imported {result['total']} contact(s); static list created.{hr_note}"
     _update(run_id, stats=final_stats)
 

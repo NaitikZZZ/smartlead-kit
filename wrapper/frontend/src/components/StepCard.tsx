@@ -9,6 +9,7 @@ export default function StepCard({
 }: { runId: string; question: PendingQuestion; onAnswered: () => void }) {
   const [text, setText] = useState(question.default ?? "");
   const [multi, setMulti] = useState<string[]>([]);
+  const [sel, setSel] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -36,7 +37,16 @@ export default function StepCard({
   return (
     <div className="card" style={{ padding: 24 }}>
       <h5 style={{ marginBottom: 8 }}>Your input needed</h5>
-      <h3 style={{ marginBottom: 16 }}>{question.prompt}</h3>
+      <h3 style={{ marginBottom: question.context?.reference_url ? 6 : 16 }}>{question.prompt}</h3>
+
+      {question.context?.reference_url && (
+        <p style={{ marginBottom: 16, fontSize: 12, color: "var(--dark-200)" }}>
+          Uses{" "}
+          <a href={question.context.reference_url as string} target="_blank" rel="noreferrer">
+            {(question.context.reference_label as string) || "this list"} ↗
+          </a>
+        </p>
+      )}
 
       {est && (
         <div className="est-box">
@@ -85,6 +95,31 @@ export default function StepCard({
               None (list only)
             </button>
           </div>
+        </div>
+      )}
+
+      {question.type === "dropdown" && question.options && (
+        <div>
+          <input
+            list={`opts-${question.key}`}
+            value={sel}
+            onChange={(e) => setSel(e.target.value)}
+            placeholder="Type to filter, then pick from the list..."
+            style={{ marginBottom: 8 }}
+          />
+          <datalist id={`opts-${question.key}`}>
+            {question.options.map((o) => <option key={o} value={o} />)}
+          </datalist>
+          <div style={{ fontSize: 12, color: "var(--dark-200)", marginBottom: 12 }}>
+            {question.context?.count ? `${question.context.count} records loaded from HubSpot` : ""}
+          </div>
+          <button
+            className="btn-primary"
+            disabled={submitting || !question.options.includes(sel)}
+            onClick={() => submit(sel)}
+          >
+            {submitting ? "Submitting..." : "Continue"}
+          </button>
         </div>
       )}
 

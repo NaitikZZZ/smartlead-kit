@@ -181,18 +181,19 @@ def build_summary_markdown(campaign_title: str, stats: dict, accounts_processed:
     else:
         total = exclusion.get("total", 0)
         excluded = exclusion.get("excluded", 0)
-        lines.append(f"- Master sheet used: `{exclusion.get('master_sheet_used', 'n/a')}`")
+        if exclusion.get("dnu_list_id"):
+            lines.append(f"- Source: HubSpot DNU list `{exclusion['dnu_list_id']}` ({exclusion.get('dnu_domains', '?')} do-not-use domains)")
         lines.append(f"- {total} checked -> **{excluded} excluded** ({_pct(excluded, total)}), {exclusion.get('ok_to_reach_out', 0)} OK to reach out")
-        if excluded and "Exclusion Status" in accounts_processed.columns:
-            name_col = next((c for c in ["Cleaned Company Name", "Company Name for Emails", "Company Name", "Company"] if c in accounts_processed.columns), None)
-            excluded_rows = accounts_processed[accounts_processed["Exclusion Status"] == "Excluded"]
-            if name_col:
-                lines.append("")
-                lines.append("| Company | Reason |")
-                lines.append("|---|---|")
-                for _, row in excluded_rows.iterrows():
-                    reason = str(row.get("Exclusion Reason", "")).replace("|", "/")
-                    lines.append(f"| {row[name_col]} | {reason} |")
+        excluded_rows = exclusion.get("excluded_rows") or []
+        if excluded_rows:
+            lines.append("")
+            lines.append("| Company | Domain | Why excluded |")
+            lines.append("|---|---|---|")
+            for r in excluded_rows:
+                reason = str(r.get("reason", "")).replace("|", "/")
+                lines.append(f"| {r.get('company', '')} | {r.get('domain', '')} | {reason} |")
+            if excluded > len(excluded_rows):
+                lines.append(f"\n_(+{excluded - len(excluded_rows)} more excluded, not listed)_")
     lines.append("")
 
     search = stats.get("apollo_search", {})
@@ -214,6 +215,21 @@ def build_summary_markdown(campaign_title: str, stats: dict, accounts_processed:
             phone_total = phone.get("total", contacts_enriched)
             lines.append(f"- {phone.get('phones_found', 0)} with a phone number ({_pct(phone.get('phones_found', 0), phone_total)})")
     lines.append("")
+
+    cost = stats.get("cost")
+    if cost and cost.get("breakdown"):
+        agg = {}
+        for b in cost["breakdown"]:
+            a = agg.setdefault(b["operation"], {"credits": 0, "usd": 0.0})
+            a["credits"] += b["credits"]
+            a["usd"] = round(a["usd"] + b["usd"], 2)
+        label = {"domain_resolution": "Domain resolution", "email_reveal": "Email reveal", "mobile_phone": "Phone (calling)"}
+        lines.append("## Apollo cost")
+        for op in ("domain_resolution", "email_reveal", "mobile_phone"):
+            if op in agg:
+                lines.append(f"- {label[op]}: {agg[op]['credits']} credits (${agg[op]['usd']:.2f})")
+        lines.append(f"- **Total: {cost.get('credits', 0)} credits (${cost.get('usd', 0):.2f})**")
+        lines.append("")
 
     channels = stats.get("channel_counts")
     if channels:

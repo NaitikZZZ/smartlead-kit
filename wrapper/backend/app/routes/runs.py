@@ -1,14 +1,37 @@
+import math
+import os
+import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from .. import config
 from ..models import AnswerRequest, ImportConfirmRequest, PendingQuestion, RunStatus
-from ..pipeline import runner
+from ..pipeline import runner, input_sources
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
+
+
+def _nan_safe(o):
+    """Recursively strip NaN/Infinity (and numpy scalars) from anything about
+    to be JSON-serialized - FastAPI/Starlette use allow_nan=False and 500 on a
+    stray NaN, which is how a run showed 'Out of range float values are not
+    JSON compliant'."""
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if isinstance(o, dict):
+        return {k: _nan_safe(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_nan_safe(v) for v in o]
+    if hasattr(o, "item"):  # numpy scalar
+        try:
+            v = o.item()
+        except Exception:
+            return o
+        return None if (isinstance(v, float) and not math.isfinite(v)) else v
+    return o
 
 
 @router.post("", response_model=RunStatus)
@@ -41,6 +64,27 @@ async def create_run(
         company_col=company_col, domain_col=domain_col, employee_col=employee_col,
     )
     return _to_status(run_id)
+
+
+@router.post("/project-preview")
+def project_preview(project_id: str = Body(..., embed=True)):
+    """Read-only: resolve a pasted Project ID/URL to its campaign properties, and
+    flag whether the linked list can be auto-pulled or must be uploaded (behind
+    a login). Lets the UI prompt for a download+upload before the run starts."""
+    if not project_id or not str(project_id).strip():
+        raise HTTPException(400, "project_id (record ID or URL) is required")
+    try:
+        meta = input_sources.fetch_hubspot_project(project_id)
+    except Exception as e:
+        raise HTTPException(400, str(e))
+    return _nan_safe({
+        "project": meta,
+        "list_fetchable": input_sources.is_link_autofetchable(meta.get("target_list_link")),
+        # Web-page lists can be auto-extracted via the Claude CLI (your account)
+        # or an API key.
+        "list_scrapable": meta.get("list_link_kind") == "webpage"
+        and (bool(config.ANTHROPIC_API_KEY) or bool(os.environ.get("CLAUDE_CODE_EXECPATH"))),
+    })
 
 
 @router.get("/{run_id}", response_model=RunStatus)
@@ -89,15 +133,22 @@ def confirm_import(run_id: str, body: ImportConfirmRequest):
     except Exception as e:
         runner._update(run_id, stage="failed", error=str(e), message="Import failed")
         raise HTTPException(500, str(e))
-    return result
+    return _nan_safe(result)
 
 
 def _to_status(run_id: str) -> RunStatus:
     job = runner.get_job(run_id)
     pq = job.get("pending_question")
+    # Surface the activity log + overall elapsed time alongside stats (stats is a
+    # free-form dict, so no schema change needed).
+    stats = dict(job.get("stats", {}))
+    stats["log"] = job.get("log", [])
+    if job.get("started_at"):
+        stats["elapsed_s"] = round(time.time() - job["started_at"], 1)
+    stats = _nan_safe(stats)
     return RunStatus(
         run_id=run_id, stage=job["stage"], message=job.get("message", ""), error=job.get("error"),
-        stats=job.get("stats", {}),
+        stats=stats,
         output_files=[Path(p).name for p in job.get("output_files", [])],
         pr_url=job.get("pr_url"),
         hubspot_list_url=job.get("hubspot_list_url"),

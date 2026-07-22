@@ -3,6 +3,8 @@ mirroring the flow validated against the live Xoxoday portal this session.
 Only ever called after an explicit confirm from the API caller - never runs
 as part of the automatic pipeline stages."""
 from __future__ import annotations
+import math
+
 import requests
 
 from .. import config
@@ -12,6 +14,25 @@ from . import association_resolve, hubspot_lists
 def _headers():
     token = config.require("HUBSPOT_WRITE_TOKEN", config.HUBSPOT_WRITE_TOKEN)
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+
+def _json_safe(v):
+    """Make a value JSON-safe for the HubSpot payload: NaN/Infinity -> None
+    (the JSON encoder rejects them), and numpy scalars -> native Python. This
+    is the last line of defense so a stray NaN from a numeric column can never
+    fail the upload."""
+    if v is None:
+        return None
+    if isinstance(v, float):
+        return v if math.isfinite(v) else None
+    if hasattr(v, "item"):  # numpy scalar (np.float64/np.int64/...)
+        try:
+            v = v.item()
+        except Exception:
+            return v
+        if isinstance(v, float) and not math.isfinite(v):
+            return None
+    return v
 
 
 def _valid_email(v) -> bool:
@@ -32,7 +53,9 @@ def batch_upsert_contacts(rows: list[dict]) -> list[dict]:
         if not _valid_email(r.get("email")):
             continue
         email = str(r["email"]).strip()
-        inputs.append({"idProperty": "email", "id": email, "properties": {**r, "email": email}})
+        props = {k: _json_safe(v) for k, v in r.items()}
+        props["email"] = email
+        inputs.append({"idProperty": "email", "id": email, "properties": props})
     results = []
     for i in range(0, len(inputs), 100):  # HubSpot batch limit
         chunk = inputs[i:i + 100]

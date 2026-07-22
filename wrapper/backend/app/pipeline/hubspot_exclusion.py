@@ -51,12 +51,13 @@ def _list_id() -> str:
     return str(config.HUBSPOT_EXCLUSION_LIST_ID)
 
 
-def build_domain_set(progress=None) -> set[str]:
-    """Pages every member of the exclusion list and collects normalized email
-    domains. Slow (~10-15 min for 120k) - meant to be cached, not run per job."""
+def build_exclusion_set(progress=None) -> dict:
+    """Pages every member of the exclusion list and collects normalized identifiers:
+    email domains, company names, company domains, LinkedIn URLs. Slow (~25-30 min
+    for 120k) - meant to be cached, not run per job."""
     headers = _headers()
     lid = _list_id()
-    domains: set[str] = set()
+    records: list[dict] = []
 
     after = None
     fetched = 0
@@ -77,31 +78,73 @@ def build_domain_set(progress=None) -> set[str]:
             br = requests.post(
                 "https://api.hubapi.com/crm/v3/objects/contacts/batch/read",
                 headers=headers,
-                json={"properties": ["hs_email_domain"], "inputs": [{"id": cid} for cid in chunk]},
+                json={
+                    "properties": [
+                        "hs_email_domain",
+                        "email",
+                        "hs_lead_status",
+                        "work_email",
+                        "firstname",
+                        "lastname",
+                        "company",
+                        "website",
+                        "linkedinprofileid",
+                        "linkedinurl"
+                    ],
+                    "inputs": [{"id": cid} for cid in chunk]
+                },
                 timeout=60,
             )
             br.raise_for_status()
             for rec in br.json().get("results", []):
-                d = normalize_domain(rec.get("properties", {}).get("hs_email_domain"))
-                if d:
-                    domains.add(d)
+                props = rec.get("properties", {})
+                email_domains = set()
+                # Collect email domains from both email and work_email fields
+                if props.get("hs_email_domain"):
+                    email_domains.add(normalize_domain(props.get("hs_email_domain", "")))
+                if props.get("work_email"):
+                    work_email_domain = normalize_domain(props.get("work_email", ""))
+                    if work_email_domain:
+                        email_domains.add(work_email_domain)
+
+                first_name = (props.get("firstname", "") or "").strip().lower()
+                last_name = (props.get("lastname", "") or "").strip().lower()
+                full_name = f"{first_name} {last_name}".strip() if first_name or last_name else ""
+
+                record = {
+                    "email_domains": sorted(list(email_domains)),  # List of all email domains
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "full_name": full_name,
+                    "company_name": (props.get("company", "") or "").strip().lower(),
+                    "company_domain": normalize_domain(props.get("website", "")),
+                    "linkedin_url": (props.get("linkedinurl", "") or "").strip().lower(),
+                }
+                if any([record["email_domains"], record["first_name"], record["last_name"],
+                        record["company_name"], record["company_domain"], record["linkedin_url"]]):
+                    records.append(record)
             time.sleep(0.05)
 
         fetched += len(record_ids)
         if progress:
-            progress(fetched, len(domains))
+            progress(fetched, len(records))
         paging = body.get("paging", {}).get("next", {})
         after = paging.get("after")
         if not after:
             break
 
-    return domains
+    return {"records": records}
 
 
 def refresh_cache(progress=None) -> dict:
-    domains = build_domain_set(progress=progress)
-    meta = {"built_at": datetime.now(UTC).isoformat(), "list_id": _list_id(),
-            "domain_count": len(domains), "domains": sorted(domains)}
+    exclusion_data = build_exclusion_set(progress=progress)
+    records = exclusion_data["records"]
+    meta = {
+        "built_at": datetime.now(UTC).isoformat(),
+        "list_id": _list_id(),
+        "record_count": len(records),
+        "records": records
+    }
     _CACHE_FILE.write_text(json.dumps(meta))
     return meta
 
@@ -116,57 +159,191 @@ def _cache_age_hours() -> float | None:
     return (datetime.now(UTC) - built).total_seconds() / 3600
 
 
-def load_domain_set(progress=None) -> tuple[set[str], dict]:
-    """Returns (domain_set, meta). Uses a fresh cache if present; rebuilds only
-    when the cache is missing or older than the TTL. `meta` carries staleness so
-    callers can surface it."""
+def load_exclusion_records(progress=None) -> tuple[list[dict], dict]:
+    """Returns (records_list, meta). Uses fresh cache if present; rebuilds only
+    when missing or older than TTL. Records contain email_domain, company_name,
+    company_domain, linkedin_url."""
     age = _cache_age_hours()
     if age is not None and age <= config.EXCLUSION_CACHE_TTL_HOURS:
         data = json.loads(_CACHE_FILE.read_text())
-        return set(data["domains"]), {"source": "cache", "age_hours": round(age, 1),
-                                      "domain_count": data.get("domain_count", len(data["domains"])),
-                                      "built_at": data.get("built_at")}
+        records = data.get("records", [])
+        return records, {
+            "source": "cache",
+            "age_hours": round(age, 1),
+            "record_count": data.get("record_count", len(records)),
+            "built_at": data.get("built_at")
+        }
     # Missing or stale -> rebuild (this is the slow path).
     meta = refresh_cache(progress=progress)
-    return set(meta["domains"]), {"source": "rebuilt", "age_hours": 0.0,
-                                  "domain_count": meta["domain_count"], "built_at": meta["built_at"]}
+    return meta["records"], {
+        "source": "rebuilt",
+        "age_hours": 0.0,
+        "record_count": meta["record_count"],
+        "built_at": meta["built_at"]
+    }
 
 
 def run_exclusion_check(df: pd.DataFrame, domain_col: str | None, progress=None):
-    """Marks each row Excluded if its (email/company) domain is in the DNU set.
-    Keeps the same output contract as the old sheet-based check:
-    'Exclusion Status' in {'Excluded','OK to reach out'} + 'Exclusion Reason'."""
-    dnu, meta = load_domain_set(progress=progress)
+    """Marks each row Excluded if it matches any DNU record on:
+    - Email domain (exact or subdomain)
+    - Company domain (exact or subdomain)
+    - Company name (exact, case-insensitive)
+    - LinkedIn URL (exact match)
+    - First/last name combos
 
-    dcol = domain_col if (domain_col and domain_col in df.columns) else ("Domain" if "Domain" in df.columns else None)
+    Output contract: 'Exclusion Status' in {'Excluded','OK to reach out'} + 'Exclusion Reason'.
+    Robust: handles cache failures, missing columns, and row errors gracefully."""
+
+    # Load cache with fallback
+    try:
+        dnu_records, meta = load_exclusion_records(progress=progress)
+    except Exception as e:
+        dnu_records = []
+        meta = {"error": str(e), "record_count": 0, "source": "failed"}
+
+    # If no records, mark all OK and return
+    if not dnu_records:
+        statuses = ["OK to reach out"] * len(df)
+        reasons = ["DNU list unavailable"] * len(df)
+        out = df.copy()
+        out["Exclusion Status"] = statuses
+        out["Exclusion Reason"] = reasons
+        return out, {
+            "total": len(out), "excluded": 0, "ok_to_reach_out": len(out),
+            "dnu_record_count": 0, "dnu_list_id": _list_id(), "cache": meta,
+        }
+
+    # Find columns - be flexible with naming
+    dcol = domain_col if (domain_col and domain_col in df.columns) else next(
+        (c for c in df.columns if any(x in c.lower() for x in ["email", "person email"])), None
+    )
+    company_col = next((c for c in df.columns if "company" in c.lower()), None)
+    linkedin_col = next((c for c in df.columns if any(x in c.lower() for x in ["linkedin", "social"])), None)
+    first_name_col = next((c for c in df.columns if any(x in c.lower() for x in ["first", "fname"])), None)
+    last_name_col = next((c for c in df.columns if any(x in c.lower() for x in ["last", "lname"])), None)
+    domain_col_found = next((c for c in df.columns if any(x in c.lower() for x in ["domain", "website"])), None)
+
     statuses, reasons = [], []
-    no_domain = 0
     excluded = 0
+
     for _, row in df.iterrows():
-        d = normalize_domain(row.get(dcol)) if dcol else ""
-        if not d:
-            no_domain += 1
-            statuses.append("OK to reach out")
-            reasons.append("No domain to match against DNU list")
-            continue
-        # Match exact domain or a sub/parent-domain relationship (in.acme.com <-> acme.com).
-        hit = d in dnu or any(d == x or d.endswith("." + x) or x.endswith("." + d) for x in dnu)
-        if hit:
+        match_reason = None
+
+        try:
+            # Extract names safely
+            row_first_name = (row.get(first_name_col) or "").strip().lower() if first_name_col else ""
+            row_last_name = (row.get(last_name_col) or "").strip().lower() if last_name_col else ""
+            row_full_name = f"{row_first_name} {row_last_name}".strip()
+            email_domain = normalize_domain(row.get(dcol)) if dcol else ""
+        except Exception:
+            email_domain = ""
+            row_first_name = ""
+            row_last_name = ""
+            row_full_name = ""
+
+        # Match 1: Email domain
+        if email_domain:
+            for rec in dnu_records:
+                dnu_domains = rec.get("email_domains", [])
+                for dnu_domain in dnu_domains:
+                    if dnu_domain and (email_domain == dnu_domain or
+                                       email_domain.endswith("." + dnu_domain) or
+                                       dnu_domain.endswith("." + email_domain)):
+                        match_reason = f"Email domain matches DNU"
+                        break
+                if match_reason:
+                    break
+
+        # Match 2: First name + email domain
+        if not match_reason and row_first_name and email_domain:
+            for rec in dnu_records:
+                if rec.get("first_name") == row_first_name:
+                    dnu_domains = rec.get("email_domains", [])
+                    for dnu_domain in dnu_domains:
+                        if dnu_domain and (email_domain == dnu_domain or
+                                           email_domain.endswith("." + dnu_domain) or
+                                           dnu_domain.endswith("." + email_domain)):
+                            match_reason = f"First name + email domain matches DNU"
+                            break
+                    if match_reason:
+                        break
+
+        # Match 3: Last name + email domain
+        if not match_reason and row_last_name and email_domain:
+            for rec in dnu_records:
+                if rec.get("last_name") == row_last_name:
+                    dnu_domains = rec.get("email_domains", [])
+                    for dnu_domain in dnu_domains:
+                        if dnu_domain and (email_domain == dnu_domain or
+                                           email_domain.endswith("." + dnu_domain) or
+                                           dnu_domain.endswith("." + email_domain)):
+                            match_reason = f"Last name + email domain matches DNU"
+                            break
+                    if match_reason:
+                        break
+
+        # Match 4: Full name
+        if not match_reason and row_full_name:
+            for rec in dnu_records:
+                if rec.get("full_name") == row_full_name:
+                    match_reason = f"Full name matches DNU"
+                    break
+
+        # Match 5: Company domain
+        if not match_reason and domain_col_found:
+            try:
+                company_domain = normalize_domain(row.get(domain_col_found))
+                if company_domain:
+                    for rec in dnu_records:
+                        dnu_domain = rec.get("company_domain", "")
+                        if dnu_domain and (company_domain == dnu_domain or
+                                           company_domain.endswith("." + dnu_domain) or
+                                           dnu_domain.endswith("." + company_domain)):
+                            match_reason = f"Company domain matches DNU"
+                            break
+            except Exception:
+                pass
+
+        # Match 6: Company name
+        if not match_reason and company_col:
+            try:
+                company_name = (row.get(company_col) or "").strip().lower()
+                if company_name:
+                    for rec in dnu_records:
+                        if rec.get("company_name") and company_name == rec.get("company_name"):
+                            match_reason = f"Company name matches DNU"
+                            break
+            except Exception:
+                pass
+
+        # Match 7: LinkedIn URL
+        if not match_reason and linkedin_col:
+            try:
+                linkedin_url = (row.get(linkedin_col) or "").strip().lower()
+                if linkedin_url:
+                    for rec in dnu_records:
+                        if rec.get("linkedin_url") and linkedin_url == rec.get("linkedin_url"):
+                            match_reason = f"LinkedIn profile matches DNU"
+                            break
+            except Exception:
+                pass
+
+        if match_reason:
             excluded += 1
             statuses.append("Excluded")
-            reasons.append(f"Domain {d} is in HubSpot DNU list {_list_id()}")
+            reasons.append(match_reason)
         else:
             statuses.append("OK to reach out")
-            reasons.append("Not in DNU list")
+            reasons.append("Not matched in DNU list")
 
     out = df.copy()
     out["Exclusion Status"] = statuses
     out["Exclusion Reason"] = reasons
     stats = {
-        "total": len(out), "excluded": excluded,
+        "total": len(out),
+        "excluded": excluded,
         "ok_to_reach_out": int((out["Exclusion Status"] == "OK to reach out").sum()),
-        "no_domain": no_domain,
-        "dnu_domains": meta["domain_count"],
+        "dnu_record_count": meta.get("record_count", 0),
         "dnu_list_id": _list_id(),
         "cache": meta,
     }
@@ -174,8 +351,8 @@ def run_exclusion_check(df: pd.DataFrame, domain_col: str | None, progress=None)
 
 
 if __name__ == "__main__":  # warm-up / scheduled refresh entrypoint
-    def _p(fetched, uniq):
-        print(f"  fetched {fetched} members, {uniq} unique domains", flush=True)
+    def _p(fetched, rec_count):
+        print(f"  fetched {fetched} members, {rec_count} unique records", flush=True)
     print(f"Refreshing exclusion cache for list {_list_id()} ...")
     m = refresh_cache(progress=_p)
-    print(f"Done: {m['domain_count']} unique DNU domains cached at {_CACHE_FILE}")
+    print(f"Done: {m['record_count']} DNU records (domains, companies, LinkedIn URLs) cached at {_CACHE_FILE}")

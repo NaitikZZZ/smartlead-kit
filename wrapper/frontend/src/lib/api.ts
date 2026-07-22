@@ -36,6 +36,25 @@ export async function startRun(params: StartRunParams): Promise<RunStatus> {
   return r.json();
 }
 
+export interface ProjectPreview {
+  project: Record<string, any>;
+  list_fetchable: boolean;
+  list_scrapable: boolean;
+}
+
+export async function previewProject(projectId: string): Promise<ProjectPreview> {
+  const r = await fetch(`${API_BASE}/api/runs/project-preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id: projectId }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body.detail || `Could not load project (${r.status})`);
+  }
+  return r.json();
+}
+
 export async function getRun(runId: string): Promise<RunStatus> {
   const r = await fetch(`${API_BASE}/api/runs/${runId}`);
   if (!r.ok) throw new Error("Failed to fetch run status");

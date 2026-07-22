@@ -117,4 +117,7 @@ export interface AppConfig {
   apollo_configured: boolean;
   hubspot_read_configured: boolean;
   hubspot_write_configured: boolean;
+  exclusion_list_name?: string;
+  exclusion_list_id?: string;
+  exclusion_list_url?: string;
 }

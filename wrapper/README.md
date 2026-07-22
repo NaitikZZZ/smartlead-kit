@@ -41,6 +41,22 @@ cd wrapper/backend && ./.venv/bin/python -m app.pipeline.hubspot_exclusion
 If a run hits a missing/stale cache it rebuilds inline (one-time ~10-15 min),
 so keep the scheduled refresh running to keep runs instant.
 
+**Caching & Apollo cost model:** every paid lookup is cached to disk so a
+re-run never re-pays Apollo for the same person/company:
+- Domain → `reference/company_domain_cache.csv` (~1 credit uncached)
+- Email match → `cache/email_reveal_cache.json` (~1 credit uncached)
+- Full person reveal → `cache/person_enrich_cache.json` (~1 credit uncached)
+- Phone reveal → `reference/phone_reveal_cache.csv` (**~8 credits** uncached; even
+  "no phone on file" is cached)
+
+Cost basis $13,566 / 720,000 credits. The cost prompts and the review screen
+show a **per-operation breakdown** (Domain / Email / Phone-calling / Total) and
+count only the **uncached** lookups (what will actually be charged).
+
+**Job changes:** rows flagged in a "Job change" / "Started role last N months"
+column bypass the email/phone cache and are force-refreshed (old work data is
+stale). Everyone else stays cache-free.
+
 **HeyReach push:** on the confirm-upload step, the LinkedIn file is pushed to a
 new HeyReach lead list named after the campaign (`POST /list/CreateEmptyList`
 then `POST /list/AddLeadsToListV2`, batched at 100), alongside the HubSpot import

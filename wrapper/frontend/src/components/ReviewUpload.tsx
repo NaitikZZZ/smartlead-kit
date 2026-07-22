@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
-import type { RunStatus, StepInfo } from "../lib/types";
+import type { CostInfo, RunStatus, StepInfo } from "../lib/types";
 import { confirmImport, fileUrl } from "../lib/api";
+import { costByOp } from "./CostBar";
+import Tooltip from "./Tooltip";
 
 const CHANNELS = [
   { key: "email", file: "email_upload.csv", label: "Email (HubSpot)", note: "Verified emails only. Uploaded to HubSpot + a static list." },
@@ -39,6 +41,9 @@ export default function ReviewUpload({ run, onImported }: { run: RunStatus; onIm
   const importResult = run.stats?.hubspot_import as any;
   const assocStep = ((run.stats?.steps as StepInfo[]) ?? []).find((s) => s.key === "associations");
 
+  const excl = (run.stats?.exclusion ?? {}) as any;
+  const excludedRows = (excl.excluded_rows ?? []) as { company: string; domain: string; reason: string }[];
+
   useEffect(() => {
     fetch(fileUrl(run.run_id, "email_upload.csv"))
       .then((r) => (r.ok ? r.text() : ""))
@@ -61,33 +66,93 @@ export default function ReviewUpload({ run, onImported }: { run: RunStatus; onIm
 
   return (
     <div>
-      <h2 style={{ marginBottom: 6 }}>{imported ? "Uploaded" : "Preview before upload"}</h2>
+      <h2 style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+        {imported ? "Uploaded" : "Preview before upload"}
+        {!imported && <Tooltip text="Nothing is written until you press Confirm. The email file goes to HubSpot + a static list; LinkedIn goes to HeyReach. Downloads are at the bottom." />}
+      </h2>
       <p style={{ marginBottom: 20 }}>
-        {imported
-          ? "Contacts are in HubSpot and a static list was created."
-          : "Three channel files are ready. Review, then confirm to push the email file to HubSpot. Nothing is written until you confirm."}
+        {imported ? "Contacts are in HubSpot and a static list was created." : "Review below, then confirm the upload."}
       </p>
 
-      {CHANNELS.map((ch) => (
-        <div key={ch.key} className="card file-card">
-          <div>
-            <div style={{ fontWeight: 600 }}>{ch.label}</div>
-            <div style={{ fontSize: 12, color: "var(--dark-200)" }}>{ch.note}</div>
+      {/* Channel counts (info) */}
+      <div className="card cost-bar">
+        {CHANNELS.map((ch) => (
+          <div key={ch.key} className="cost-metric">
+            <div className="v">{counts[ch.key] ?? 0}</div>
+            <div className="k">
+              {ch.label}
+              <Tooltip text={ch.note} />
+            </div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            <span className="chan-count">{counts[ch.key] ?? 0}</span>
-            <a className="btn-secondary" href={fileUrl(run.run_id, ch.file)} style={{ textDecoration: "none" }}>
-              Download
-            </a>
-          </div>
-        </div>
-      ))}
-
-      <div style={{ marginTop: 16 }}>
-        <a className="btn-secondary" href={fileUrl(run.run_id, "SUMMARY.md")} style={{ textDecoration: "none", fontSize: 12 }}>
-          Download run summary
-        </a>
+        ))}
       </div>
+
+      {/* Apollo cost breakdown */}
+      {(() => {
+        const cost = run.stats?.cost as CostInfo | undefined;
+        if (!cost || !cost.breakdown?.length) return null;
+        const agg = costByOp(run);
+        const rows: [string, string][] = [
+          ["Domain resolution", "domain_resolution"],
+          ["Email reveal", "email_reveal"],
+          ["Phone (calling)", "mobile_phone"],
+        ];
+        return (
+          <div className="card" style={{ padding: 16, marginTop: 20, overflowX: "auto" }}>
+            <h5 style={{ marginBottom: 10 }}>Apollo cost breakdown</h5>
+            <table className="kv-table">
+              <thead><tr><th>Item</th><th>Credits</th><th>Cost</th></tr></thead>
+              <tbody>
+                {rows.filter(([, op]) => agg[op]).map(([label, op]) => (
+                  <tr key={op}>
+                    <td>{label}</td>
+                    <td>{agg[op].credits}</td>
+                    <td>${agg[op].usd.toFixed(2)}</td>
+                  </tr>
+                ))}
+                <tr style={{ fontWeight: 700 }}>
+                  <td>Total</td>
+                  <td>{cost.credits}</td>
+                  <td>${cost.usd.toFixed(2)}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p style={{ fontSize: 12, color: "var(--dark-200)", marginTop: 8 }}>
+              Phone (calling) reveals are ~8 credits each; email matches ~1. Cached lookups are free.
+            </p>
+          </div>
+        );
+      })()}
+
+      {/* Why excluded */}
+      {!excl.skipped && (excl.excluded ?? 0) > 0 && (
+        <div className="card" style={{ padding: 16, marginTop: 20, overflowX: "auto" }}>
+          <h5 style={{ marginBottom: 6 }}>Excluded accounts ({excl.excluded})</h5>
+          <p style={{ fontSize: 12, color: "var(--dark-200)", marginBottom: 10 }}>
+            Matched by email domain against{" "}
+            {excl.dnu_list_url ? (
+              <a href={excl.dnu_list_url} target="_blank" rel="noreferrer">the HubSpot DNU list ↗</a>
+            ) : (
+              <>the HubSpot DNU list{excl.dnu_list_id ? ` (${excl.dnu_list_id})` : ""}</>
+            )}{" "}
+            - these were removed and not uploaded.
+          </p>
+          <table className="kv-table">
+            <thead><tr><th>Company</th><th>Domain</th><th>Why excluded</th></tr></thead>
+            <tbody>
+              {excludedRows.slice(0, 50).map((r, i) => (
+                <tr key={i}><td>{r.company}</td><td>{r.domain}</td><td>{r.reason}</td></tr>
+              ))}
+            </tbody>
+          </table>
+          {excl.excluded > excludedRows.length && (
+            <p style={{ fontSize: 12, marginTop: 8 }}>+{excl.excluded - excludedRows.length} more excluded (full list in the run summary).</p>
+          )}
+          {excludedRows.length > 50 && (
+            <p style={{ fontSize: 12, marginTop: 8 }}>Showing first 50 of {excludedRows.length}.</p>
+          )}
+        </div>
+      )}
 
       {assocStep?.summary && (
         <p style={{ marginTop: 16, fontSize: 13 }}>
@@ -122,18 +187,18 @@ export default function ReviewUpload({ run, onImported }: { run: RunStatus; onIm
               List: <a href={importResult.list.list_url} target="_blank" rel="noreferrer">{importResult.list.list_url}</a>
             </p>
           )}
-          {importResult.heyreach && (
+          {importResult.heyreach && importResult.heyreach.status !== "skipped" && (
             <p style={{ fontSize: 13, marginTop: 6 }}>
               {importResult.heyreach.status === "pushed" ? (
                 <>
                   <span className="tag-success">HeyReach</span> {importResult.heyreach.pushed} LinkedIn lead(s) pushed to list
                   {" "}"{importResult.heyreach.list_name}" (id {importResult.heyreach.list_id}).
                 </>
-              ) : importResult.heyreach.status !== "skipped" ? (
+              ) : (
                 <>
                   <span className="tag-warning">HeyReach</span> {importResult.heyreach.message || importResult.heyreach.status}
                 </>
-              ) : null}
+              )}
             </p>
           )}
         </div>
@@ -147,6 +212,28 @@ export default function ReviewUpload({ run, onImported }: { run: RunStatus; onIm
           </button>
         </>
       )}
+
+      {/* Downloads - at the very end */}
+      <div className="card" style={{ padding: 16, marginTop: 28 }}>
+        <h5 style={{ marginBottom: 10 }}>Downloads</h5>
+        {CHANNELS.map((ch) => (
+          <div key={ch.key} className="file-card" style={{ padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontWeight: 600 }}>{ch.label}</span>
+              <span style={{ color: "var(--dark-200)", fontWeight: 400 }}>({counts[ch.key] ?? 0})</span>
+              <Tooltip text={ch.note} />
+            </div>
+            <a className="btn-secondary" href={fileUrl(run.run_id, ch.file)} style={{ textDecoration: "none" }}>Download</a>
+          </div>
+        ))}
+        <a
+          className="btn-secondary"
+          href={fileUrl(run.run_id, "SUMMARY.md")}
+          style={{ textDecoration: "none", fontSize: 12, marginTop: 12, display: "inline-block" }}
+        >
+          Download run summary (includes full exclusion list)
+        </a>
+      </div>
     </div>
   );
 }

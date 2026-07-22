@@ -27,6 +27,11 @@ HEYREACH_API_KEY = os.environ.get("HEYREACH_API_KEY", "")
 # pulled per run - see pipeline/hubspot_exclusion.py.
 HUBSPOT_EXCLUSION_LIST_ID = os.environ.get("HUBSPOT_EXCLUSION_LIST_ID", "28280")
 EXCLUSION_CACHE_TTL_HOURS = int(os.environ.get("EXCLUSION_CACHE_TTL_HOURS", "24"))
+# Association dropdowns (Project/Partner/Event) are cached from HubSpot and
+# kept fresh by crons (projects/events every 30 min, partners daily 6am). This
+# TTL is only the inline-refresh fallback for when a cron was missed (machine
+# asleep) - 24h so normal runs always serve the cron-maintained cache.
+ASSOC_CACHE_TTL_HOURS = int(os.environ.get("ASSOC_CACHE_TTL_HOURS", "24"))
 CACHE_DIR = BACKEND_DIR / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -93,3 +98,11 @@ def require(name: str, value: str):
     if not value:
         raise RuntimeError(f"Missing required config: {name}. Set it in wrapper/backend/.env")
     return value
+
+
+def exclusion_list_url() -> str:
+    """Direct link to the HubSpot DNU exclusion list's filters view."""
+    return (
+        f"https://{HUBSPOT_APP_SUBDOMAIN}/contacts/{HUBSPOT_PORTAL_ID}"
+        f"/objectLists/{HUBSPOT_EXCLUSION_LIST_ID}/filters"
+    )

@@ -13,11 +13,13 @@ APOLLO_CONTRACT_CREDITS = 720000
 COST_PER_CREDIT = APOLLO_CONTRACT_DOLLARS / APOLLO_CONTRACT_CREDITS  # ~0.018842
 
 # Credits consumed per unit of work. People search itself is free; the cost is
-# in revealing data. Kept conservative and easy to tune in one place.
+# in revealing data. Confirmed against live Apollo behavior (see
+# scripts/enrich_phone_apollo.py): a phone reveal is ~8 credits, an email
+# match ~1. Only UNCACHED lookups cost - cached ones are free.
 CREDITS = {
     "domain_resolution": 1,   # per company org-enrich / domain lookup
     "email_reveal": 1,        # per contact email unlock
-    "mobile_phone": 1,        # per contact phone/mobile unlock
+    "mobile_phone": 8,        # per contact phone/mobile reveal (Apollo charges ~8)
 }
 
 # Rough wall-clock seconds per unit, for the "time estimate" shown per step.

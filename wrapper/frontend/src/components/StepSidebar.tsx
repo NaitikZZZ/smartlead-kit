@@ -11,8 +11,13 @@ export default function StepSidebar({ run }: { run: RunStatus | null }) {
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
-        <h1>ABM Pipeline</h1>
-        <p>List → clean → enrich → HubSpot + HeyReach</p>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span className="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none"><path d="M13 2 4 14h7l-1 8 9-12h-7z" fill="currentColor" /></svg>
+          </span>
+          <h1>ABM Pipeline</h1>
+        </div>
+        <p style={{ marginTop: 8 }}>List → clean → enrich → HubSpot + HeyReach</p>
       </div>
 
       {STEPS.map((def, i) => {
