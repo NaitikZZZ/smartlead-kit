@@ -165,6 +165,46 @@ def _truthy(v) -> bool:
     return str(v).strip().lower() in ("yes", "true", "y", "1")
 
 
+def _fill_missing_from_raw(enriched_df: pd.DataFrame, raw_df: pd.DataFrame) -> pd.DataFrame:
+    """Fill missing emails and phone numbers from raw file, respecting exclusions.
+
+    If enrichment didn't find an email/phone but raw file has it, use the raw value.
+    BUT: if the contact is excluded, keep them excluded (don't add their contact data).
+    """
+    out = enriched_df.copy()
+
+    # Find email and phone columns in both dataframes
+    raw_email_col = next((c for c in raw_df.columns if c.lower() in ["email", "email address"]), None)
+    raw_phone_col = next((c for c in raw_df.columns if c.lower() in ["phone", "phone number", "mobile", "mobile number"]), None)
+
+    # Only fill if enrichment didn't find the value
+    if raw_email_col and raw_email_col in raw_df.columns:
+        for idx, row in out.iterrows():
+            # Only fill if enrichment is empty AND contact is not excluded
+            if idx < len(raw_df):
+                is_excluded = row.get("Exclusion Status") == "Excluded" if "Exclusion Status" in row else False
+                is_empty = not row.get("email") or str(row.get("email")).strip().lower() in ["", "nan", "none"]
+
+                if is_empty and not is_excluded:
+                    raw_email = raw_df.iloc[idx].get(raw_email_col)
+                    if raw_email and str(raw_email).strip() and str(raw_email).lower() != "nan":
+                        out.at[idx, "email"] = raw_email
+
+    # Same for phone
+    if raw_phone_col and raw_phone_col in raw_df.columns:
+        for idx, row in out.iterrows():
+            if idx < len(raw_df):
+                is_excluded = row.get("Exclusion Status") == "Excluded" if "Exclusion Status" in row else False
+                is_empty = not row.get("mobile_phone") or str(row.get("mobile_phone")).strip().lower() in ["", "nan", "none"]
+
+                if is_empty and not is_excluded:
+                    raw_phone = raw_df.iloc[idx].get(raw_phone_col)
+                    if raw_phone and str(raw_phone).strip() and str(raw_phone).lower() != "nan":
+                        out.at[idx, "mobile_phone"] = raw_phone
+
+    return out
+
+
 def start_run(
     input_source: str,
     csv_bytes: bytes | None,
@@ -706,6 +746,10 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
 
         _update(run_id, stage=RunStage.assembling_outputs, message="Writing output files")
         _step(stats, "outputs", "Output Files & Name", "running")
+
+        # ============ Fallback: Fill missing emails/phones from raw file (respecting exclusions) ============
+        core_df = _fill_missing_from_raw(core_df, accounts_processed)
+
         file_paths, hubspot_ready_df = outputs.write_outputs(run_dir, accounts_processed, core_df, campaign_title, stats)
         stats["hubspot_ready_count"] = len(hubspot_ready_df)
         Path(file_paths["SUMMARY.md"]).write_text(outputs.build_summary_markdown(campaign_title, stats, accounts_processed))
