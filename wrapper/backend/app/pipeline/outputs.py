@@ -124,15 +124,15 @@ def build_channel_files(enriched_df: pd.DataFrame, campaign_title: str) -> dict[
         title = _clean_cell(row.get("title"))
         domain = _clean_cell(row.get("company_domain")) or strip_url_prefix(_clean_cell(row.get("Domain")))
         li = _clean_cell(row.get("linkedin_url"))
-        phone = _clean_cell(row.get("Phone Number"))
+        phone = _clean_cell(row.get("Phone Number")) or _clean_cell(row.get("mobile_phone"))
 
-        if li:
+        if li is not None:
             linkedin_rows.append({
                 "first_name": first, "last_name": last, "company_name": company,
                 "job_title": title, "linkedin_url": li, "company_domain": domain,
                 "campaign_title": campaign_title,
             })
-        if phone:
+        if phone is not None:
             calling_rows.append({
                 "first_name": first, "last_name": last, "company_name": company,
                 "job_title": title, "phone": phone, "email": _clean_cell(row.get("email")),
