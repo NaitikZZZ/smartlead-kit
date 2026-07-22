@@ -1,0 +1,45 @@
+services:
+  - type: web
+    name: abm-wrapper-api
+    runtime: python
+    rootDir: wrapper/backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: 1
+      - key: HUBSPOT_PORTAL_ID
+        sync: false
+      - key: HUBSPOT_APP_SUBDOMAIN
+        value: app-na2.hubspot.com
+      - key: HUBSPOT_EXCLUSION_LIST_ID
+        value: "28280"
+      - key: EXCLUSION_CACHE_TTL_HOURS
+        value: "24"
+    disk:
+      name: cache-disk
+      mountPath: /opt/render/cache
+      sizeGB: 1
+    healthCheckPath: /api/health
+
+  - type: web
+    name: abm-wrapper-web
+    runtime: static
+    buildCommand: cd wrapper/frontend && npm install && npm run build
+    staticPublishPath: wrapper/frontend/dist
+    routes:
+      - path: /*
+        destination: /index.html
+
+  - type: cron
+    name: dnu-cache-refresh
+    schedule: "0 2 * * *"
+    command: cd /opt/render/cache && python -m app.pipeline.hubspot_exclusion
+    runtime: python
+    rootDir: wrapper/backend
+    buildCommand: pip install -r requirements.txt
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: 1
+      - key: HUBSPOT_EXCLUSION_LIST_ID
+        value: "28280"
