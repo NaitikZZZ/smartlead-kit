@@ -32,16 +32,3 @@ services:
     envVars:
       - key: VITE_API_BASE
         value: https://abm-wrapper-api.onrender.com
-
-  - type: cron
-    name: dnu-cache-refresh
-    schedule: "0 2 * * *"
-    startCommand: cd /opt/render/cache && python -m app.pipeline.hubspot_exclusion
-    runtime: python
-    rootDir: wrapper/backend
-    buildCommand: pip install -r requirements.txt
-    envVars:
-      - key: PYTHONUNBUFFERED
-        value: 1
-      - key: HUBSPOT_EXCLUSION_LIST_ID
-        value: "28280"

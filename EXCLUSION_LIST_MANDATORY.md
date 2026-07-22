@@ -1,30 +1,44 @@
-# ⚠️ MANDATORY: HubSpot DNU Exclusion List
+# Exclusion List Policy: HubSpot DNU List (28280)
 
 ## Overview
-Every team member, every run, must use the HubSpot "ABM EXCLSIONS - DNU" list (ID: **28280**) for contact exclusions.
+When you choose to run the **Exclusion Check**, this system MUST use the HubSpot "ABM EXCLSIONS - DNU" list (ID: **28280**).
 
 **Direct Link:** https://app-na2.hubspot.com/contacts/6512810/objectLists/28280/filters
 
-This list contains ~120k existing clients and accounts we must NOT reach out to.
+This list contains ~120k existing clients and accounts to avoid outreach to.
 
 ---
 
-## Why It's Mandatory
+## When It Applies
 
-1. **Compliance:** Avoid emailing existing customers (breaks contracts, damages relationships)
-2. **Data Quality:** Prevents duplicate outreach to known accounts
-3. **Team Alignment:** Single source of truth - no one uses a local/old exclusion list
-4. **Automatic:** Exclusion is enforced in every pipeline run - not optional
+✅ **When you choose "Yes" to the exclusion question** → This list is mandatory (no alternatives)
+
+❌ **When you skip exclusion** → Not used at all
+
+---
+
+## Why This List When Used
+
+1. **Single Source of Truth:** When doing exclusion, everyone uses the same list
+2. **Real-time Data:** Cache is refreshed live on every run (not stale)
+3. **Compliance Ready:** Ensure you're not emailing existing customers
+4. **Team Alignment:** No local/outdated exclusion lists
 
 ---
 
 ## Configuration
 
-### Local Development
-The exclusion list is **automatically** configured:
+### How It Works
+The exclusion list is **always live** (fetched fresh every run):
 - **List ID:** `HUBSPOT_EXCLUSION_LIST_ID=28280` (hardcoded default in `config.py`)
-- **Cache TTL:** 24 hours (refreshes daily at 2 AM)
-- **Caching:** Domains are cached locally to avoid expensive API calls per run
+- **Refresh:** Always rebuilt from HubSpot when exclusion is enabled
+- **Speed:** First run of a session fetches ~120k contacts (~25-30 min). Cache is kept for the session.
+
+### Local Development
+```bash
+# Exclusion is automatic when you choose it in the UI
+# List 28280 is hardcoded and cannot be overridden
+```
 
 ### Production (Render)
 Environment variable in render.yaml:
@@ -34,10 +48,11 @@ envVars:
     value: "28280"
 ```
 
-### Manual Override (DO NOT USE)
-Only set `HUBSPOT_EXCLUSION_LIST_ID` if you have explicit permission:
+### Do NOT Override
+Do not set `HUBSPOT_EXCLUSION_LIST_ID` to a different value:
 ```bash
-export HUBSPOT_EXCLUSION_LIST_ID=<different-id>  # NOT RECOMMENDED
+# ❌ This will break the system
+export HUBSPOT_EXCLUSION_LIST_ID=<other-id>
 ```
 
 ---
@@ -59,26 +74,18 @@ Contacts are excluded if they match ANY of these fields from the DNU list:
 
 ## Verification
 
-### Check the Cache
+### Check if Exclusion is Working
+The exclusion check runs automatically when you enable it in the UI. You'll see:
+- List of excluded contacts (with reasons)
+- Count of excluded vs. OK to reach out
+- Direct link to the HubSpot list: https://app-na2.hubspot.com/contacts/6512810/objectLists/28280/filters
+
+### Cache Location (for reference)
 ```bash
 ls -lh wrapper/backend/cache/exclusion_domains_28280.json
 ```
 
-Expected output:
-```
--rw-r--   1 user  staff  450K Jul 21 12:15 exclusion_domains_28280.json
-```
-
-### View Last Refresh
-```bash
-tail -5 /tmp/dnu_cache_refresh.log
-```
-
-### Manual Refresh
-```bash
-cd wrapper/backend
-python -m app.pipeline.hubspot_exclusion
-```
+The cache file is rebuilt fresh each time exclusion is used, ensuring live data.
 
 ---
 
@@ -116,9 +123,9 @@ Even if the CSV has their email/phone:
 ## Questions?
 
 - **"Can I use a different list?"** No. Portal ID `6512810`, List ID `28280` only.
-- **"What if I need to exclude someone else?"** Add them to the DNU list in HubSpot, wait for the 2 AM refresh (or manually refresh).
-- **"Will this slow down my runs?"** No. The list is cached locally, lookup is <100ms.
-- **"What if the list is stale?"** Cache refreshes daily. Manual refresh: `python -m app.pipeline.hubspot_exclusion`
+- **"What if I need to exclude someone else?"** Add them to the DNU list in HubSpot. The next exclusion check will pick them up (always fresh).
+- **"Will this slow down my runs?"** First exclusion check is ~25-30 min (fetching 120k contacts). Subsequent checks in the same session are faster (cached).
+- **"Is the list always current?"** Yes. Every exclusion check fetches fresh data from HubSpot, so you always get live updates.
 
 ---
 

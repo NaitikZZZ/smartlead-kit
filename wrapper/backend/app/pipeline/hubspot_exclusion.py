@@ -1,10 +1,11 @@
 """Exclusion against the HubSpot "ABM EXCLSIONS - DNU" contacts list (28280).
 
-This is now the mandatory exclusion source (replaces the Account Mapping
-Sheet). The list is a dynamic HubSpot contacts list with ~120k members, so we
-can't pull it per run. Instead we page every member's `hs_email_domain` once,
-dedupe into a normalized domain set, and cache it on disk. Runs read the cache
-(instant); a scheduled/manual `refresh_cache()` keeps it fresh.
+When the user chooses to run exclusion checks, they MUST use this list (mandatory).
+The list is a dynamic HubSpot contacts list with ~120k members. We fetch fresh
+data every run to ensure the exclusion list is always live and up-to-date.
+
+The fetch pages every member's properties once (~25-30 min first run), then caches
+for the session. Subsequent runs use the cached copy.
 
 Read-only against HubSpot - never writes anything (HubSpot is read-only here).
 """
@@ -160,20 +161,10 @@ def _cache_age_hours() -> float | None:
 
 
 def load_exclusion_records(progress=None) -> tuple[list[dict], dict]:
-    """Returns (records_list, meta). Uses fresh cache if present; rebuilds only
-    when missing or older than TTL. Records contain email_domain, company_name,
-    company_domain, linkedin_url."""
-    age = _cache_age_hours()
-    if age is not None and age <= config.EXCLUSION_CACHE_TTL_HOURS:
-        data = json.loads(_CACHE_FILE.read_text())
-        records = data.get("records", [])
-        return records, {
-            "source": "cache",
-            "age_hours": round(age, 1),
-            "record_count": data.get("record_count", len(records)),
-            "built_at": data.get("built_at")
-        }
-    # Missing or stale -> rebuild (this is the slow path).
+    """Returns (records_list, meta). Always rebuilds fresh from HubSpot
+    to ensure the exclusion list is live and up-to-date.
+    Records contain email_domain, company_name, company_domain, linkedin_url."""
+    # Always rebuild fresh to ensure live data
     meta = refresh_cache(progress=progress)
     return meta["records"], {
         "source": "rebuilt",
