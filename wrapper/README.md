@@ -5,6 +5,10 @@ exclusion -> normalization -> Apollo enrichment -> HubSpot import) as an
 interactive, question-driven flow, so the whole team can run it without
 touching scripts directly.
 
+**New to the tool?** Start here:
+- **[QUICKSTART.md](./QUICKSTART.md)** — 5-min guide for team members (how to use the tool)
+- **[SETUP.md](./SETUP.md)** — Full deployment, config, and troubleshooting guide for devs
+
 ## v2 UI (SaaS sidebar)
 
 The frontend is a left-sidebar guided wizard with 9 fixed steps, each showing
