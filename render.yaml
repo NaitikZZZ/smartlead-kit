@@ -28,13 +28,15 @@ services:
     buildCommand: cd wrapper/frontend && npm install && npm run build
     staticPublishPath: wrapper/frontend/dist
     routes:
-      - path: /*
+      - path: /
         destination: /index.html
+      - path: /api/*
+        destination: https://abm-wrapper-api.onrender.com/api/:path
 
   - type: cron
     name: dnu-cache-refresh
     schedule: "0 2 * * *"
-    command: cd /opt/render/cache && python -m app.pipeline.hubspot_exclusion
+    startCommand: cd /opt/render/cache && python -m app.pipeline.hubspot_exclusion
     runtime: python
     rootDir: wrapper/backend
     buildCommand: pip install -r requirements.txt
