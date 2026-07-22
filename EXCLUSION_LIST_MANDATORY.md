@@ -28,24 +28,41 @@ This list contains ~120k existing clients and accounts to avoid outreach to.
 
 ## Configuration
 
-### How It Works
-The exclusion list is **always live** (fetched fresh every run):
-- **List ID:** `HUBSPOT_EXCLUSION_LIST_ID=28280` (hardcoded default in `config.py`)
-- **Refresh:** Always rebuilt from HubSpot when exclusion is enabled
-- **Speed:** First run of a session fetches ~120k contacts (~25-30 min). Cache is kept for the session.
+### Caching Strategy (Daily Refresh)
+```
+┌─────────────────────────────────────────┐
+│   Daily at 2 AM (off-hours)             │
+│   Cron job rebuilds cache               │
+│   (~25-30 min in background)            │
+└─────────────────────────────────────────┘
+           ↓
+┌─────────────────────────────────────────┐
+│   Cache: 24-hour TTL                    │
+│   (Stored in /opt/render/cache/)        │
+└─────────────────────────────────────────┘
+           ↓
+   ┌───────────────────┬───────────────────┐
+   │ Daytime run       │ Stale/missing cache
+   │ Cache <24h old    │ (rare)
+   │ → Use cache       │ → Rebuild fresh
+   │ → <100ms lookup   │ → ~25-30 min wait
+   └───────────────────┴───────────────────┘
+```
 
 ### Local Development
 ```bash
 # Exclusion is automatic when you choose it in the UI
 # List 28280 is hardcoded and cannot be overridden
+# Cache rebuilds when stale (manual: python -m app.pipeline.hubspot_exclusion)
 ```
 
 ### Production (Render)
-Environment variable in render.yaml:
+Cron job in render.yaml:
 ```yaml
-envVars:
-  - key: HUBSPOT_EXCLUSION_LIST_ID
-    value: "28280"
+- type: cron
+  name: dnu-cache-refresh
+  schedule: "0 2 * * *"         # Every day at 2 AM
+  startCommand: python -m app.pipeline.hubspot_exclusion
 ```
 
 ### Do NOT Override
@@ -74,18 +91,27 @@ Contacts are excluded if they match ANY of these fields from the DNU list:
 
 ## Verification
 
-### Check if Exclusion is Working
-The exclusion check runs automatically when you enable it in the UI. You'll see:
+### Check if Cache Exists & How Old
+```bash
+ls -lh wrapper/backend/cache/exclusion_domains_28280.json
+stat wrapper/backend/cache/exclusion_domains_28280.json | grep Modify
+```
+
+### Manual Refresh (if needed)
+```bash
+cd wrapper/backend
+python -m app.pipeline.hubspot_exclusion
+```
+
+### Check Cron Status (Render)
+View cron logs in Render dashboard → dnu-cache-refresh service.
+Runs daily at **2 AM UTC** — keeps cache fresh overnight.
+
+### In the UI
+When you enable exclusion, you'll see:
 - List of excluded contacts (with reasons)
 - Count of excluded vs. OK to reach out
 - Direct link to the HubSpot list: https://app-na2.hubspot.com/contacts/6512810/objectLists/28280/filters
-
-### Cache Location (for reference)
-```bash
-ls -lh wrapper/backend/cache/exclusion_domains_28280.json
-```
-
-The cache file is rebuilt fresh each time exclusion is used, ensuring live data.
 
 ---
 
@@ -123,9 +149,9 @@ Even if the CSV has their email/phone:
 ## Questions?
 
 - **"Can I use a different list?"** No. Portal ID `6512810`, List ID `28280` only.
-- **"What if I need to exclude someone else?"** Add them to the DNU list in HubSpot. The next exclusion check will pick them up (always fresh).
-- **"Will this slow down my runs?"** First exclusion check is ~25-30 min (fetching 120k contacts). Subsequent checks in the same session are faster (cached).
-- **"Is the list always current?"** Yes. Every exclusion check fetches fresh data from HubSpot, so you always get live updates.
+- **"What if I need to exclude someone else?"** Add them to the DNU list in HubSpot. The cron job picks them up at 2 AM. Daytime runs get the update by tomorrow.
+- **"Will this slow down my runs?"** No. Daytime runs use cached data (<100ms). Only the 2 AM cron takes ~25-30 min (off-hours).
+- **"What if the cron fails?"** Cache stays valid for 24h. If you run exclusion after 24h without a successful cron, it rebuilds fresh (~25-30 min).
 
 ---
 

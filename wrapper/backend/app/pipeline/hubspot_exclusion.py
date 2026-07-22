@@ -1,11 +1,12 @@
 """Exclusion against the HubSpot "ABM EXCLSIONS - DNU" contacts list (28280).
 
 When the user chooses to run exclusion checks, they MUST use this list (mandatory).
-The list is a dynamic HubSpot contacts list with ~120k members. We fetch fresh
-data every run to ensure the exclusion list is always live and up-to-date.
+The list is a dynamic HubSpot contacts list with ~120k members (~25-30 min to fetch).
 
-The fetch pages every member's properties once (~25-30 min first run), then caches
-for the session. Subsequent runs use the cached copy.
+Caching strategy:
+- Daily cron at 2 AM (off-hours) refreshes the cache
+- Daytime runs use the cached version if <24h old (instant lookup)
+- If cache is missing/stale, a run rebuilds it fresh (~25-30 min, slow path)
 
 Read-only against HubSpot - never writes anything (HubSpot is read-only here).
 """
@@ -161,10 +162,23 @@ def _cache_age_hours() -> float | None:
 
 
 def load_exclusion_records(progress=None) -> tuple[list[dict], dict]:
-    """Returns (records_list, meta). Always rebuilds fresh from HubSpot
-    to ensure the exclusion list is live and up-to-date.
-    Records contain email_domain, company_name, company_domain, linkedin_url."""
-    # Always rebuild fresh to ensure live data
+    """Returns (records_list, meta). Uses cached version if fresh (<24h old).
+    If cache is missing/stale, rebuilds from HubSpot.
+
+    Daily cron at 2 AM refreshes the cache during off-hours, so daytime runs
+    use the fresh cached copy (instant lookup). Records contain email_domain,
+    company_name, company_domain, linkedin_url."""
+    age = _cache_age_hours()
+    if age is not None and age <= config.EXCLUSION_CACHE_TTL_HOURS:
+        data = json.loads(_CACHE_FILE.read_text())
+        records = data.get("records", [])
+        return records, {
+            "source": "cache",
+            "age_hours": round(age, 1),
+            "record_count": data.get("record_count", len(records)),
+            "built_at": data.get("built_at")
+        }
+    # Missing or stale -> rebuild (slow path, ~25-30 min)
     meta = refresh_cache(progress=progress)
     return meta["records"], {
         "source": "rebuilt",

@@ -32,6 +32,9 @@ HEYREACH_API_KEY = os.environ.get("HEYREACH_API_KEY", "")
 #
 # See EXCLUSION_LIST_MANDATORY.md for full documentation.
 HUBSPOT_EXCLUSION_LIST_ID = os.environ.get("HUBSPOT_EXCLUSION_LIST_ID", "28280")
+# Cache TTL: keeps local copy fresh within 24h. Daily cron at 2 AM rebuilds it
+# during off-hours, so daytime runs use cached version (instant).
+EXCLUSION_CACHE_TTL_HOURS = int(os.environ.get("EXCLUSION_CACHE_TTL_HOURS", "24"))
 # Association dropdowns (Project/Partner/Event) are cached from HubSpot and
 # kept fresh by crons (projects/events every 30 min, partners daily 6am). This
 # TTL is only the inline-refresh fallback for when a cron was missed (machine
