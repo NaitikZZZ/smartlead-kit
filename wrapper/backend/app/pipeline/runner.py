@@ -385,7 +385,7 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
             raise ValueError(f"Unknown or unsupported input_source: {input_source!r}")
 
         input_count = len(df)
-        company_col = company_col or _guess_col(df, ["Company", "Company Name", "company", "Account Name"])
+        company_col = company_col or _guess_col(df, ["Company", "Company Name", "company", "Account Name", "Organization", "organization"])
         if not company_col:
             raise ValueError(f"Could not find a company-name column. Columns present: {list(df.columns)}")
         region_col = _guess_col(df, ["Region", "Country", "region", "country"])
