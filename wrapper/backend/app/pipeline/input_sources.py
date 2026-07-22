@@ -25,11 +25,47 @@ HUBSPOT_PROJECT_PROPERTIES = [
 def read_csv_bytes(data: bytes, filename: str) -> pd.DataFrame:
     if filename.lower().endswith((".xlsx", ".xls")):
         return pd.read_excel(io.BytesIO(data))
+
+    # Auto-detect header row (skip blank rows, find row with column names)
+    common_headers = {
+        "company", "company name", "account", "account name", "organization",
+        "email", "first name", "last name", "name", "title", "phone",
+        "domain", "website", "industry", "country", "city", "state"
+    }
+
     for enc in ("utf-8-sig", "utf-8", "latin-1"):
         try:
-            return pd.read_csv(io.BytesIO(data), encoding=enc)
+            # First, read all rows to find the header row
+            df_raw = pd.read_csv(io.BytesIO(data), encoding=enc, header=None)
+
+            # Find row with most header-like column names
+            header_row = 0
+            max_matches = 0
+
+            for idx, row in df_raw.iterrows():
+                # Skip empty rows
+                if row.isna().all():
+                    continue
+
+                # Count how many column names match common headers
+                row_str = " ".join(str(x).lower().strip() for x in row if pd.notna(x))
+                matches = sum(1 for header in common_headers if header in row_str)
+
+                if matches > max_matches:
+                    max_matches = matches
+                    header_row = idx
+
+            # Re-read with detected header row
+            df = pd.read_csv(io.BytesIO(data), encoding=enc, skiprows=header_row)
+
+            # Clean up column names (strip whitespace, handle "Unnamed" columns)
+            df.columns = [str(col).strip() if "Unnamed" not in str(col) else col for col in df.columns]
+
+            return df
+
         except UnicodeDecodeError:
             continue
+
     raise ValueError(f"Could not decode {filename} as CSV (tried utf-8, latin-1)")
 
 
