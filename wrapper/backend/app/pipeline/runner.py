@@ -371,15 +371,23 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
                             + (f" (the record only has a campaign copy doc: {copy})" if copy else "")
                             + ". Upload the account spreadsheet (CSV/Excel) to continue."
                         )
-                    # STEP 1: Ask for campaign idea FIRST
-                    _update(run_id, message="Analyzing campaign idea")
-                    campaign_idea = ask(
-                        run_id, "campaign_idea", "text",
-                        "Describe your campaign idea:\n(e.g., 'Target HR leaders at mid-market SaaS companies in US & Europe for employee recognition program')",
-                        default="", context={"step": "source"},
-                    )
-                    if not campaign_idea.strip():
-                        raise ValueError("No campaign idea provided.")
+                    # STEP 1: Check for campaign concept in HubSpot project, otherwise ask user
+                    _update(run_id, message="Checking campaign concept")
+                    campaign_idea = project_meta.get("campaign_concept", "").strip()
+
+                    if campaign_idea:
+                        # Use existing campaign concept from HubSpot
+                        _update(run_id, message=f"Using campaign concept from HubSpot: {campaign_idea[:60]}...")
+                    else:
+                        # Ask user for campaign idea
+                        _update(run_id, message="No campaign concept in HubSpot - asking user")
+                        campaign_idea = ask(
+                            run_id, "campaign_idea", "text",
+                            "No campaign concept found in HubSpot project.\n\nDescribe your campaign idea:\n(e.g., 'Target HR leaders at mid-market SaaS companies in US & Europe for employee recognition program')",
+                            default="", context={"step": "source"},
+                        )
+                        if not campaign_idea.strip():
+                            raise ValueError("No campaign idea provided.")
 
                     # STEP 2: Load use cases for Claude to extract from
                     _update(run_id, message="Loading use case options")
