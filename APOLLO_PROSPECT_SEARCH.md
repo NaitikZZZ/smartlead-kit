@@ -17,36 +17,36 @@ Company names to search: Acme Corp, TechCo Inc, StartUp Labs
 ```
 System resolves these to domains (via Apollo).
 
-### 3. Filter by Region (Optional)
-Default from HubSpot project, or override:
-```
-Filter by region? [default: GLOBAL]
-Options: US, UK, India, Europe, APAC, Canada, Australia, Global
-```
-- **Multi-select:** Choose multiple regions
-- **Default:** Blank = Global (no filter)
+### 3. Describe Your ICP (Ideal Customer Profile) ✨ NEW
+Instead of asking for individual filters, describe your ideal customer in natural language:
 
-### 4. Filter by Employee Size (Optional)
-Default from HubSpot project, or override:
 ```
-Employee size filter: 1-10, 11-50, 51-200, 201-500, 501-1000, 1001+
-```
-- **Default:** Leave blank for all sizes
+What's your Ideal Customer Profile (ICP)?
 
-### 5. Select Job Titles (Optional)
-Personas to search for. Defaults to:
-- Chief Human Resources Officer
-- VP of HR
-- Head of People/Engagement/Rewards
-- HR Business Partner
-- etc.
-
-Or override with your own:
-```
-Job titles to target: VP Sales, CMO, Head of Marketing, CRO
+Example input:
+"VP or Head of HR at mid-size tech companies (100-500 employees) 
+in the US and Europe. Should be on LinkedIn with public profiles.
+Focus on VC-backed startups scaling to Series B/C."
 ```
 
-### 6. Apollo Searches Companies
+Claude automatically extracts:
+- **Job titles:** VP HR, Head of People, CHRO, etc.
+- **Regions:** US, Europe
+- **Company size:** 100-500 employees
+- **Industry hints:** (used for manual filtering)
+
+### 3b. Confirm & Override (Optional)
+Claude shows you the extracted filters:
+```
+Job Titles: VP of HR, Head of People, Chief People Officer
+Regions: US, Europe
+Employee Size: 100-500
+```
+
+- **Proceed:** Use these filters
+- **Override:** Manually adjust regions, titles, or size
+
+### 4. Apollo Searches Companies
 System:
 1. Resolves company names to domains
 2. Searches Apollo for each domain with your filters
@@ -56,16 +56,23 @@ System:
 
 ## Example Scenarios
 
-### Scenario A: HR/People Leaders in US Mid-Market
+### Scenario A: HR/People Leaders (ICP-based) ✨ NEW
 ```
 Companies: Acme Corp, TechCo Inc, StartUp Labs
-Region: US
-Employee Size: 51-500
-Job Titles: [blank = default HR list]
-```
-→ Finds VP HR, Head of People, etc. in US companies with 51-500 employees
 
-### Scenario B: Sales Leaders in Multiple Regions
+ICP Description:
+"VP or Head of HR at mid-market US tech companies (100-500 employees).
+Should be on LinkedIn. Open to recognizing/rewarding employees."
+
+Claude extracts:
+  → Job Titles: VP of HR, Head of People, Chief People Officer
+  → Regions: US
+  → Employee Size: 100-500
+
+Result: Finds HR leaders matching all criteria
+```
+
+### Scenario B: Sales Leaders (Manual filters)
 ```
 Companies: GlobalCorp, InternationalCo
 Region: US, Europe, India
@@ -82,6 +89,78 @@ Employee Size: 200+
 Job Titles: VP Engineering, CTO, Head of Infrastructure
 ```
 → Finds engineering leaders worldwide, any size
+
+---
+
+## ICP Parsing (Claude-Powered) ✨ NEW
+
+When you describe your ICP in natural language, Claude:
+
+1. **Reads your description**
+   ```
+   "VP or Head of HR at mid-size B2B SaaS companies (100-500 employees)
+    in US and UK. Focus on companies in growth/scaling phase."
+   ```
+
+2. **Extracts structured filters**
+   ```json
+   {
+     "job_titles": ["VP of HR", "Head of People", "Chief People Officer"],
+     "regions": ["US", "UK"],
+     "employee_size": "100-500",
+     "reasoning": "Extracted from ICP description"
+   }
+   ```
+
+3. **Shows you what was extracted**
+   ```
+   Claude found:
+   Job Titles: VP of HR, Head of People, Chief People Officer
+   Regions: US, UK
+   Employee Size: 100-500
+   
+   Proceed with these filters?
+   ```
+
+4. **Lets you confirm or override**
+   - ✅ Proceed: Use extracted filters
+   - ❌ Override: Manually adjust regions, titles, or size
+
+### What Claude Understands in ICP
+
+The ICP parser can extract:
+- **Job titles:** VP, Head of, Director, Manager, C-level
+- **Regions:** US, UK, Europe, APAC, India, Canada, Australia
+- **Company size:** 1-10, 11-50, 51-200, 201-500, 501-1000, 1001+
+- **Growth stage:** Early-stage, Series A, Series B, Growth-stage, Enterprise
+- **Industry:** Tech, B2B, SaaS, Healthcare, Finance, etc.
+- **Characteristics:** VC-backed, profitable, IPO candidates, etc.
+
+### Example ICP Descriptions
+
+**Example 1: HR/Recognition**
+```
+"VP or Head of HR at mid-market SaaS companies (100-500 employees) 
+in US and Europe. Companies scaling and need employee recognition solutions."
+
+→ Extracts: VP/Head of HR, US/Europe, 100-500 employees
+```
+
+**Example 2: Sales/Revenue**
+```
+"CRO or VP Sales at enterprise software companies ($100M+ ARR) 
+in North America. Need sales commission automation."
+
+→ Extracts: CRO/VP Sales, US/Canada, 500+ employees
+```
+
+**Example 3: DevOps/Infrastructure**
+```
+"VP Engineering or Head of Infrastructure at fast-growing Series B/C 
+tech startups in US with 50-200 employees. Using modern cloud stack."
+
+→ Extracts: VP/Head Engineering, US, 50-200 employees
+```
 
 ---
 
