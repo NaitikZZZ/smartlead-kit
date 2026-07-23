@@ -521,6 +521,125 @@ If uncertain, pick the most likely match. Return ONLY JSON, no markdown."""
                     df = candidates_df.copy()
                     company_col = "Company"
                     input_count = len(df)
+
+                    # STEP 7: Ask if user wants to add more prospects
+                    total_found = search_stats["candidates_found"]
+                    add_more = True
+                    while add_more:
+                        add_more_answer = ask(
+                            run_id, "apollo_add_more_prospects", "yes_no",
+                            f"Found {total_found} prospect(s) so far.\n\nAdd more prospects from other companies or with different filters?",
+                            default="no", context={"step": "source", "total_found": total_found},
+                        )
+
+                        if not _truthy(add_more_answer):
+                            add_more = False
+                        else:
+                            # Ask for additional campaign idea or companies
+                            add_more_choice = ask(
+                                run_id, "apollo_add_more_choice", "choice",
+                                "How would you like to add more prospects?",
+                                options=["Search different companies with same filters",
+                                         "Search same companies with different filters"],
+                                context={"step": "source"},
+                            )
+
+                            if add_more_choice == "Search different companies with same filters":
+                                # Keep same filters, ask for more companies
+                                more_companies_input = ask(
+                                    run_id, "apollo_more_company_names", "text",
+                                    "Additional company names (comma-separated):\ne.g. NewCo, AnotherCorp, TechStartup",
+                                    default="", context={"step": "source"},
+                                )
+                                if not more_companies_input.strip():
+                                    _update(run_id, message="No additional companies provided")
+                                    continue
+
+                                more_company_names = [c.strip() for c in str(more_companies_input).split(",") if c.strip()]
+
+                                # Resolve domains
+                                _update(run_id, message="Resolving domains for additional companies")
+                                more_domains_df = pd.DataFrame([{"Company": c} for c in more_company_names])
+                                more_domains_df, _ = domain_resolution.resolve_domains(more_domains_df)
+
+                                if "Domain" not in more_domains_df.columns or more_domains_df["Domain"].isna().all():
+                                    _update(run_id, message="Could not resolve domains for additional companies")
+                                    continue
+
+                                # Run Apollo search with same filters
+                                _update(run_id, message=f"Searching Apollo for {len(more_domains_df)} additional companies")
+                                more_candidates_df, more_search_stats = apollo_enrich.search_candidates(
+                                    more_domains_df, "Company", "Domain",
+                                    person_locations=person_locations, persona_titles=persona_titles,
+                                    max_per_company=config.MAX_CONTACTS_PER_COMPANY_DEFAULT)
+
+                                # Combine results
+                                df = pd.concat([df, more_candidates_df], ignore_index=True)
+                                total_found = len(df)
+                                stats["apollo_search"]["candidates_found"] = total_found
+                                stats["apollo_company_count"] = stats["apollo_company_count"] + len(more_company_names)
+                                _update(run_id, stats=dict(stats))
+
+                            else:  # Different filters, same companies
+                                # Ask for new campaign idea with same companies
+                                new_campaign_idea = ask(
+                                    run_id, "apollo_additional_campaign_idea", "text",
+                                    "New campaign idea for same companies:\n(e.g., 'Target different departments - Finance instead of HR')",
+                                    default="", context={"step": "source"},
+                                )
+                                if not new_campaign_idea.strip():
+                                    _update(run_id, message="No new campaign idea provided")
+                                    continue
+
+                                # Use Claude to extract new filters from the idea
+                                _update(run_id, message="Extracting new filters from campaign idea")
+                                try:
+                                    new_extract_prompt = f"""Analyze this campaign idea and extract job titles and regions.
+
+Campaign Idea:
+{new_campaign_idea}
+
+Available regions: US, UK, India, Europe, APAC, Canada, Australia, Global
+
+Return ONLY valid JSON:
+{{
+  "job_titles": ["title1", "title2", ...],
+  "regions": ["US", "Europe", ...],
+  "reasoning": "brief explanation"
+}}
+
+If not specified, use previous filters. Return ONLY JSON, no markdown."""
+
+                                    extract_response = claude.messages.create(
+                                        model="claude-opus-4-1",
+                                        max_tokens=300,
+                                        messages=[{"role": "user", "content": new_extract_prompt}]
+                                    )
+                                    extract_json = extract_response.content[0].text.strip()
+                                    if extract_json.startswith("```"):
+                                        extract_json = extract_json.split("```")[1].lstrip("json\n")
+                                    new_extracted = _json.loads(extract_json)
+                                    new_persona_titles = new_extracted.get("job_titles") or persona_titles
+                                    new_person_locations = new_extracted.get("regions") or person_locations
+                                except Exception as e:
+                                    _update(run_id, message=f"Failed to extract new filters: {e}, using previous ones")
+                                    new_persona_titles = persona_titles
+                                    new_person_locations = person_locations
+
+                                # Run Apollo search with same companies but new filters
+                                _update(run_id, message=f"Searching Apollo with new filters for {len(domains_df)} companies")
+                                new_candidates_df, new_search_stats = apollo_enrich.search_candidates(
+                                    domains_df, "Company", "Domain",
+                                    person_locations=new_person_locations, persona_titles=new_persona_titles,
+                                    max_per_company=config.MAX_CONTACTS_PER_COMPANY_DEFAULT)
+
+                                # Combine results (remove duplicates by email)
+                                df = pd.concat([df, new_candidates_df], ignore_index=True)
+                                df = df.drop_duplicates(subset=["email"], keep="first") if "email" in df.columns else df
+                                total_found = len(df)
+                                stats["apollo_search"]["candidates_found"] = total_found
+                                _update(run_id, stats=dict(stats))
+
                     _update(run_id, stats=dict(stats))
                     continue_to_reveal = True  # Skip domain resolution step
                 else:
