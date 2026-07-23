@@ -640,10 +640,17 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
                 )
                 persona_titles = [t.strip() for t in str(persona_answer).split(",") if t.strip()] or None
 
+                region_answer = ask(
+                    run_id, "person_locations", "text",
+                    "Filter by region? (comma-separated: US, UK, India, Europe, APAC, Global, etc.) Blank = Global",
+                    default="", context={"step": "discovery"},
+                )
+                person_locations = [r.strip() for r in str(region_answer).split(",") if r.strip()] or None
+
                 _update(run_id, stage=RunStage.enriching, message=f"Searching Apollo at {len(ok_df)} accounts")
                 _step(stats, "discovery", "People Discovery", "running")
                 candidates_df, search_stats = apollo_enrich.search_candidates(
-                    ok_df, resolved_company_col, "Domain", persona_titles=persona_titles, max_per_company=max_per_company)
+                    ok_df, resolved_company_col, "Domain", person_locations=person_locations, persona_titles=persona_titles, max_per_company=max_per_company)
                 stats["apollo_search"] = search_stats
                 _step(stats, "discovery", "People Discovery", "done",
                       f"Searched {search_stats['companies_searched']} account(s), found {search_stats['candidates_found']} candidate(s). Search is free.",
