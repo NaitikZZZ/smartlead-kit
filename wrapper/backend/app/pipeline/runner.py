@@ -354,11 +354,91 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
                 kind = project_meta.get("list_link_kind")
                 copy = project_meta.get("campaign_copy_link")
                 if not link:
-                    raise ValueError(
-                        f"Project '{project_meta.get('name', '?')}' has no target-account spreadsheet linked"
-                        + (f" (the record only has a campaign copy doc: {copy})" if copy else "")
-                        + ". Upload the account spreadsheet (CSV/Excel) to continue."
+                    # No linked list - ask if they want to use Apollo to find prospects
+                    use_apollo = ask(
+                        run_id, "use_apollo_search", "yes_no",
+                        f"Project '{project_meta.get('name', '?')}' has no target account list linked. "
+                        "Use Apollo to find prospects based on HubSpot properties (Region, Employee Size, Job Titles)? "
+                        "(Or upload a CSV/Excel list manually.)",
+                        default="yes", context={"step": "source"},
                     )
+                    if not _truthy(use_apollo):
+                        raise ValueError(
+                            f"Project '{project_meta.get('name', '?')}' has no target-account spreadsheet linked"
+                            + (f" (the record only has a campaign copy doc: {copy})" if copy else "")
+                            + ". Upload the account spreadsheet (CSV/Excel) to continue."
+                        )
+                    # User wants Apollo search - ask for company names and search filters
+                    _update(run_id, message="Preparing Apollo search")
+                    companies_input = ask(
+                        run_id, "apollo_company_names", "text",
+                        "Company names to search (comma-separated): e.g. Acme Corp, TechCo Inc, StartUp Labs",
+                        default="", context={"step": "source"},
+                    )
+                    if not companies_input.strip():
+                        raise ValueError("No company names provided for Apollo search.")
+
+                    company_names = [c.strip() for c in str(companies_input).split(",") if c.strip()]
+
+                    # Ask for region (default from HubSpot project)
+                    default_region = project_meta.get("region", "").strip() or "Global"
+                    region_answer = ask(
+                        run_id, "apollo_region", "multi_choice",
+                        f"Filter by region? (default: {default_region})",
+                        options=["US", "UK", "India", "Europe", "APAC", "Canada", "Australia", "Global"],
+                        default=default_region, context={"step": "source"},
+                    )
+                    person_locations = [r.strip() for r in str(region_answer).split(",") if r.strip()] or None
+
+                    # Ask for employee size (default from HubSpot project)
+                    default_emp_size = project_meta.get("employee_size", "").strip() or "All sizes"
+                    employee_size_answer = ask(
+                        run_id, "apollo_employee_size", "text",
+                        f"Employee size filter (e.g. 1-10, 11-50, 51-200, 201-500, 501-1000, 1001+, or leave blank): [default: {default_emp_size}]",
+                        default=default_emp_size, context={"step": "source"},
+                    )
+                    employee_size_filter = str(employee_size_answer).strip() if employee_size_answer else None
+
+                    # Ask for job titles/personas (default from HubSpot ICP)
+                    default_icp = project_meta.get("icp", "").strip() or ""
+                    personas_answer = ask(
+                        run_id, "apollo_personas", "text",
+                        f"Job titles to target (comma-separated) [default HR/People-leader list]: {default_icp if default_icp else '(will use standard list)'}",
+                        default="", context={"step": "source"},
+                    )
+                    persona_titles = [t.strip() for t in str(personas_answer).split(",") if t.strip()] or None
+
+                    # Resolve company names to domains
+                    _update(run_id, message="Resolving company domains for Apollo search")
+                    domains_df = pd.DataFrame([{"Company": c} for c in company_names])
+                    domains_df, domain_stats = domain_resolution.resolve_domains(domains_df)
+                    resolved_company_col = "Company"
+                    domain_col = "Domain"
+
+                    if "Domain" not in domains_df.columns or domains_df["Domain"].isna().all():
+                        raise ValueError(f"Could not resolve domains for companies: {', '.join(company_names)}")
+
+                    # Run Apollo search
+                    _update(run_id, stage=RunStage.enriching, message=f"Searching Apollo for {len(domains_df)} companies")
+                    _step(stats, "discovery", "People Discovery (Apollo)", "running")
+                    candidates_df, search_stats = apollo_enrich.search_candidates(
+                        domains_df, resolved_company_col, domain_col,
+                        person_locations=person_locations, persona_titles=persona_titles,
+                        max_per_company=config.MAX_CONTACTS_PER_COMPANY_DEFAULT)
+
+                    stats["apollo_search"] = search_stats
+                    stats["apollo_company_count"] = len(company_names)
+                    _step(stats, "discovery", "People Discovery (Apollo)", "done",
+                          f"Searched {search_stats['companies_searched']} company/companies, found {search_stats['candidates_found']} candidate(s).",
+                          seconds=estimates.estimate_seconds("people_discovery", len(company_names)))
+
+                    df = candidates_df.copy()
+                    company_col = "Company"
+                    input_count = len(df)
+                    _update(run_id, stats=dict(stats))
+                    continue_to_reveal = True  # Skip domain resolution step
+                else:
+                    continue_to_reveal = False
                 if kind in ("document", "presentation"):
                     # A doc is campaign COPY, not data - don't enrich it.
                     raise ValueError(
