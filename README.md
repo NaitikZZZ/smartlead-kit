@@ -1,5 +1,14 @@
 # 🚀 AI Cold Email Campaign Kit — **Smartlead × Xoxoday Edition**
 
+## 🌐 Live Demo
+
+**Access the app here:**
+```
+https://photos-cabin-manufacturer-allowed.trycloudflare.com
+```
+
+---
+
 > A Claude-powered GTM starter kit that scores companies, writes personalized sequences, and **auto-creates the full campaign in Smartlead via API** — campaign, sequence steps, A/B variants, schedule, sending inboxes, and uploaded prospects, all from natural-language prompts.
 >
 > 📦 **Reference product: [Xoxoday](https://www.xoxoday.com/)** — the scoring rubric and email frameworks are pre-tuned for Xoxoday's suite: **Empuls** (employee R&R + engagement), **Plum** (rewards/incentives API, 10M+ catalog across 175+ countries), **Compass** (sales commission automation), and **Loyalife** (customer loyalty). Swap the product voice in `copy-frameworks.md` if you're pitching a different SKU.
