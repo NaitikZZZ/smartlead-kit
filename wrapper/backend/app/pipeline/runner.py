@@ -641,8 +641,9 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
                 persona_titles = [t.strip() for t in str(persona_answer).split(",") if t.strip()] or None
 
                 region_answer = ask(
-                    run_id, "person_locations", "text",
-                    "Filter by region? (comma-separated: US, UK, India, Europe, APAC, Global, etc.) Blank = Global",
+                    run_id, "person_locations", "multi_choice",
+                    "Filter by region? (select all that apply, or leave blank for Global)",
+                    options=["US", "UK", "India", "Europe", "APAC", "Canada", "Australia", "Global"],
                     default="", context={"step": "discovery"},
                 )
                 person_locations = [r.strip() for r in str(region_answer).split(",") if r.strip()] or None

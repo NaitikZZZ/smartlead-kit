@@ -6,6 +6,9 @@ export default function QuestionCard({
   runId, question, onAnswered,
 }: { runId: string; question: PendingQuestion; onAnswered: () => void }) {
   const [text, setText] = useState(question.default ?? "");
+  const [selected, setSelected] = useState<string[]>(
+    question.default ? String(question.default).split(",").map(s => s.trim()) : []
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,6 +44,36 @@ export default function QuestionCard({
               {opt}
             </button>
           ))}
+        </div>
+      )}
+
+      {question.type === "multi_choice" && question.options && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {question.options.map((opt) => (
+              <button
+                key={opt}
+                className={selected.includes(opt) ? "pill pill-selected" : "pill"}
+                disabled={submitting}
+                onClick={() => {
+                  setSelected(
+                    selected.includes(opt)
+                      ? selected.filter(s => s !== opt)
+                      : [...selected, opt]
+                  );
+                }}
+              >
+                {selected.includes(opt) ? "✓ " : ""}{opt}
+              </button>
+            ))}
+          </div>
+          <button
+            className="btn-primary"
+            disabled={submitting}
+            onClick={() => submit(selected.join(", "))}
+          >
+            {submitting ? "Submitting..." : "Continue"}
+          </button>
         </div>
       )}
 
