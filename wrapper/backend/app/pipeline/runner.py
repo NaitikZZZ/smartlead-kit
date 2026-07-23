@@ -439,7 +439,7 @@ If uncertain, pick the most likely match. Return ONLY JSON, no markdown."""
                             product = extracted.get("product", "").strip()
                             use_case = extracted.get("use_case", "").strip()
                         except Exception as e:
-                            # Fallback: ask user to select
+                            # Fallback: ask user to select product & use case, then map to ICP
                             _update(run_id, message=f"Campaign idea parsing failed: {e}")
                             product_list = sorted(list(use_case_options.keys()))
                             product = ask(
@@ -452,9 +452,25 @@ If uncertain, pick the most likely match. Return ONLY JSON, no markdown."""
                                 f"Which use case?",
                                 options=use_case_options.get(product, []), context={"step": "source"},
                             )
-                            persona_titles = None
-                            person_locations = None
-                            employee_size_filter = None
+
+                            # Map to ICP even in fallback path
+                            icp_mapping = icp_mapper.map_use_case_to_icp(product, use_case)
+                            if not icp_mapping:
+                                raise ValueError(f"Could not map: {product} → {use_case}")
+
+                            persona_titles = icp_mapping.get("job_titles") or None
+                            person_locations = icp_mapping.get("regions") or None
+                            employee_size_filter = icp_mapping.get("company_size") or None
+
+                            # Ask for regions even in fallback path
+                            region_answer = ask(
+                                run_id, "apollo_region_fallback", "multi_choice",
+                                f"Select target regions for {product} - {use_case}:",
+                                options=["US", "UK", "India", "Europe", "APAC", "Canada", "Australia", "Global"],
+                                default=", ".join(person_locations) if person_locations else "Global",
+                                context={"step": "source"},
+                            )
+                            person_locations = [r.strip() for r in str(region_answer).split(",") if r.strip()] or None
                         else:
                             # STEP 4: Map extracted product & use case to ICP
                             icp_mapping = icp_mapper.map_use_case_to_icp(product, use_case)
