@@ -1,7 +1,6 @@
 .env
 *.pyc
 __pycache__/
-dashboard/
 .DS_Store
 outputs/
 
