@@ -27,6 +27,7 @@ from . import (
     input_sources, normalize, domain_resolution, apollo_enrich,
     outputs, github_pr, web_completeness, naming, association_resolve,
     hubspot_lists, hubspot_import, estimates, hubspot_exclusion, heyreach, web_scrape,
+    icp_mapper,
 )
 
 JOBS: dict[str, dict] = {}
@@ -382,63 +383,16 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
 
                     company_names = [c.strip() for c in str(companies_input).split(",") if c.strip()]
 
-                    # Ask for ICP (Ideal Customer Profile) - default from HubSpot project
-                    default_icp = project_meta.get("icp", "").strip() or ""
-                    icp_prompt = "What's your Ideal Customer Profile (ICP)?"
-                    if default_icp:
-                        icp_prompt += f"\n[Current in HubSpot: {default_icp}]"
-                    icp_prompt += "\nDescribe in natural language: titles, regions, company size, industry, etc."
+                    # Ask for product/use case selection (ICP mapping)
+                    _update(run_id, message="Loading use case ICPs")
+                    use_case_options = icp_mapper.get_use_case_options()
 
-                    icp_answer = ask(
-                        run_id, "apollo_icp", "text",
-                        icp_prompt,
-                        default=default_icp, context={"step": "source"},
-                    )
-                    icp_description = str(icp_answer).strip()
-
-                    if not icp_description:
-                        raise ValueError("No ICP provided. Please describe your Ideal Customer Profile.")
-
-                    # Use Claude to parse ICP and extract structured filters
-                    _update(run_id, message="Analyzing ICP to extract search filters")
-                    claude = Anthropic()
-                    icp_parse_prompt = f"""Analyze this Ideal Customer Profile and extract Apollo search filters.
-
-ICP Description:
-{icp_description}
-
-Extract and return as JSON:
-{{
-  "job_titles": ["title1", "title2", ...],  // Job titles / personas to search for
-  "regions": ["US", "UK", "Europe", ...],   // Regions (US, UK, India, Europe, APAC, Canada, Australia, Global)
-  "employee_size": "51-200",                 // Company size range or leave blank
-  "reasoning": "brief explanation"
-}}
-
-If not mentioned in the ICP:
-- job_titles: default to HR/People-leader list ["VP of HR", "Head of People", "Chief People Officer"]
-- regions: default to ["Global"]
-- employee_size: leave blank (no filter)
-
-Return ONLY valid JSON, no markdown or extra text."""
-
-                    try:
-                        icp_response = claude.messages.create(
-                            model="claude-opus-4-1",
-                            max_tokens=500,
-                            messages=[{"role": "user", "content": icp_parse_prompt}]
-                        )
-                        icp_json = icp_response.content[0].text.strip()
-                        # Handle markdown code blocks
-                        if icp_json.startswith("```"):
-                            icp_json = icp_json.split("```")[1].lstrip("json\n")
-                        icp_parsed = _json.loads(icp_json)
-                    except Exception as e:
-                        _update(run_id, message=f"ICP parsing failed: {e}")
-                        # Fallback: ask user directly
+                    if not use_case_options:
+                        # Fallback: ask for manual filters if ICP file not found
+                        _update(run_id, message="ICP file not found - using manual mode")
                         region_answer = ask(
                             run_id, "apollo_region_manual", "multi_choice",
-                            "Claude parsing failed. Manually select region(s):",
+                            "Select region(s):",
                             options=["US", "UK", "India", "Europe", "APAC", "Canada", "Australia", "Global"],
                             default="Global", context={"step": "source"},
                         )
@@ -450,32 +404,62 @@ Return ONLY valid JSON, no markdown or extra text."""
                             default="", context={"step": "source"},
                         )
                         persona_titles = [t.strip() for t in str(personas_answer).split(",") if t.strip()] or None
+                        employee_size_filter = None
                     else:
-                        # Successfully parsed ICP
-                        person_locations = icp_parsed.get("regions") or None
-                        persona_titles = icp_parsed.get("job_titles") or None
-                        employee_size_filter = icp_parsed.get("employee_size") or None
+                        # Ask user to select product
+                        product_list = sorted(list(use_case_options.keys()))
+                        product_answer = ask(
+                            run_id, "apollo_product", "choice",
+                            "Which Xoxoday product?",
+                            options=product_list, context={"step": "source"},
+                        )
+                        product = str(product_answer).strip()
 
-                        # Confirm parsed values with user
-                        confirm_prompt = f"""Claude extracted from your ICP:
+                        # Ask user to select use case
+                        use_cases = use_case_options.get(product, [])
+                        use_case_answer = ask(
+                            run_id, "apollo_use_case", "choice",
+                            f"Which use case? (Product: {product})",
+                            options=use_cases, context={"step": "source", "product": product},
+                        )
+                        use_case = str(use_case_answer).strip()
 
-**Job Titles:** {', '.join(persona_titles) if persona_titles else '(standard HR list)'}
-**Regions:** {', '.join(person_locations) if person_locations else 'Global'}
-**Employee Size:** {employee_size_filter or 'Any'}
+                        # Map use case to ICP filters
+                        icp_mapping = icp_mapper.map_use_case_to_icp(product, use_case)
+
+                        if not icp_mapping:
+                            raise ValueError(f"Could not map use case: {product} → {use_case}")
+
+                        persona_titles = icp_mapping.get("job_titles") or None
+                        person_locations = icp_mapping.get("regions") or None
+                        employee_size_filter = icp_mapping.get("company_size") or None
+
+                        # Show mapping to user for confirmation
+                        mapping_display = f"""**Product:** {product}
+**Use Case:** {use_case}
+
+**Mapped to:**
+- Job Titles: {', '.join(persona_titles) if persona_titles else 'Standard list'}
+- Regions: {', '.join(person_locations) if person_locations else 'Global'}
+- Company Size: {employee_size_filter or 'Any'}
+
+Economic Buyer: {icp_mapping.get('economic_buyer')}
+Champion: {icp_mapping.get('champion')}
+Influencer/User: {icp_mapping.get('influencer')}
 
 Proceed with these filters?"""
 
                         confirm = ask(
-                            run_id, "icp_parsed_confirm", "yes_no",
-                            confirm_prompt,
-                            default="yes", context={"step": "source", "icp_parsed": icp_parsed},
+                            run_id, "icp_mapping_confirm", "yes_no",
+                            mapping_display,
+                            default="yes", context={"step": "source", "icp_mapping": icp_mapping},
                         )
 
                         if not _truthy(confirm):
-                            # User wants to override - ask manually
+                            # User wants to override manually
                             region_answer = ask(
                                 run_id, "apollo_region_override", "multi_choice",
-                                "Regions to override:",
+                                "Override regions:",
                                 options=["US", "UK", "India", "Europe", "APAC", "Canada", "Australia", "Global"],
                                 default=", ".join(person_locations) if person_locations else "Global",
                                 context={"step": "source"},
@@ -484,7 +468,7 @@ Proceed with these filters?"""
 
                             personas_answer = ask(
                                 run_id, "apollo_personas_override", "text",
-                                "Job titles to override (comma-separated):",
+                                "Override job titles (comma-separated):",
                                 default=", ".join(persona_titles) if persona_titles else "",
                                 context={"step": "source"},
                             )
@@ -492,7 +476,7 @@ Proceed with these filters?"""
 
                             emp_answer = ask(
                                 run_id, "apollo_empsize_override", "text",
-                                "Employee size to override (or leave blank):",
+                                "Override employee size (or leave blank):",
                                 default=employee_size_filter or "",
                                 context={"step": "source"},
                             )

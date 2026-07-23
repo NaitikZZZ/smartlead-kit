@@ -17,33 +17,41 @@ Company names to search: Acme Corp, TechCo Inc, StartUp Labs
 ```
 System resolves these to domains (via Apollo).
 
-### 3. Describe Your ICP (Ideal Customer Profile) ✨ NEW
-Instead of asking for individual filters, describe your ideal customer in natural language:
+### 3. Select Product & Use Case ✨ NEW (ICP Mapping)
+Instead of entering ICPs manually, select from predefined use cases:
 
+**Step 3a: Choose Product**
 ```
-What's your Ideal Customer Profile (ICP)?
-
-Example input:
-"VP or Head of HR at mid-size tech companies (100-500 employees) 
-in the US and Europe. Should be on LinkedIn with public profiles.
-Focus on VC-backed startups scaling to Series B/C."
-```
-
-Claude automatically extracts:
-- **Job titles:** VP HR, Head of People, CHRO, etc.
-- **Regions:** US, Europe
-- **Company size:** 100-500 employees
-- **Industry hints:** (used for manual filtering)
-
-### 3b. Confirm & Override (Optional)
-Claude shows you the extracted filters:
-```
-Job Titles: VP of HR, Head of People, Chief People Officer
-Regions: US, Europe
-Employee Size: 100-500
+Which Xoxoday product?
+- Empuls use cases
+- Loyalife use cases
+- Plum use cases
 ```
 
-- **Proceed:** Use these filters
+**Step 3b: Choose Use Case**
+```
+Which use case? (Product: Empuls use cases)
+- Total Rewards
+- Benefits & Spend
+- Engagement & Listening
+- Performance Management
+- [... etc]
+```
+
+### 3c: ICP Mapping (Automatic)
+System loads the use case and extracts:
+```
+Job Titles: VP HR, Head of People, CHRO, Benefits Manager
+Regions: US, Europe, India
+Economic Buyer: VP of HR / HR Head
+Champion: HRBP, Comp & Benefits Manager
+Influencer/User: Procurement Head, HR Admin
+
+Proceed with these filters?
+```
+
+### 3d: Confirm & Override (Optional)
+- **Proceed:** Use mapped filters
 - **Override:** Manually adjust regions, titles, or size
 
 ### 4. Apollo Searches Companies
@@ -56,45 +64,104 @@ System:
 
 ## Example Scenarios
 
-### Scenario A: HR/People Leaders (ICP-based) ✨ NEW
+### Scenario A: Empuls - Total Rewards ✨ NEW (ICP Mapping)
 ```
 Companies: Acme Corp, TechCo Inc, StartUp Labs
 
-ICP Description:
-"VP or Head of HR at mid-market US tech companies (100-500 employees).
-Should be on LinkedIn. Open to recognizing/rewarding employees."
+Product: Empuls use cases
+Use Case: Total Rewards
 
-Claude extracts:
-  → Job Titles: VP of HR, Head of People, Chief People Officer
-  → Regions: US
-  → Employee Size: 100-500
+System maps to:
+  → Job Titles: VP HR, HRBP, Comp & Benefits Manager
+  → Regions: Global (or filtered by use case)
+  → Economic Buyer: VP of HR, HR Head
+  → Champion: HRBP, Comp & Benefits Manager
 
-Result: Finds HR leaders matching all criteria
+Result: Finds HR leaders responsible for total rewards
 ```
 
-### Scenario B: Sales Leaders (Manual filters)
+### Scenario B: Plum - Market Research ✨ NEW (ICP Mapping)
 ```
-Companies: GlobalCorp, InternationalCo
-Region: US, Europe, India
-Employee Size: [blank = all sizes]
-Job Titles: VP Sales, CRO, Head of Revenue
-```
-→ Finds sales leaders across multiple regions
+Companies: SalesForce, HubSpot, Stripe
 
-### Scenario C: Engineering Leaders, Global
+Product: Plum use cases
+Use Case: Market Research
+
+System maps to:
+  → Job Titles: Chief Marketing Officer, VP Marketing, Head of Growth
+  → Regions: US, Europe, APAC
+  → Economic Buyer: CMO, VP Marketing
+  → Champion: Marketing Manager, Market Researcher
+
+Result: Finds marketing leaders interested in market research solutions
 ```
-Companies: TechCorp
-Region: [blank = Global]
-Employee Size: 200+
-Job Titles: VP Engineering, CTO, Head of Infrastructure
+
+### Scenario C: Loyalife - Consumer Loyalty ✨ NEW (ICP Mapping)
 ```
-→ Finds engineering leaders worldwide, any size
+Companies: Starbucks, AmericanAirlines, Sephora
+
+Product: Loyalife use cases
+Use Case: Consumer Loyalty
+
+System maps to:
+  → Job Titles: Chief Customer Officer, VP Customer Experience, Head of Loyalty
+  → Regions: US, Europe
+  → Economic Buyer: CCO, VP CX
+  → Champion: Loyalty Manager, CRM Manager
+
+Result: Finds customer experience leaders building loyalty programs
+```
 
 ---
 
-## ICP Parsing (Claude-Powered) ✨ NEW
+## ICP Mapping from Excel ✨ NEW (Predefined Use Cases)
 
-When you describe your ICP in natural language, Claude:
+Instead of parsing natural language, we load predefined ICPs from `reference/Use cases & ICP.xlsx`:
+
+### How It Works
+
+1. **Load Excel File**
+   File: `reference/Use cases & ICP.xlsx`
+   Sheets: Empuls use cases, Plum use cases, Loyalife use cases, etc.
+   
+2. **Extract ICP Data Per Use Case**
+   For each use case row:
+   ```
+   - Use Case: "Total Rewards"
+   - Economic Buyer: "VP of HR, HR Head"
+   - Champion: "HRBP, Comp & Benefits Manager"
+   - Influencer/User: "Procurement Head, HR Admin"
+   - Target Geographies: "US, Europe, India"
+   ```
+
+3. **Map to Apollo Filters**
+   ```json
+   {
+     "job_titles": ["VP of HR", "HR Head", "HRBP", "Comp & Benefits Manager"],
+     "regions": ["US", "Europe", "India"],
+     "economic_buyer": "VP of HR, HR Head",
+     "champion": "HRBP, Comp & Benefits Manager",
+     "influencer": "Procurement Head, HR Admin"
+   }
+   ```
+
+4. **Show to User**
+   User sees the mapped values and can confirm or override
+
+### Data Sources
+
+The Excel file captures:
+- **Economic Buyer:** Who has budget/decision authority
+- **Champion:** Who drives the initiative internally
+- **Influencer/User:** Who uses the product day-to-day
+- **Target Geographies:** Where the use case is relevant
+- **Use Case Family:** Category (e.g., "Total Rewards", "Benefits & Spend")
+
+---
+
+## ICP Parsing (Claude-Powered) - Legacy Fallback
+
+If the Excel file is not available, Claude fallback (for free-form ICP input):
 
 1. **Reads your description**
    ```
