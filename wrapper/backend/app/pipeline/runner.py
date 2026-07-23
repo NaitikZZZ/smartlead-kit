@@ -371,116 +371,128 @@ def _execute(run_id, run_dir: Path, input_source, csv_bytes, csv_filename, hubsp
                             + (f" (the record only has a campaign copy doc: {copy})" if copy else "")
                             + ". Upload the account spreadsheet (CSV/Excel) to continue."
                         )
-                    # User wants Apollo search - ask for company names and ICP
-                    _update(run_id, message="Preparing Apollo search")
-                    companies_input = ask(
-                        run_id, "apollo_company_names", "text",
-                        "Company names to search (comma-separated): e.g. Acme Corp, TechCo Inc, StartUp Labs",
+                    # STEP 1: Ask for campaign idea FIRST
+                    _update(run_id, message="Analyzing campaign idea")
+                    campaign_idea = ask(
+                        run_id, "campaign_idea", "text",
+                        "Describe your campaign idea:\n(e.g., 'Target HR leaders at mid-market SaaS companies in US & Europe for employee recognition program')",
                         default="", context={"step": "source"},
                     )
-                    if not companies_input.strip():
-                        raise ValueError("No company names provided for Apollo search.")
+                    if not campaign_idea.strip():
+                        raise ValueError("No campaign idea provided.")
 
-                    company_names = [c.strip() for c in str(companies_input).split(",") if c.strip()]
-
-                    # Ask for product/use case selection (ICP mapping)
-                    _update(run_id, message="Loading use case ICPs")
+                    # STEP 2: Load use cases for Claude to extract from
+                    _update(run_id, message="Loading use case options")
                     use_case_options = icp_mapper.get_use_case_options()
 
+                    # STEP 3: Use Claude to extract product & use case from campaign idea
                     if not use_case_options:
-                        # Fallback: ask for manual filters if ICP file not found
+                        # Fallback: ask user directly if ICP file not found
                         _update(run_id, message="ICP file not found - using manual mode")
-                        region_answer = ask(
-                            run_id, "apollo_region_manual", "multi_choice",
-                            "Select region(s):",
-                            options=["US", "UK", "India", "Europe", "APAC", "Canada", "Australia", "Global"],
-                            default="Global", context={"step": "source"},
-                        )
-                        person_locations = [r.strip() for r in str(region_answer).split(",") if r.strip()] or None
-
                         personas_answer = ask(
                             run_id, "apollo_personas_manual", "text",
                             "Job titles to target (comma-separated):",
                             default="", context={"step": "source"},
                         )
                         persona_titles = [t.strip() for t in str(personas_answer).split(",") if t.strip()] or None
+                        person_locations = None
                         employee_size_filter = None
                     else:
-                        # Ask user to select product
-                        product_list = sorted(list(use_case_options.keys()))
-                        product_answer = ask(
-                            run_id, "apollo_product", "choice",
-                            "Which Xoxoday product?",
-                            options=product_list, context={"step": "source"},
-                        )
-                        product = str(product_answer).strip()
+                        _update(run_id, message="Extracting product & use case from campaign idea")
+                        claude = Anthropic()
 
-                        # Ask user to select use case
-                        use_cases = use_case_options.get(product, [])
-                        use_case_answer = ask(
-                            run_id, "apollo_use_case", "choice",
-                            f"Which use case? (Product: {product})",
-                            options=use_cases, context={"step": "source", "product": product},
-                        )
-                        use_case = str(use_case_answer).strip()
+                        extract_prompt = f"""Analyze this campaign idea and extract the Xoxoday product and use case.
 
-                        # Map use case to ICP filters
-                        icp_mapping = icp_mapper.map_use_case_to_icp(product, use_case)
+Campaign Idea:
+{campaign_idea}
 
-                        if not icp_mapping:
-                            raise ValueError(f"Could not map use case: {product} → {use_case}")
+Available products and use cases:
+{_json.dumps({p: uc[:5] for p, uc in use_case_options.items()}, indent=2)}
 
-                        persona_titles = icp_mapping.get("job_titles") or None
-                        person_locations = icp_mapping.get("regions") or None
-                        employee_size_filter = icp_mapping.get("company_size") or None
+Return ONLY valid JSON:
+{{
+  "product": "Empuls use cases",
+  "use_case": "Engagement & Listening",
+  "reasoning": "brief explanation"
+}}
 
-                        # Show mapping to user for confirmation
-                        mapping_display = f"""**Product:** {product}
-**Use Case:** {use_case}
+If uncertain, pick the most likely match. Return ONLY JSON, no markdown."""
 
-**Mapped to:**
-- Job Titles: {', '.join(persona_titles) if persona_titles else 'Standard list'}
-- Regions: {', '.join(person_locations) if person_locations else 'Global'}
+                        try:
+                            extract_response = claude.messages.create(
+                                model="claude-opus-4-1",
+                                max_tokens=300,
+                                messages=[{"role": "user", "content": extract_prompt}]
+                            )
+                            extract_json = extract_response.content[0].text.strip()
+                            if extract_json.startswith("```"):
+                                extract_json = extract_json.split("```")[1].lstrip("json\n")
+                            extracted = _json.loads(extract_json)
+                            product = extracted.get("product", "").strip()
+                            use_case = extracted.get("use_case", "").strip()
+                        except Exception as e:
+                            # Fallback: ask user to select
+                            _update(run_id, message=f"Campaign idea parsing failed: {e}")
+                            product_list = sorted(list(use_case_options.keys()))
+                            product = ask(
+                                run_id, "apollo_product_manual", "choice",
+                                "Which Xoxoday product?",
+                                options=product_list, context={"step": "source"},
+                            )
+                            use_case = ask(
+                                run_id, "apollo_use_case_manual", "choice",
+                                f"Which use case?",
+                                options=use_case_options.get(product, []), context={"step": "source"},
+                            )
+                            persona_titles = None
+                            person_locations = None
+                            employee_size_filter = None
+                        else:
+                            # STEP 4: Map extracted product & use case to ICP
+                            icp_mapping = icp_mapper.map_use_case_to_icp(product, use_case)
+
+                            if not icp_mapping:
+                                raise ValueError(f"Could not map: {product} → {use_case}")
+
+                            persona_titles = icp_mapping.get("job_titles") or None
+                            person_locations = icp_mapping.get("regions") or None
+                            employee_size_filter = icp_mapping.get("company_size") or None
+
+                            # STEP 5: Show mapping and let user select/adjust regions
+                            mapping_display = f"""**Campaign Idea:** {campaign_idea[:80]}...
+
+**Claude extracted:**
+- Product: {product}
+- Use Case: {use_case}
+
+**Mapped ICP:**
+- Job Titles: {', '.join(persona_titles[:3]) if persona_titles else 'Default list'}
 - Company Size: {employee_size_filter or 'Any'}
 
-Economic Buyer: {icp_mapping.get('economic_buyer')}
-Champion: {icp_mapping.get('champion')}
-Influencer/User: {icp_mapping.get('influencer')}
+**Economic Buyer:** {icp_mapping.get('economic_buyer')}
+**Champion:** {icp_mapping.get('champion')}
 
-Proceed with these filters?"""
+**Select target regions:**"""
 
-                        confirm = ask(
-                            run_id, "icp_mapping_confirm", "yes_no",
-                            mapping_display,
-                            default="yes", context={"step": "source", "icp_mapping": icp_mapping},
-                        )
-
-                        if not _truthy(confirm):
-                            # User wants to override manually
                             region_answer = ask(
-                                run_id, "apollo_region_override", "multi_choice",
-                                "Override regions:",
+                                run_id, "apollo_region_select", "multi_choice",
+                                mapping_display,
                                 options=["US", "UK", "India", "Europe", "APAC", "Canada", "Australia", "Global"],
                                 default=", ".join(person_locations) if person_locations else "Global",
-                                context={"step": "source"},
+                                context={"step": "source", "icp_mapping": icp_mapping},
                             )
                             person_locations = [r.strip() for r in str(region_answer).split(",") if r.strip()] or None
 
-                            personas_answer = ask(
-                                run_id, "apollo_personas_override", "text",
-                                "Override job titles (comma-separated):",
-                                default=", ".join(persona_titles) if persona_titles else "",
-                                context={"step": "source"},
-                            )
-                            persona_titles = [t.strip() for t in str(personas_answer).split(",") if t.strip()] or None
+                    # STEP 6: Ask for company names to search
+                    companies_input = ask(
+                        run_id, "apollo_company_names", "text",
+                        "Company names to search (comma-separated):\ne.g. Acme Corp, TechCo Inc, StartUp Labs",
+                        default="", context={"step": "source"},
+                    )
+                    if not companies_input.strip():
+                        raise ValueError("No company names provided for Apollo search.")
 
-                            emp_answer = ask(
-                                run_id, "apollo_empsize_override", "text",
-                                "Override employee size (or leave blank):",
-                                default=employee_size_filter or "",
-                                context={"step": "source"},
-                            )
-                            employee_size_filter = str(emp_answer).strip() if emp_answer else None
+                    company_names = [c.strip() for c in str(companies_input).split(",") if c.strip()]
 
                     # Resolve company names to domains
                     _update(run_id, message="Resolving company domains for Apollo search")
