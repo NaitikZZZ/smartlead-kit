@@ -1,6 +1,8 @@
 # ✍️ Cold Email Copy Frameworks — Xoxoday (Smartlead)
 
-**IMPORTANT: Read [`HUMANVOICE_COPY_GUIDE.md`](HUMANVOICE_COPY_GUIDE.md) first.** It sets the tone, voice, and persona-level framing for ALL frameworks below. Use it as your system instruction when generating any new sequences.
+**IMPORTANT: Read these in order:**
+1. **[`ICP_PERSONAS_REFERENCE.md`](ICP_PERSONAS_REFERENCE.md)** — Pick your use case, persona, and geography. Extracts proof styles and pain points from the Xoxoday ICP.
+2. **[`HUMANVOICE_COPY_GUIDE.md`](HUMANVOICE_COPY_GUIDE.md)** — Tone, voice, and persona-level framing for ALL frameworks below. Use as your system instruction when generating new sequences.
 
 > All templates use **Smartlead** merge tags (snake_case): `{{first_name}}`, `{{company_name}}`, `{{custom_var}}`.
 >

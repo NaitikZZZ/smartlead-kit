@@ -168,8 +168,17 @@ Vary sentence openers across the sequence — don't start every message with "Hi
 - Training new SDRs or content builders on voice
 
 **How to use:**
-1. Pick your product (Empuls/Plum/Compass/Loyalife)
-2. Identify your persona (title, vertical, company size)
-3. Read the product-specific overlay (#4) and persona-level framing (#5)
-4. Use the ready-to-use prompt (#7) as your system instruction
-5. Run your draft through the QC checklist (#8) before sending
+1. **Pick your use case & persona** — Check [`ICP_PERSONAS_REFERENCE.md`](ICP_PERSONAS_REFERENCE.md) to identify the right buyer (Economic Buyer vs. Champion vs. Influencer/User), use case, and geography
+2. **Pick your product** (Empuls/Plum/Compass/Loyalife)
+3. **Read the product-specific overlay** (#4) and **persona-level framing** (#5)
+4. **Cross-reference ICP_PERSONAS_REFERENCE.md** — See the "Persona-to-Copy Framework Mapping" table for proof style, pain point, and opening line templates
+5. **Use the ready-to-use prompt (#7)** as your system instruction, injecting persona context from the ICP
+6. **Run your draft through the QC checklist (#8)** before sending
+
+**Example workflow:**
+- Target: VP HR at 2,000-person healthcare company
+- Use Case: Employee Recognition (Empuls)
+- Geography: USA
+- ICP lookup → Proof style: "Timeline + adoption jump", Pain: "Fragmented recognition", Opening: "Most People teams run recognition on a patchwork..."
+- Generate sequence using HUMANVOICE prompt + ICP context
+- QC checklist → Send
