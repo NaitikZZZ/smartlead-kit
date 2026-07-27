@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import "./theme.css";
-import { getConfig, getRun } from "./lib/api";
+import { getConfig, getRun, fileUrl } from "./lib/api";
 import type { AppConfig, RunStatus } from "./lib/types";
 import SourceForm from "./components/SourceForm";
 import StepSidebar from "./components/StepSidebar";
@@ -63,6 +63,7 @@ export default function App() {
 
         {run && <CostBar run={run} />}
         {run && <ProjectInfo run={run} />}
+        {run && !REVIEW_STAGES.has(run.stage) && run.output_files.length > 0 && <MidRunDownloads run={run} />}
 
         {!runId && <SourceForm onStarted={setRunId} appConfig={appConfig} />}
 
@@ -103,6 +104,24 @@ export default function App() {
 
         {run && <ActivityLog run={run} />}
       </main>
+    </div>
+  );
+}
+
+function MidRunDownloads({ run }: { run: RunStatus }) {
+  return (
+    <div className="card" style={{ padding: 16, marginBottom: 20 }}>
+      <h5 style={{ marginBottom: 8 }}>Downloads so far</h5>
+      <p style={{ fontSize: 12, color: "var(--dark-200)", marginBottom: 12 }}>
+        Available now, while the rest of the run continues - handy if you want to search any of these manually.
+      </p>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+        {run.output_files.map((f) => (
+          <a key={f} href={fileUrl(run.run_id, f)} className="btn-secondary" style={{ textDecoration: "none", fontSize: 13 }}>
+            ⬇ {f}
+          </a>
+        ))}
+      </div>
     </div>
   );
 }

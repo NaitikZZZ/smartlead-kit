@@ -1,0 +1,7 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    { "path": "/api/cron/refresh-exclusion", "schedule": "0 2 * * *" },
+    { "path": "/api/cron/refresh-associations?kinds=project,partner,event", "schedule": "0 3 * * *" }
+  ]
+}

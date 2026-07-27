@@ -16,6 +16,19 @@ from .. import config
 
 BASE = "https://api.heyreach.io/api/public"
 _ADD_BATCH = 100
+# HeyReach's list name field has a hard 50-char server-side limit (confirmed
+# live: CreateEmptyList 400s with "Name must be ... a maximum length of '50'"
+# on anything longer) - our campaign titles routinely run longer than that.
+_LIST_NAME_MAX = 50
+
+
+def _raise_with_body(r: requests.Response):
+    """requests' default HTTPError swallows the response body, which is
+    exactly where HeyReach puts the actual validation message (e.g. the list
+    name length limit) - surface it so failures are diagnosable instead of a
+    bare '400 Client Error: Bad Request for url: ...'."""
+    if not r.ok:
+        raise requests.HTTPError(f"{r.status_code} {r.reason} for {r.url}: {r.text[:500]}", response=r)
 
 
 def is_configured() -> bool:
@@ -46,9 +59,10 @@ def _lead(row: dict) -> dict | None:
 
 
 def create_list(name: str) -> int:
+    name = name[:_LIST_NAME_MAX] if len(name) > _LIST_NAME_MAX else name
     r = requests.post(f"{BASE}/list/CreateEmptyList", headers=_headers(),
                       json={"name": name, "type": "USER_LIST"}, timeout=30)
-    r.raise_for_status()
+    _raise_with_body(r)
     body = r.json() if r.content else {}
     # Response shape varies; the list id is the useful bit.
     return body.get("id") or body.get("listId") or body
@@ -60,7 +74,7 @@ def add_leads(list_id: int, leads: list[dict]) -> dict:
         chunk = leads[i:i + _ADD_BATCH]
         r = requests.post(f"{BASE}/list/AddLeadsToListV2", headers=_headers(),
                           json={"listId": list_id, "leads": chunk}, timeout=60)
-        r.raise_for_status()
+        _raise_with_body(r)
         body = r.json() if r.content else {}
         added += body.get("addedLeadsCount", 0)
         updated += body.get("updatedLeadsCount", 0)
@@ -82,9 +96,10 @@ def push_leads(linkedin_rows: list[dict], list_name: str) -> dict:
                 "message": "No LinkedIn URLs to push."}
 
     try:
-        list_id = create_list(list_name)
+        actual_name = list_name[:_LIST_NAME_MAX] if len(list_name) > _LIST_NAME_MAX else list_name
+        list_id = create_list(actual_name)
         counts = add_leads(list_id, leads)
-        return {"status": "pushed", "list_id": list_id, "list_name": list_name,
+        return {"status": "pushed", "list_id": list_id, "list_name": actual_name,
                 "eligible": len(linkedin_rows), "pushed": counts["added"] + counts["updated"], **counts}
     except Exception as e:
         return {"status": "error", "pushed": 0, "eligible": len(linkedin_rows),

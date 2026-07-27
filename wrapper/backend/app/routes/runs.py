@@ -1,17 +1,35 @@
 import math
+import mimetypes
 import os
 import time
+import traceback
+import uuid
 from pathlib import Path
 from typing import Optional
 
+import inngest
 from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 
-from .. import config
+from .. import config, run_status, vercel_blob
+from ..inngest_client import client as inngest_client
 from ..models import AnswerRequest, ImportConfirmRequest, PendingQuestion, RunStatus
-from ..pipeline import runner, input_sources
+from ..pipeline import runner, input_sources, outputs
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
+
+
+def _engine_for(run_id: str) -> Optional[str]:
+    """'inngest' or 'legacy' depending on which engine created this run_id, or
+    None if neither has a record of it. The two engines use disjoint storage
+    (Redis run_status vs. the in-process JOBS dict) so a run_id can only ever
+    belong to one - CSV runs go to Inngest; hubspot_project runs stay on the
+    legacy thread-based engine until that input path is ported too."""
+    if run_status.get(run_id):
+        return "inngest"
+    if runner.get_job(run_id):
+        return "legacy"
+    return None
 
 
 def _nan_safe(o):
@@ -42,12 +60,10 @@ async def create_run(
     domain_col: Optional[str] = Form(None),
     employee_col: Optional[str] = Form(None),
     csv_file: Optional[UploadFile] = File(None),
-    mapping_sheet_file: Optional[UploadFile] = File(None),
+    mapping_sheet_file: Optional[UploadFile] = File(None),  # accepted for request-shape compat, unused (confirmed-dead feature)
 ):
     csv_bytes = await csv_file.read() if csv_file else None
     csv_filename = csv_file.filename if csv_file else None
-    mapping_bytes = await mapping_sheet_file.read() if mapping_sheet_file else None
-    mapping_filename = mapping_sheet_file.filename if mapping_sheet_file else None
 
     if input_source == "csv" and not csv_bytes:
         raise HTTPException(400, "csv input source requires csv_file")
@@ -56,14 +72,26 @@ async def create_run(
     if input_source not in ("csv", "hubspot_project"):
         raise HTTPException(400, f"Unsupported input_source {input_source!r} (form-link source is temporarily disabled)")
 
-    run_id = runner.start_run(
-        input_source=input_source,
-        csv_bytes=csv_bytes, csv_filename=csv_filename,
-        hubspot_project_id=hubspot_project_id,
-        mapping_sheet_bytes=mapping_bytes, mapping_sheet_filename=mapping_filename,
-        company_col=company_col, domain_col=domain_col, employee_col=employee_col,
-    )
-    return _to_status(run_id)
+    # Both input sources now run on the Inngest engine (mapping_sheet_file is
+    # a confirmed-dead feature - accepted here for backward compatibility but
+    # never referenced by either engine). runner.start_run()/_execute() stay
+    # on disk, unused from here, as a fallback until this has real mileage.
+    run_id = uuid.uuid4().hex[:12]
+    run_status.init(run_id)  # synchronous, so an immediate GET right after this returns never 404s
+    event_data = {
+        "run_id": run_id, "input_source": input_source,
+        "company_col": company_col, "domain_col": domain_col, "employee_col": employee_col,
+    }
+    if csv_bytes:
+        csv_blob_pathname = f"runs/{run_id}/{csv_filename}"
+        vercel_blob.put(csv_blob_pathname, csv_bytes, content_type=csv_file.content_type if csv_file else None)
+        event_data["csv_blob_pathname"] = csv_blob_pathname
+        event_data["csv_filename"] = csv_filename
+    if input_source == "hubspot_project":
+        event_data["hubspot_project_id"] = hubspot_project_id
+
+    inngest_client.send_sync(inngest.Event(name="run/start", data=event_data))
+    return _to_status(run_id, "inngest")
 
 
 @router.post("/project-preview")
@@ -89,55 +117,86 @@ def project_preview(project_id: str = Body(..., embed=True)):
 
 @router.get("/{run_id}", response_model=RunStatus)
 def get_run(run_id: str):
-    job = runner.get_job(run_id)
-    if not job:
+    engine = _engine_for(run_id)
+    if engine is None:
         raise HTTPException(404, "Run not found")
-    return _to_status(run_id)
+    return _to_status(run_id, engine)
 
 
 @router.post("/{run_id}/answer", response_model=RunStatus)
 def answer_question(run_id: str, body: AnswerRequest):
-    job = runner.get_job(run_id)
-    if not job:
+    engine = _engine_for(run_id)
+    if engine is None:
         raise HTTPException(404, "Run not found")
-    try:
-        runner.submit_answer(run_id, body.key, body.value)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    return _to_status(run_id)
+
+    if engine == "inngest":
+        job = run_status.get(run_id)
+        pq = job.get("pending_question")
+        if not pq or pq["key"] != body.key:
+            raise HTTPException(400, f"No pending question with key {body.key!r} for this run right now")
+        inngest_client.send_sync(inngest.Event(
+            name="run/answer", data={"run_id": run_id, "key": body.key, "value": body.value}))
+    else:
+        try:
+            runner.submit_answer(run_id, body.key, body.value)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    return _to_status(run_id, engine)
 
 
 @router.get("/{run_id}/files/{filename}")
 def download_file(run_id: str, filename: str):
-    path = config.RUNS_DIR / run_id / filename
-    if not path.exists():
+    run_dir = config.RUNS_DIR / run_id
+    if not outputs.file_exists(run_dir, filename):
         raise HTTPException(404, "File not found")
-    return FileResponse(path, filename=filename)
+    content = outputs.read_file(run_dir, filename)
+    media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    return Response(
+        content=content, media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/{run_id}/import")
 def confirm_import(run_id: str, body: ImportConfirmRequest):
     if not body.confirm:
         raise HTTPException(400, "confirm must be true to run this - this writes to HubSpot")
-    job = runner.get_job(run_id)
-    if not job:
+
+    engine = _engine_for(run_id)
+    if engine is None:
         raise HTTPException(404, "Run not found")
 
+    if engine == "inngest":
+        job = run_status.get(run_id)
+        if job.get("stage") != "awaiting_import_confirmation":
+            raise HTTPException(400, "Run has no HubSpot-ready output yet (still running or failed)")
+        # The frontend discards this response body and learns the real result
+        # (stats.hubspot_import, hubspot_list_url, stage) via its existing
+        # GET /{run_id} poll loop, same as every other paused-then-resumed
+        # step - the HubSpot import itself runs in the background via Inngest,
+        # not inline in this request.
+        inngest_client.send_sync(inngest.Event(
+            name="run/answer", data={"run_id": run_id, "key": "confirm_import", "value": True}))
+        return {"status": "confirmed", "run_id": run_id}
+
+    job = runner.get_job(run_id)
     run_dir = config.RUNS_DIR / run_id
-    if not (run_dir / "hubspot_ready.json").exists():
+    if not outputs.file_exists(run_dir, "hubspot_ready.json"):
         raise HTTPException(400, "Run has no HubSpot-ready output yet (still running or failed)")
 
     runner._update(run_id, stage="importing_to_hubspot")
     try:
         result = runner.run_confirmed_import(run_id, run_dir)
     except Exception as e:
+        traceback.print_exc()  # full traceback to the server log - str(e) alone isn't enough to diagnose later
         runner._update(run_id, stage="failed", error=str(e), message="Import failed")
         raise HTTPException(500, str(e))
     return _nan_safe(result)
 
 
-def _to_status(run_id: str) -> RunStatus:
-    job = runner.get_job(run_id)
+def _to_status(run_id: str, engine: str) -> RunStatus:
+    job = run_status.get(run_id) if engine == "inngest" else runner.get_job(run_id)
     pq = job.get("pending_question")
     # Surface the activity log + overall elapsed time alongside stats (stats is a
     # free-form dict, so no schema change needed).

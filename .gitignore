@@ -8,3 +8,7 @@ outputs/
 reference/company_domain_cache.csv
 reference/domain_aliases.csv
 reference/phone_reveal_cache.csv
+wrapper/backend/cache/
+wrapper/backend/runs/
+.vercel
+.env*

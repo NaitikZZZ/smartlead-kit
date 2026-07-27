@@ -8,6 +8,7 @@ from pathlib import Path
 import requests
 
 from .. import config
+from . import outputs
 
 API = "https://api.github.com"
 
@@ -17,7 +18,7 @@ def _headers():
     return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
 
 
-def open_output_pr(run_id: str, run_label: str, output_files: dict[str, str], stats_summary: str) -> str:
+def open_output_pr(run_id: str, run_label: str, run_dir: Path, output_files: dict[str, str], stats_summary: str) -> str:
     repo = config.require("GITHUB_REPO", config.GITHUB_REPO)
     base_branch = config.GITHUB_BASE_BRANCH
     headers = _headers()
@@ -31,8 +32,8 @@ def open_output_pr(run_id: str, run_label: str, output_files: dict[str, str], st
     base_tree_sha = base_commit.json()["tree"]["sha"]
 
     tree_entries = []
-    for filename, local_path in output_files.items():
-        content = Path(local_path).read_bytes()
+    for filename in output_files:
+        content = outputs.read_file(run_dir, filename)
         blob = requests.post(
             f"{API}/repos/{repo}/git/blobs", headers=headers, timeout=30,
             json={"content": base64.b64encode(content).decode(), "encoding": "base64"},

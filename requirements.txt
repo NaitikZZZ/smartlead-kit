@@ -1,0 +1,15 @@
+# Mirrors wrapper/backend/requirements.txt - Vercel's Python builder looks for
+# requirements.txt at the project root (this repo's deploy root, since the
+# backend needs scripts/ and reference/ as siblings of wrapper/backend). Keep
+# these two files in sync by hand; local dev still uses the one under
+# wrapper/backend/.
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pandas==2.2.2
+requests==2.32.3
+python-dotenv==1.0.1
+python-multipart==0.0.9
+openpyxl==3.1.5
+pydantic==2.9.2
+anthropic==0.40.0
+inngest==0.4.22

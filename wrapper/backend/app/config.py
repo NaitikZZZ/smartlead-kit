@@ -11,7 +11,11 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 SMARTLEAD_KIT_DIR = BACKEND_DIR.parent.parent  # .../smartlead-kit
 SCRIPTS_DIR = SMARTLEAD_KIT_DIR / "scripts"
 REFERENCE_DIR = SMARTLEAD_KIT_DIR / "reference"
-RUNS_DIR = BACKEND_DIR / "runs"  # per-run working directories + outputs
+# outputs.write_file() always writes locally first (still needed same-request,
+# e.g. github_pr.py reads these paths directly) even when Vercel Blob is also
+# configured - everywhere outside /tmp is read-only on Vercel, so this must
+# resolve to /tmp there. VERCEL=1 is set automatically on every Vercel deploy.
+RUNS_DIR = (Path("/tmp") / "runs") if os.environ.get("VERCEL") else (BACKEND_DIR / "runs")
 
 load_dotenv(BACKEND_DIR / ".env")
 load_dotenv(SMARTLEAD_KIT_DIR / ".env", override=False)  # fall back to shared kit .env
@@ -20,6 +24,27 @@ APOLLO_API_KEY = os.environ.get("APOLLO_API_KEY", "")
 HUBSPOT_READ_TOKEN = os.environ.get("HUBSPOT_PRIVATE_APP_TOKEN", "")
 HUBSPOT_WRITE_TOKEN = os.environ.get("HUBSPOT_WRITE_TOKEN", "")
 HEYREACH_API_KEY = os.environ.get("HEYREACH_API_KEY", "")
+
+# Upstash Redis (REST API) - replaces the local file-based caches below so
+# they survive across serverless invocations (Vercel's filesystem is
+# ephemeral/read-only outside /tmp). See app/redis_cache.py.
+UPSTASH_REDIS_REST_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "")
+UPSTASH_REDIS_REST_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+
+# Vercel Blob - replaces local per-run output file storage (config.RUNS_DIR)
+# for the same reason. See app/vercel_blob.py.
+BLOB_READ_WRITE_TOKEN = os.environ.get("BLOB_READ_WRITE_TOKEN", "")
+
+# Vercel sends this as `Authorization: Bearer {CRON_SECRET}` on every Cron Job
+# invocation - app/routes/cron.py checks it matches before doing real work,
+# rejecting the request (even locally) if this isn't set, so a public request
+# to a cron route can never trigger a rebuild by accident.
+CRON_SECRET = os.environ.get("CRON_SECRET", "")
+
+# Inngest - durable workflow engine replacing the in-memory JOBS dict +
+# blocked-thread ask/answer mechanism in runner.py (see app/inngest_client.py).
+INNGEST_EVENT_KEY = os.environ.get("INNGEST_EVENT_KEY", "")
+INNGEST_SIGNING_KEY = os.environ.get("INNGEST_SIGNING_KEY", "")
 
 # Exclusion source: When the user chooses to run exclusion checks, they MUST use the
 # HubSpot "ABM EXCLSIONS - DNU" contacts list (28280).
@@ -41,7 +66,10 @@ EXCLUSION_CACHE_TTL_HOURS = int(os.environ.get("EXCLUSION_CACHE_TTL_HOURS", "24"
 # asleep) - 24h so normal runs always serve the cron-maintained cache.
 ASSOC_CACHE_TTL_HOURS = int(os.environ.get("ASSOC_CACHE_TTL_HOURS", "24"))
 CACHE_DIR = BACKEND_DIR / "cache"
-CACHE_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass  # read-only filesystem (Vercel) - fine, every cache under here is Redis-backed when configured
 
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "")  # "owner/repo"
@@ -99,7 +127,10 @@ HUBSPOT_APP_SUBDOMAIN = os.environ.get("HUBSPOT_APP_SUBDOMAIN", "app-na2.hubspot
 MAX_CONTACTS_PER_COMPANY_DEFAULT = 7
 MAX_CONTACTS_PER_COMPANY_CAP = 10
 
-RUNS_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass
 
 
 def require(name: str, value: str):

@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import requests
 
-from .. import config
+from .. import config, redis_cache
 
 sys.path.insert(0, str(config.SCRIPTS_DIR))
 import search_company_contacts_apollo as _search  # noqa: E402
@@ -22,15 +22,71 @@ import json as _json
 
 DEFAULT_WORKERS = 8
 
+# Apollo's person_locations filter matches on literal place names ("Saudi
+# Arabia"), not abbreviations - confirmed by hand: filtering on "KSA" returned
+# 0 results where "Saudi Arabia" returned real matches. REGION_GROUPS is the
+# one-to-many expansion from a broad label offered in the UI to the literal
+# country names Apollo actually recognizes. Anything not in this map (a
+# country picked directly, e.g. "Qatar") is passed through unchanged.
+REGION_GROUPS: dict[str, list[str]] = {
+    "US": ["United States"],
+    "UK": ["United Kingdom"],
+    "Europe": ["United Kingdom", "Germany", "France", "Netherlands", "Spain", "Italy",
+               "Ireland", "Sweden", "Switzerland", "Belgium", "Poland"],
+    "APAC": ["Australia", "Singapore", "Japan", "India", "Hong Kong", "New Zealand", "South Korea"],
+    "GCC": ["Saudi Arabia", "United Arab Emirates", "Qatar", "Kuwait", "Bahrain", "Oman"],
+    "KSA": ["Saudi Arabia"],
+    "Africa": ["South Africa", "Nigeria", "Kenya", "Egypt", "Ghana", "Morocco"],
+    "SEA": ["Singapore", "Malaysia", "Indonesia", "Philippines", "Thailand", "Vietnam"],
+    "Philippines": ["Philippines"],
+    "Indonesia": ["Indonesia"],
+    "Canada": ["Canada"],
+    "Australia": ["Australia"],
+    "India": ["India"],
+    "Global": [],  # explicitly "no filter" - a bare "Global" used to be sent to Apollo literally
+}
+
+
+def expand_person_locations(selected: list[str] | None) -> list[str] | None:
+    """Expand any broad region labels into the literal country names Apollo's
+    person_locations filter matches on; individual countries pass through
+    unchanged. Single choke point right before the Apollo call, so every
+    caller (discovery form, campaign-idea search, "add more" loops) gets this
+    fix for free. Returns None for "no filter" (blank, or only "Global")."""
+    if not selected:
+        return None
+    expanded: list[str] = []
+    for label in selected:
+        expanded.extend(REGION_GROUPS.get(label, [label]))
+    seen: set[str] = set()
+    out = []
+    for loc in expanded:
+        if loc and loc not in seen:
+            seen.add(loc)
+            out.append(loc)
+    return out or None
+
 # Local reveal caches so a re-run never re-pays Apollo for the same person:
 #   email  -> keyed name@domain (People Match, ~1 credit)
 #   person -> keyed apollo_id  (full-field reveal, ~1 credit)
 # Phone has its own cache in the phone script (reference/phone_reveal_cache.csv).
+# Redis (Upstash, via app/redis_cache.py) is used when configured - required
+# on Vercel, where the local file paths below aren't writable/persistent
+# across invocations. Falls back to the local file otherwise. The person
+# cache runs into the tens of MB (confirmed ~22MB in practice) so it uses the
+# chunked Redis helper; the email cache stays well under 1MB.
 _EMAIL_CACHE = config.CACHE_DIR / "email_reveal_cache.json"
 _PERSON_CACHE = config.CACHE_DIR / "person_enrich_cache.json"
+_EMAIL_REDIS_KEY = "cache:email_reveal"
+_PERSON_REDIS_KEY = "cache:person_enrich"
 
 
 def _load_cache(path):
+    if redis_cache.is_configured():
+        chunked = path is _PERSON_CACHE
+        getter = redis_cache.get_json_chunked if chunked else redis_cache.get_json
+        key = _PERSON_REDIS_KEY if chunked else _EMAIL_REDIS_KEY
+        return getter(key) or {}
     try:
         return _json.loads(path.read_text()) if path.exists() else {}
     except Exception:
@@ -38,6 +94,12 @@ def _load_cache(path):
 
 
 def _save_cache(path, cache):
+    if redis_cache.is_configured():
+        chunked = path is _PERSON_CACHE
+        setter = redis_cache.set_json_chunked if chunked else redis_cache.set_json
+        key = _PERSON_REDIS_KEY if chunked else _EMAIL_REDIS_KEY
+        setter(key, cache)
+        return
     try:
         path.write_text(_json.dumps(cache))
     except Exception:
@@ -73,10 +135,17 @@ def _run_parallel(items, fn, max_workers, progress=None):
     return results
 
 
-def search_candidates(df: pd.DataFrame, company_col: str, domain_col: str, person_locations=None, persona_titles=None, max_per_company=None):
+def search_candidates(df: pd.DataFrame, company_col: str, domain_col: str, person_locations=None, persona_titles=None,
+                       max_per_company=None, per_title_cap=None):
+    """per_title_cap (1-3 typically) switches selection to
+    select_candidates_per_persona: every title in persona_titles is guaranteed
+    up to per_title_cap candidates per company, instead of ranking against the
+    hardcoded HR-only PERSONA_TIERS list. Leave it None to keep the original
+    flat-cap behavior (used by the Apollo-search-from-campaign-idea flow)."""
     session = requests.Session()
     session.mount("https://", requests.adapters.HTTPAdapter(max_retries=0))
 
+    person_locations = expand_person_locations(person_locations)
     personas = persona_titles or _search.PERSONAS
     cap = min(max_per_company or _search.MAX_PER_COMPANY, 10)
     rows = []
@@ -90,7 +159,10 @@ def search_candidates(df: pd.DataFrame, company_col: str, domain_col: str, perso
         _search.PERSONAS, _search.MAX_PER_COMPANY = personas, cap
         try:
             people = _search.search_people(session, domain, person_locations)
-            selected = _search.select_candidates(people)
+            if per_title_cap:
+                selected = _search.select_candidates_per_persona(people, personas, per_title_cap)
+            else:
+                selected = _search.select_candidates(people)
         finally:
             _search.PERSONAS, _search.MAX_PER_COMPANY = old_personas, old_cap
         per_company_counts[company] = len(selected)
@@ -145,7 +217,12 @@ def enrich_candidates(candidates_df: pd.DataFrame, full_dump: bool = False, prog
     for idx, (flat, aid, company, domain) in fetched.items():
         cache[aid] = flat  # store the base reveal (no per-row search fields)
         result_map[idx] = _apply_row(flat, company, domain)
-    _save_cache(_PERSON_CACHE, cache)
+    if fetched:
+        # Skip the write when nothing changed - this cache is a single JSON
+        # blob (23MB+ after this session's testing), and rewriting it whole
+        # on every call, even a 100%-cache-hit one, risks timing out the
+        # Redis pipeline POST for no reason (confirmed live).
+        _save_cache(_PERSON_CACHE, cache)
 
     rows = [result_map[idx] for idx, _ in items if idx in result_map]
     paid = len(tasks)
@@ -223,7 +300,8 @@ def enrich_existing_contacts(df: pd.DataFrame, first_col: str, last_col: str, do
             filled += 1
         notes[i] = note
         cache[key] = {"email": email, "note": note}
-    _save_cache(_EMAIL_CACHE, cache)
+    if result_map:
+        _save_cache(_EMAIL_CACHE, cache)
 
     out["Email Fill Note"] = [notes.get(i, "Lookup error") for i in out.index]
     return out, {

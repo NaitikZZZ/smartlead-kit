@@ -1,0 +1,26 @@
+# Secrets - never bundle these; env vars are set in the Vercel project instead.
+.env
+**/.env
+wrapper/backend/.env
+wrapper/backend/.env.example
+wrapper/frontend/.env.local
+.env.local
+.vercel
+
+# Local dev / build artifacts - Vercel builds each service fresh.
+wrapper/backend/.venv
+wrapper/backend/cache
+wrapper/backend/runs
+wrapper/frontend/node_modules
+wrapper/frontend/dist
+**/__pycache__
+**/*.pyc
+.DS_Store
+.git
+
+# Other tools/artifacts in this repo unrelated to the ABM wrapper.
+dashboard
+campaigns
+webhook-sync
+out
+outputs

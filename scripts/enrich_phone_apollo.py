@@ -47,6 +47,33 @@ POLL_TIMEOUT = 30
 CACHE_PATH = os.path.join(os.path.dirname(__file__), '..', 'reference', 'phone_reveal_cache.csv')
 CACHE_FIELDS = ['contact_key', 'first_name', 'last_name', 'domain', 'phone_number', 'phone_type', 'phone_confidence', 'note']
 
+# Redis (Upstash REST) is used when configured - required on Vercel, where the
+# local CSV file above isn't writable/persistent across invocations. Falls
+# back to the CSV file when Redis isn't configured, so this script still runs
+# standalone (e.g. via the manual CLAUDE.md pipeline) without any new setup.
+_REDIS_URL = os.environ.get('UPSTASH_REDIS_REST_URL')
+_REDIS_TOKEN = os.environ.get('UPSTASH_REDIS_REST_TOKEN')
+_REDIS_KEY = 'cache:phone_reveal'
+
+
+def _redis_configured():
+    return bool(_REDIS_URL and _REDIS_TOKEN)
+
+
+def _redis_get_json(key):
+    import json
+    r = requests.get(f'{_REDIS_URL}/get/{key}', headers={'Authorization': f'Bearer {_REDIS_TOKEN}'}, timeout=15)
+    r.raise_for_status()
+    raw = r.json().get('result')
+    return json.loads(raw) if raw is not None else None
+
+
+def _redis_set_json(key, value):
+    import json
+    r = requests.post(f'{_REDIS_URL}/set/{key}', headers={'Authorization': f'Bearer {_REDIS_TOKEN}'},
+                       data=json.dumps(value).encode('utf-8'), timeout=15)
+    r.raise_for_status()
+
 
 def norm(s):
     return ''.join(ch for ch in str(s).lower() if ch.isalnum())
@@ -59,6 +86,8 @@ def cache_key(first, last, domain, apollo_id=None):
 
 
 def load_cache():
+    if _redis_configured():
+        return _redis_get_json(_REDIS_KEY) or {}
     if not os.path.exists(CACHE_PATH):
         return {}
     with open(CACHE_PATH, newline='', encoding='utf-8') as f:
@@ -66,6 +95,9 @@ def load_cache():
 
 
 def save_cache(cache):
+    if _redis_configured():
+        _redis_set_json(_REDIS_KEY, cache)
+        return
     with open(CACHE_PATH, 'w', newline='', encoding='utf-8') as f:
         w = csv.DictWriter(f, fieldnames=CACHE_FIELDS)
         w.writeheader()

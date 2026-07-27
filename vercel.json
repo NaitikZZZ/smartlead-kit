@@ -1,0 +1,23 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "abm-wrapper-api": {
+      "root": "./",
+      "entrypoint": "wrapper.backend.app.main:app",
+      "functions": {
+        "wrapper/backend/app/main.py": { "maxDuration": 300 }
+      }
+    },
+    "abm-wrapper-web": {
+      "root": "wrapper/frontend/"
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": { "service": "abm-wrapper-api" } },
+    { "source": "/(.*)", "destination": { "service": "abm-wrapper-web" } }
+  ],
+  "crons": [
+    { "path": "/api/cron/refresh-exclusion", "schedule": "0 2 * * *" },
+    { "path": "/api/cron/refresh-associations?kinds=project,partner,event", "schedule": "0 3 * * *" }
+  ]
+}

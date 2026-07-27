@@ -11,6 +11,7 @@ restart with one attached, rather than trying to shoehorn a file upload into
 the JSON answer mechanism.
 """
 from __future__ import annotations
+import io
 import json as _json
 import threading
 import time
@@ -27,11 +28,37 @@ from . import (
     input_sources, normalize, domain_resolution, apollo_enrich,
     outputs, github_pr, web_completeness, naming, association_resolve,
     hubspot_lists, hubspot_import, estimates, hubspot_exclusion, heyreach, web_scrape,
-    icp_mapper,
+    icp_mapper, copy_agent,
 )
 
 JOBS: dict[str, dict] = {}
 _LOCK = threading.Lock()
+
+# Region options offered anywhere a run asks the user to filter by person
+# location (Apollo's person_locations filter). Kept in one place so every
+# ask() that offers regions stays in sync. Broad groups (e.g. "GCC") are
+# expanded to literal countries right before the Apollo call - see
+# apollo_enrich.REGION_GROUPS - since Apollo's filter doesn't understand
+# abbreviations/group names itself.
+REGION_OPTIONS = [
+    "US", "UK", "India", "Europe", "APAC", "Canada", "Australia",
+    "GCC", "KSA", "Africa", "Philippines", "Indonesia", "SEA", "Global",
+]
+
+# Individual countries offered alongside the broad groups above, so a run can
+# target e.g. just "Qatar" instead of the whole GCC bucket. Kept in sync with
+# apollo_enrich.REGION_GROUPS's expansions.
+COUNTRY_OPTIONS = [
+    "United States", "United Kingdom", "India", "Canada", "Australia",
+    "Saudi Arabia", "United Arab Emirates", "Qatar", "Kuwait", "Bahrain", "Oman",
+    "South Africa", "Nigeria", "Kenya", "Egypt",
+    "Philippines", "Indonesia", "Singapore", "Malaysia", "Thailand", "Vietnam",
+    "Germany", "France", "Netherlands", "Spain", "Italy",
+]
+
+# Combined options for any UI picker that wants both the broad groups and the
+# individual countries in one multi-select (checkbox dropdown on the frontend).
+LOCATION_OPTIONS = REGION_OPTIONS[:-1] + COUNTRY_OPTIONS + ["Global"]  # "Global" stays last
 
 # Canonical left-sidebar steps, in order. The frontend renders this whole list
 # and merges in per-run status/summary/cost from stats["steps"].
@@ -45,6 +72,7 @@ STEP_DEFS = [
     ("outputs", "Output Files & Name"),
     ("associations", "Associations"),
     ("upload", "Preview & Upload"),
+    ("copy_agent", "Copy Agent"),
 ]
 
 
@@ -147,6 +175,44 @@ def ask(run_id: str, key: str, qtype: str, prompt: str, options: list[str] | Non
         answer = JOBS[run_id]["_answer"]
         JOBS[run_id]["pending_question"] = None
     return answer
+
+
+def _ask_icp_confirm(run_id: str, key: str, prompt: str, icp_mapping: dict):
+    """Pre-fills job titles + regions from the sheet's ICP mapping (Economic
+    Buyer/Champion/Influencer roles shown as a snapshot), lets the user
+    uncheck any they don't want (exclude), add more regions than the sheet
+    mapped, and links back to the source ICP sheet. Returns
+    (persona_titles, person_locations) - either can be None if the user
+    unchecks everything, matching the "use default"/"no filter" behavior
+    elsewhere."""
+    mapped_titles = icp_mapping.get("job_titles") or []
+    mapped_regions = icp_mapping.get("regions") or []
+    form_answer = ask(
+        run_id, key, "icp_confirm_form", prompt,
+        default=None,
+        context={
+            "step": "source",
+            "icp_sheet_url": icp_mapper.ICP_SHEET_URL,
+            "economic_buyer": icp_mapping.get("economic_buyer", ""),
+            "champion": icp_mapping.get("champion", ""),
+            "influencer": icp_mapping.get("influencer", ""),
+            "fields": {
+                "job_titles": {
+                    "label": "Job titles (from the ICP sheet - uncheck any to exclude)",
+                    "options": mapped_titles, "default": mapped_titles,
+                },
+                "regions": {
+                    "label": "Regions (uncheck to exclude, or add more)",
+                    "options": REGION_OPTIONS, "country_options": COUNTRY_OPTIONS,
+                    "default": mapped_regions,
+                },
+            },
+        },
+    )
+    form_answer = form_answer or {}
+    persona_titles = form_answer.get("job_titles") or None
+    person_locations = form_answer.get("regions") or None
+    return persona_titles, person_locations
 
 
 def submit_answer(run_id: str, key: str, value):
@@ -260,6 +326,12 @@ def _map_existing_contact_columns(df: pd.DataFrame, first_col: str, last_col: st
     onto the canonical column names outputs.build_hubspot_import_file expects
     (organization_*, linkedin_url, etc.) - without touching that mapping table."""
     out = df.copy()
+    # Some exports (seen on a real HubSpot pull) carry the same header twice
+    # (e.g. two "Phone Number" columns) - df["Phone Number"] then returns a
+    # DataFrame instead of a Series and any .str/.isna() call below blows up
+    # with "'DataFrame' object has no attribute 'str'". Keep the first
+    # occurrence of any duplicate header, drop the rest.
+    out = out.loc[:, ~out.columns.duplicated()]
     title_col = _guess_col(out, ["title", "job title"])
     linkedin_col = _guess_col(out, ["person linkedin url", "linkedin url", "linkedin"])
     company_li_col = _guess_col(out, ["company linkedin url"])
@@ -458,19 +530,12 @@ If uncertain, pick the most likely match. Return ONLY JSON, no markdown."""
                             if not icp_mapping:
                                 raise ValueError(f"Could not map: {product} → {use_case}")
 
-                            persona_titles = icp_mapping.get("job_titles") or None
-                            person_locations = icp_mapping.get("regions") or None
                             employee_size_filter = icp_mapping.get("company_size") or None
-
-                            # Ask for regions even in fallback path
-                            region_answer = ask(
-                                run_id, "apollo_region_fallback", "multi_choice",
-                                f"Select target regions for {product} - {use_case}:",
-                                options=["US", "UK", "India", "Europe", "APAC", "Canada", "Australia", "Global"],
-                                default=", ".join(person_locations) if person_locations else "Global",
-                                context={"step": "source"},
+                            persona_titles, person_locations = _ask_icp_confirm(
+                                run_id, "apollo_icp_confirm_fallback",
+                                f"ICP for {product} - {use_case} (pre-filled from the ICP sheet - edit if needed)",
+                                icp_mapping,
                             )
-                            person_locations = [r.strip() for r in str(region_answer).split(",") if r.strip()] or None
                         else:
                             # STEP 4: Map extracted product & use case to ICP
                             icp_mapping = icp_mapper.map_use_case_to_icp(product, use_case)
@@ -478,34 +543,17 @@ If uncertain, pick the most likely match. Return ONLY JSON, no markdown."""
                             if not icp_mapping:
                                 raise ValueError(f"Could not map: {product} → {use_case}")
 
-                            persona_titles = icp_mapping.get("job_titles") or None
-                            person_locations = icp_mapping.get("regions") or None
                             employee_size_filter = icp_mapping.get("company_size") or None
 
-                            # STEP 5: Show mapping and let user select/adjust regions
-                            mapping_display = f"""**Campaign Idea:** {campaign_idea[:80]}...
-
-**Claude extracted:**
-- Product: {product}
-- Use Case: {use_case}
-
-**Mapped ICP:**
-- Job Titles: {', '.join(persona_titles[:3]) if persona_titles else 'Default list'}
-- Company Size: {employee_size_filter or 'Any'}
-
-**Economic Buyer:** {icp_mapping.get('economic_buyer')}
-**Champion:** {icp_mapping.get('champion')}
-
-**Select target regions:**"""
-
-                            region_answer = ask(
-                                run_id, "apollo_region_select", "multi_choice",
-                                mapping_display,
-                                options=["US", "UK", "India", "Europe", "APAC", "Canada", "Australia", "Global"],
-                                default=", ".join(person_locations) if person_locations else "Global",
-                                context={"step": "source", "icp_mapping": icp_mapping},
+                            # STEP 5: Snapshot the mapped ICP, let the user exclude titles/regions
+                            persona_titles, person_locations = _ask_icp_confirm(
+                                run_id, "apollo_icp_confirm",
+                                f"Claude matched \"{campaign_idea[:80]}...\" to **{product} - {use_case}** "
+                                f"(Economic Buyer: {icp_mapping.get('economic_buyer') or 'n/a'}, "
+                                f"Champion: {icp_mapping.get('champion') or 'n/a'}). "
+                                "Pre-filled from the ICP sheet below - edit if needed.",
+                                icp_mapping,
                             )
-                            person_locations = [r.strip() for r in str(region_answer).split(",") if r.strip()] or None
 
                     # STEP 6: Ask for company names to search
                     companies_input = ask(
@@ -623,7 +671,7 @@ If uncertain, pick the most likely match. Return ONLY JSON, no markdown."""
 Campaign Idea:
 {new_campaign_idea}
 
-Available regions: US, UK, India, Europe, APAC, Canada, Australia, Global
+Available regions: {", ".join(REGION_OPTIONS)}
 
 Return ONLY valid JSON:
 {{
@@ -733,6 +781,15 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         else:
             raise ValueError(f"Unknown or unsupported input_source: {input_source!r}")
 
+        # Some exports (seen on a real HubSpot pull) carry the same header twice.
+        # df["Some Column"] then returns a DataFrame instead of a Series, and any
+        # .str/.isna() call on it downstream blows up with "'DataFrame' object
+        # has no attribute 'str'". Dedupe once, here, for the whole rest of the run.
+        if df.columns.duplicated().any():
+            dupes = df.columns[df.columns.duplicated()].unique().tolist()
+            df = df.loc[:, ~df.columns.duplicated()]
+            stats.setdefault("warnings", []).append(f"Dropped duplicate column header(s), kept the first: {', '.join(dupes)}")
+
         input_count = len(df)
         company_col = company_col or _guess_col(df, ["Company", "Company Name", "company", "Account Name", "Organization", "organization"])
         if not company_col:
@@ -753,13 +810,14 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         stats["normalization"] = norm_stats
         resolved_company_col = "Cleaned Company Name" if "Cleaned Company Name" in df.columns else company_col
 
-        # The all-rows LLM web-search completeness pass used to run here
-        # automatically - it fired one Claude+web_search call per row with a
-        # blank Industry/Employee/Domain, uncached, every run (the main hidden
-        # delay). Firmographics come from the sheet + Apollo enrichment anyway,
-        # so it's off by default. A targeted domain-only fallback still runs
-        # after domain resolution for the few rows Apollo can't place.
-        stats["completeness"] = {"skipped": True, "reason": "auto completeness disabled for speed"}
+        # The all-rows LLM web-search completeness pass no longer runs here
+        # automatically - it used to fire one Claude+web_search call per row
+        # with a blank Industry/Employee/Domain, uncached, every run (the main
+        # hidden delay). Instead it's offered once, at the end, after seeing
+        # how many gaps actually remain post-enrichment (see near Step 7,
+        # below). A targeted domain-only fallback still runs right after
+        # domain resolution for the few rows Apollo can't place.
+        stats["completeness"] = {"deferred": True}
 
         src_summary = f"{input_count} row(s) read. Names & companies normalized."
         if stats.get("scrape"):
@@ -790,6 +848,7 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         missing_mask = _blank_domain_mask(df)
         missing_count = int(missing_mask.sum())
         already_present = len(df) - missing_count
+        domain_resolution_file = None  # set below if resolution actually runs; surfaced as a download after People Discovery
 
         if missing_count == 0:
             # Sheet already carries a domain on every row (standard headers,
@@ -841,9 +900,27 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
                 domain_stats["already_present"] = already_present
                 domain_stats["resolved"] = resolved_now
                 stats["domain_resolution"] = domain_stats
+                source_note = (
+                    f" ({domain_stats.get('from_apollo', 0)} via Apollo, {domain_stats.get('from_clearbit', 0)} via Clearbit fallback)"
+                    if domain_stats.get("from_clearbit") else ""
+                )
                 _step(stats, "domain", "Domain Resolution", "done",
-                      f"Resolved {resolved_now} of {missing_count} missing domain(s); {already_present} already had one.",
+                      f"Resolved {resolved_now} of {missing_count} missing domain(s){source_note}; {already_present} already had one.",
                       seconds=estimates.estimate_seconds("domain_resolution", missing_count), cost=cost)
+
+                # Downloadable domain-resolution results, for manual lookups while the
+                # rest of the run is still going - written now (data's cached to
+                # reference/company_domain_cache.csv already), surfaced as a download
+                # once People Discovery finishes (see below).
+                domain_export = df[[resolved_company_col, "Domain"]].copy()
+                domain_export["Resolved Country"] = ""
+                domain_export["Resolved City"] = ""
+                domain_export["Domain Resolution Source"] = "Already present"
+                domain_export.loc[missing_mask, "Resolved Country"] = resolved_subset["Resolved Country"].values
+                domain_export.loc[missing_mask, "Resolved City"] = resolved_subset["Resolved City"].values
+                domain_export.loc[missing_mask, "Domain Resolution Source"] = resolved_subset["Domain Resolution Source"].values
+                domain_resolution_file = run_dir / "02_domain_resolution.csv"
+                outputs.write_file(run_dir, "02_domain_resolution.csv", domain_export.to_csv(index=False), "text/csv")
             else:
                 stats["domain_resolution"] = {"skipped": True, "already_present": already_present}
                 _step(stats, "domain", "Domain Resolution", "skipped",
@@ -931,44 +1008,75 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
                 default="yes", context={"step": "discovery"},
             )
             if _truthy(disc_answer):
-                count_answer = ask(
-                    run_id, "contacts_per_company", "text",
-                    f"How many contacts per company? (ideal 5-7, hard max {config.MAX_CONTACTS_PER_COMPANY_CAP})",
-                    default=str(config.MAX_CONTACTS_PER_COMPANY_DEFAULT), context={"step": "discovery"},
-                )
-                try:
-                    max_per_company = min(int(str(count_answer).strip()), config.MAX_CONTACTS_PER_COMPANY_CAP)
-                except (TypeError, ValueError):
-                    max_per_company = config.MAX_CONTACTS_PER_COMPANY_DEFAULT
                 icp_hint = project_meta.get("icp", "") if project_meta else ""
-                persona_answer = ask(
-                    run_id, "persona_titles", "text",
-                    "Job titles to target (comma-separated)? Blank = default HR/People-leader list"
-                    + (f", or the Project ICP: {icp_hint}" if icp_hint else ""),
-                    default="", context={"step": "discovery"},
+                # One combined form (job titles, people-per-title, region) instead of 3
+                # sequential blocking questions - every field stays editable together
+                # right up until the user submits, so there's no "back" needed to fix
+                # an earlier answer once the job titles/ICP are in view.
+                form_answer = ask(
+                    run_id, "discovery_form", "discovery_form",
+                    "Set up People Discovery",
+                    default=None,
+                    context={
+                        "step": "discovery",
+                        "fields": {
+                            "persona_titles": {
+                                "label": "Job titles to target (comma-separated)",
+                                "placeholder": "Blank = default HR/People-leader list"
+                                + (f", or the Project ICP: {icp_hint}" if icp_hint else ""),
+                                "default": "",
+                            },
+                            "per_title_cap": {
+                                "label": "People per company, per job title",
+                                "default": 2, "min": 1, "max": 3,
+                            },
+                            "person_locations": {
+                                "label": "Region / country (optional - blank = Global, pick as many as you like)",
+                                "options": REGION_OPTIONS,
+                                "country_options": COUNTRY_OPTIONS,
+                                "default": [],
+                            },
+                        },
+                    },
                 )
-                persona_titles = [t.strip() for t in str(persona_answer).split(",") if t.strip()] or None
+                form_answer = form_answer or {}
+                persona_titles = [t.strip() for t in str(form_answer.get("persona_titles", "")).split(",") if t.strip()] or None
+                try:
+                    per_title_cap = max(1, min(int(form_answer.get("per_title_cap") or 2), 3))
+                except (TypeError, ValueError):
+                    per_title_cap = 2
+                raw_locations = form_answer.get("person_locations")
+                if isinstance(raw_locations, str):
+                    person_locations = [r.strip() for r in raw_locations.split(",") if r.strip()] or None
+                else:
+                    person_locations = [str(r).strip() for r in (raw_locations or []) if str(r).strip()] or None
 
-                region_answer = ask(
-                    run_id, "person_locations", "multi_choice",
-                    "Filter by region? (select all that apply, or leave blank for Global)",
-                    options=["US", "UK", "India", "Europe", "APAC", "Canada", "Australia", "Global"],
-                    default="", context={"step": "discovery"},
-                )
-                person_locations = [r.strip() for r in str(region_answer).split(",") if r.strip()] or None
+                # Only switch to the guaranteed-per-title selection when the user actually
+                # typed titles - blank keeps the original default HR tier-based selection
+                # (which also recognizes abbreviations like "CHRO" the per-title matcher
+                # wouldn't, since it only substring-matches the literal persona strings).
+                effective_per_title_cap = per_title_cap if persona_titles else None
 
                 _update(run_id, stage=RunStage.enriching, message=f"Searching Apollo at {len(ok_df)} accounts")
                 _step(stats, "discovery", "People Discovery", "running")
                 candidates_df, search_stats = apollo_enrich.search_candidates(
-                    ok_df, resolved_company_col, "Domain", person_locations=person_locations, persona_titles=persona_titles, max_per_company=max_per_company)
+                    ok_df, resolved_company_col, "Domain", person_locations=person_locations, persona_titles=persona_titles,
+                    max_per_company=config.MAX_CONTACTS_PER_COMPANY_CAP, per_title_cap=effective_per_title_cap)
                 stats["apollo_search"] = search_stats
+                cap_note = f" (up to {per_title_cap} per title per company)" if effective_per_title_cap else ""
                 _step(stats, "discovery", "People Discovery", "done",
-                      f"Searched {search_stats['companies_searched']} account(s), found {search_stats['candidates_found']} candidate(s). Search is free.",
+                      f"Searched {search_stats['companies_searched']} account(s), found {search_stats['candidates_found']} candidate(s){cap_note}. Search is free.",
                       seconds=estimates.estimate_seconds("people_discovery", len(ok_df)))
             else:
                 stats["apollo_search"] = {"skipped": True}
                 _step(stats, "discovery", "People Discovery", "skipped", "Skipped by user.")
             _update(run_id, stats=dict(stats))
+
+        # Surface the domain-resolution download now that People Discovery is done -
+        # lets you start manually searching companies while the rest of the run continues.
+        if domain_resolution_file is not None:
+            job_so_far = get_job(run_id)
+            _update(run_id, output_files=list(job_so_far.get("output_files", [])) + [str(domain_resolution_file)])
 
         # ============ Step 5: Email Reveal & Validation ============
         if has_existing_contacts:
@@ -1052,6 +1160,41 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         if needs_existing_mapping and not core_df.empty:
             core_df = _map_existing_contact_columns(core_df, resolved_first_col, resolved_last_col, resolved_company_col)
 
+        # ============ Completeness fill (deferred - only worth asking once we know the real gap count) ============
+        completeness_cols = [
+            c for c in (
+                web_completeness._find_col(accounts_processed.columns, web_completeness.DOMAIN_CANDIDATES),
+                web_completeness._find_col(accounts_processed.columns, web_completeness.INDUSTRY_CANDIDATES),
+                web_completeness._find_col(accounts_processed.columns, web_completeness.EMPLOYEE_CANDIDATES),
+            ) if c
+        ]
+        gap_count = 0
+        if completeness_cols:
+            gap_mask = pd.Series(False, index=accounts_processed.index)
+            for c in completeness_cols:
+                col = accounts_processed[c]
+                gap_mask = gap_mask | col.isna() | (col.astype(str).str.strip() == "")
+            gap_count = int(gap_mask.sum())
+
+        if not config.ANTHROPIC_API_KEY:
+            stats["completeness"] = {"skipped": True, "reason": "ANTHROPIC_API_KEY not configured", "gaps": gap_count}
+        elif not completeness_cols or gap_count == 0:
+            stats["completeness"] = {"skipped": True, "reason": "no gaps found" if completeness_cols else "no Domain/Industry/Employee column present", "gaps": gap_count}
+        else:
+            fill_answer = ask(
+                run_id, "completeness_fill_needed", "yes_no",
+                f"{gap_count} account(s) still have gaps in {', '.join(completeness_cols)} after enrichment. "
+                f"Fill them via a web-search lookup (1 Claude call per gap, ~{estimates.humanize_seconds(estimates.estimate_seconds('completeness', gap_count))})?",
+                default="no", context={"step": "outputs", "gaps": gap_count, "columns": completeness_cols},
+            )
+            if _truthy(fill_answer):
+                _update(run_id, message=f"Filling {gap_count} completeness gap(s) via web search")
+                accounts_processed, completeness_stats = web_completeness.fill_completeness_gaps(accounts_processed, resolved_company_col)
+                stats["completeness"] = completeness_stats
+            else:
+                stats["completeness"] = {"skipped": True, "reason": "declined by user", "gaps": gap_count}
+        _update(run_id, stats=dict(stats))
+
         # ============ Step 7: Output Files & Name ============
         suggested_title = naming.suggest_campaign_title(project_meta, ok_df if not ok_df.empty else accounts_processed, region_col)
         campaign_title = ask(
@@ -1069,11 +1212,14 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
 
         file_paths, hubspot_ready_df = outputs.write_outputs(run_dir, accounts_processed, core_df, campaign_title, stats)
         stats["hubspot_ready_count"] = len(hubspot_ready_df)
-        Path(file_paths["SUMMARY.md"]).write_text(outputs.build_summary_markdown(campaign_title, stats, accounts_processed))
+        outputs.write_file(run_dir, "SUMMARY.md", outputs.build_summary_markdown(campaign_title, stats, accounts_processed), "text/markdown")
         cc = stats.get("channel_counts", {})
         _step(stats, "outputs", "Output Files & Name", "done",
               f"3 channel files written - email {cc.get('email', 0)}, linkedin {cc.get('linkedin', 0)}, calling {cc.get('calling', 0)}.")
-        _update(run_id, stats=dict(stats), output_files=list(file_paths.values()))
+        # Append rather than replace - keeps the domain-resolution download (surfaced
+        # right after People Discovery, above) alongside these newly written files.
+        job_so_far = get_job(run_id)
+        _update(run_id, stats=dict(stats), output_files=list(job_so_far.get("output_files", [])) + list(file_paths.values()))
 
         # --- Optional PR ---
         pr_url = None
@@ -1084,10 +1230,10 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
                 f"{stats['hubspot_ready_count']} contacts ready for HubSpot import."
             )
             try:
-                pr_url = github_pr.open_output_pr(run_id, campaign_title, file_paths, summary)
+                pr_url = github_pr.open_output_pr(run_id, campaign_title, run_dir, file_paths, summary)
             except Exception as e:
                 _update(run_id, message=f"Could not open a PR automatically ({e}). Files are still saved locally.")
-        hubspot_ready_df.to_json(run_dir / "hubspot_ready.json", orient="records")
+        outputs.write_file(run_dir, "hubspot_ready.json", hubspot_ready_df.to_json(orient="records"), "application/json")
 
         # ============ Step 8: Associations (multi-select) ============
         _step(stats, "associations", "Associations", "running")
@@ -1170,8 +1316,7 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
 
 
 def run_confirmed_import(run_id: str, run_dir: Path):
-    ready_path = run_dir / "hubspot_ready.json"
-    df = pd.read_json(ready_path, orient="records")
+    df = pd.read_json(io.BytesIO(outputs.read_file(run_dir, "hubspot_ready.json")), orient="records")
     # astype(object) first so NaN -> None actually sticks; on a float64 column
     # `.where(..., None)` silently keeps NaN (None can't live in float64), and
     # NaN is not JSON-serializable -> the "Out of range float" upload error.
@@ -1187,15 +1332,27 @@ def run_confirmed_import(run_id: str, run_dir: Path):
     # Push the LinkedIn file to HeyReach (best-effort - never sinks the HubSpot
     # import that already succeeded).
     heyreach_result = {"status": "skipped"}
-    li_path = run_dir / "linkedin_upload.csv"
-    if li_path.exists():
-        li_df = pd.read_csv(li_path)
+    if outputs.file_exists(run_dir, "linkedin_upload.csv"):
+        li_df = pd.read_csv(io.BytesIO(outputs.read_file(run_dir, "linkedin_upload.csv")))
         if not li_df.empty:
             li_df = li_df.where(pd.notna(li_df), None)
             heyreach_result = heyreach.push_leads(li_df.to_dict(orient="records"), campaign_title)
     result["heyreach"] = heyreach_result
 
-    _update(run_id, stage=RunStage.done, message="Imported to HubSpot", hubspot_list_url=result["list"]["list_url"])
+    running_stats = dict(job["stats"])
+    _step(running_stats, "copy_agent", "Copy Agent", "running")
+    _update(run_id, message="Generating campaign copy", stats=running_stats)
+    copy_result = copy_agent.run(df)
+    result["copy_agent"] = {k: v for k, v in copy_result.items() if k != "copy"}  # copy body lives in the output file, not the status blob
+
+    output_files = list(job.get("output_files", []))
+    if copy_result["status"] == "done":
+        json_path = outputs.write_file(run_dir, "10_copy_agent.json", _json.dumps(copy_result, indent=2), "application/json")
+        md_path = outputs.write_file(run_dir, "10_COPY_AGENT.md", copy_agent.build_markdown(campaign_title, copy_result), "text/markdown")
+        output_files += [json_path, md_path]
+
+    _update(run_id, stage=RunStage.done, message="Imported to HubSpot", hubspot_list_url=result["list"]["list_url"],
+            output_files=output_files)
 
     job = get_job(run_id)
     final_stats = {**job["stats"], "hubspot_import": result}
@@ -1208,10 +1365,21 @@ def run_confirmed_import(run_id: str, run_dir: Path):
                 s["elapsed_s"] = round(time.time() - s["started_at"], 1)
                 s["time"] = estimates.humanize_seconds(s["elapsed_s"])
             s["summary"] = f"Imported {result['total']} contact(s); static list created.{hr_note}"
+        if s["key"] == "copy_agent":
+            s["status"] = "done" if copy_result["status"] == "done" else "skipped"
+            if s.get("started_at"):
+                s["elapsed_s"] = round(time.time() - s["started_at"], 1)
+                s["time"] = estimates.humanize_seconds(s["elapsed_s"])
+            if copy_result["status"] == "done":
+                s["summary"] = f"5-step email + LinkedIn copy generated for {copy_result['lead_count']} lead(s)."
+            else:
+                s["summary"] = copy_result.get("message", copy_result["status"])
     _update(run_id, stats=final_stats)
 
-    accounts_processed = pd.read_csv(run_dir / "01_accounts_processed.csv")
-    (run_dir / "SUMMARY.md").write_text(
-        outputs.build_summary_markdown(campaign_title, final_stats, accounts_processed, import_result=result)
+    accounts_processed = pd.read_csv(io.BytesIO(outputs.read_file(run_dir, "01_accounts_processed.csv")))
+    outputs.write_file(
+        run_dir, "SUMMARY.md",
+        outputs.build_summary_markdown(campaign_title, final_stats, accounts_processed, import_result=result),
+        "text/markdown",
     )
     return result

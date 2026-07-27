@@ -21,7 +21,7 @@ import subprocess
 import pandas as pd
 import requests
 
-from .. import config
+from .. import config, redis_cache
 
 EXTRACT_MODEL = "claude-sonnet-4-5"
 MAX_RECORDS = 500          # hard cap on extracted rows
@@ -67,7 +67,21 @@ def _scrape_cache_path(url: str):
     return config.CACHE_DIR / f"scrape_{hashlib.md5(url.encode()).hexdigest()[:12]}.json"
 
 
+def _scrape_redis_key(url: str) -> str:
+    return f"cache:scrape:{hashlib.md5(url.encode()).hexdigest()[:12]}"
+
+
+def scrape_cache_location(url: str) -> str:
+    """Human-readable pointer to wherever this URL's cache actually lives -
+    for error messages that tell the user how to reset it."""
+    if redis_cache.is_configured():
+        return f"Redis key {_scrape_redis_key(url)!r}"
+    return f"the local cache file {_scrape_cache_path(url)}"
+
+
 def _load_scrape_cache(url: str) -> dict:
+    if redis_cache.is_configured():
+        return redis_cache.get_json(_scrape_redis_key(url)) or {"records": [], "count": 0, "last_truncated": False}
     p = _scrape_cache_path(url)
     if p.exists():
         try:
@@ -78,6 +92,9 @@ def _load_scrape_cache(url: str) -> dict:
 
 
 def _save_scrape_cache(url: str, cache: dict):
+    if redis_cache.is_configured():
+        redis_cache.set_json(_scrape_redis_key(url), cache)
+        return
     try:
         _scrape_cache_path(url).write_text(json.dumps(cache))
     except Exception:

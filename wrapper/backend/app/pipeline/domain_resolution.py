@@ -91,9 +91,13 @@ def resolve_domains_for_df(df: pd.DataFrame, company_col: str, employee_col: str
     out["Domain Resolution Source"] = sources
 
     resolved = sum(1 for d in domains if d)
+    from_apollo = sum(1 for d, s in zip(domains, sources) if d and s.startswith("Apollo"))
+    from_clearbit = sum(1 for d, s in zip(domains, sources) if d and s.startswith("Clearbit"))
     return out, {
         "total": len(out),
         "resolved": resolved,
+        "from_apollo": from_apollo,
+        "from_clearbit": from_clearbit,
         "unresolved_or_ambiguous": len(out) - resolved,
         "ambiguous": ambiguous_rows,
     }

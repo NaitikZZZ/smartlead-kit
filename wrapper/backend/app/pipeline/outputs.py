@@ -17,7 +17,44 @@ except ImportError:  # Python <3.11 has no datetime.UTC
     from datetime import datetime, timezone
     UTC = timezone.utc
 
+from .. import vercel_blob
+
 SENIORITY_MAP = {"c_suite": "C suite", "vp": "VP", "head": "Head", "director": "Director", "manager": "Manager"}
+
+
+def write_file(run_dir: Path, filename: str, content: bytes | str, content_type: str | None = None) -> str:
+    """Writes a run output file to local disk (still needed same-request, e.g.
+    github_pr.py reads these paths directly) AND, when Vercel Blob is
+    configured, uploads it too - keyed deterministically as
+    runs/{run_id}/{filename}, so a LATER, separate request (the file download
+    route, or run_confirmed_import reading hubspot_ready.json back) can fetch
+    it by run_id + filename alone, without needing to persist a reference
+    anywhere. Always returns str(run_dir / filename) - unchanged from before
+    Blob existed - since that's all any caller has ever needed for display
+    (only the filename is ever shown/used, via Path(p).name)."""
+    path = run_dir / filename
+    if isinstance(content, str):
+        path.write_text(content)
+    else:
+        path.write_bytes(content)
+    if vercel_blob.is_configured():
+        vercel_blob.put(f"runs/{run_dir.name}/{filename}", content, content_type=content_type)
+    return str(path)
+
+
+def read_file(run_dir: Path, filename: str) -> bytes:
+    """Reads back a file written by write_file() - from Blob when configured
+    (even if this process never wrote it locally, e.g. a different serverless
+    invocation handled the original run step), otherwise from local disk."""
+    if vercel_blob.is_configured():
+        return vercel_blob.get(vercel_blob.url_for(f"runs/{run_dir.name}/{filename}"))
+    return (run_dir / filename).read_bytes()
+
+
+def file_exists(run_dir: Path, filename: str) -> bool:
+    if vercel_blob.is_configured():
+        return vercel_blob.exists(f"runs/{run_dir.name}/{filename}")
+    return (run_dir / filename).exists()
 
 
 def bucket_employees(n):
@@ -82,6 +119,15 @@ def build_hubspot_import_file(enriched_df: pd.DataFrame, campaign_title: str) ->
             "department___job_function__apollo_": clean(row.get("departments")),
             "campaign_title": campaign_title,
         })
+    if not rows:
+        # pd.DataFrame([]) has zero columns, not just zero rows - build_channel_files'
+        # email_df["email"] filter then KeyErrors instead of yielding an empty file.
+        return pd.DataFrame(columns=[
+            "firstname", "lastname", "email", "jobtitle", "phone", "hs_linkedin_url", "company",
+            "company_linkedin_url", "industry", "numemployees", "annualrevenue", "total_funding",
+            "technologies", "seniority_level", "country", "state", "address", "city",
+            "department___job_function__apollo_", "campaign_title",
+        ])
     return pd.DataFrame(rows)
 
 
@@ -265,34 +311,23 @@ def build_summary_markdown(campaign_title: str, stats: dict, accounts_processed:
 
 def write_outputs(run_dir: Path, accounts_processed: pd.DataFrame, enriched: pd.DataFrame, campaign_title: str, stats: dict):
     run_dir.mkdir(parents=True, exist_ok=True)
-    p1 = run_dir / "01_accounts_processed.csv"
-    p2 = run_dir / "02_enriched_contacts.csv"
-    p4 = run_dir / "SUMMARY.md"
 
-    accounts_processed.to_csv(p1, index=False)
-    enriched.to_csv(p2, index=False)
+    refs = {
+        "01_accounts_processed.csv": write_file(run_dir, "01_accounts_processed.csv", accounts_processed.to_csv(index=False), "text/csv"),
+        "02_enriched_contacts.csv": write_file(run_dir, "02_enriched_contacts.csv", enriched.to_csv(index=False), "text/csv"),
+    }
 
     # Three channel-specific deliverables. The email file IS the HubSpot import.
     channels = build_channel_files(enriched, campaign_title)
-    email_path = run_dir / "email_upload.csv"
-    linkedin_path = run_dir / "linkedin_upload.csv"
-    calling_path = run_dir / "calling_upload.csv"
-    channels["email"].to_csv(email_path, index=False)
-    channels["linkedin"].to_csv(linkedin_path, index=False)
-    channels["calling"].to_csv(calling_path, index=False)
+    refs["email_upload.csv"] = write_file(run_dir, "email_upload.csv", channels["email"].to_csv(index=False), "text/csv")
+    refs["linkedin_upload.csv"] = write_file(run_dir, "linkedin_upload.csv", channels["linkedin"].to_csv(index=False), "text/csv")
+    refs["calling_upload.csv"] = write_file(run_dir, "calling_upload.csv", channels["calling"].to_csv(index=False), "text/csv")
 
     stats["channel_counts"] = {
         "email": int(len(channels["email"])),
         "linkedin": int(len(channels["linkedin"])),
         "calling": int(len(channels["calling"])),
     }
-    p4.write_text(build_summary_markdown(campaign_title, stats, accounts_processed))
+    refs["SUMMARY.md"] = write_file(run_dir, "SUMMARY.md", build_summary_markdown(campaign_title, stats, accounts_processed), "text/markdown")
 
-    return {
-        "01_accounts_processed.csv": str(p1),
-        "02_enriched_contacts.csv": str(p2),
-        "email_upload.csv": str(email_path),
-        "linkedin_upload.csv": str(linkedin_path),
-        "calling_upload.csv": str(calling_path),
-        "SUMMARY.md": str(p4),
-    }, channels["email"]
+    return refs, channels["email"]

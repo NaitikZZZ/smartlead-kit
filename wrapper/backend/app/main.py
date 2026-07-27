@@ -1,10 +1,14 @@
 from pathlib import Path
 
+import inngest.fast_api
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import config
-from .routes import runs
+from .inngest_client import client as inngest_client
+from .inngest_functions import connectivity_test, wait_test
+from .pipeline.inngest_runner import run_pipeline_slice1
+from .routes import cron, runs
 
 app = FastAPI(title="ABM Enrichment Wrapper", version="0.1.0")
 
@@ -16,6 +20,8 @@ app.add_middleware(
 )
 
 app.include_router(runs.router)
+app.include_router(cron.router)
+inngest.fast_api.serve(app, inngest_client, [connectivity_test, wait_test, run_pipeline_slice1])
 
 
 @app.get("/api/config")

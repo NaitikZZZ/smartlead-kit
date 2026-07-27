@@ -96,6 +96,7 @@ export const STEPS: { key: string; title: string; hint: string }[] = [
   { key: "outputs", title: "Output Files & Name", hint: "3 channel files + campaign name" },
   { key: "associations", title: "Associations", hint: "Project / Partner / Event + list" },
   { key: "upload", title: "Preview & Upload", hint: "Review, then push to HubSpot" },
+  { key: "copy_agent", title: "Copy Agent", hint: "Generate email & LinkedIn copy" },
 ];
 
 export interface RunStatus {

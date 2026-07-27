@@ -13,7 +13,7 @@ except ImportError:  # Python <3.11
 
 import requests
 
-from .. import config
+from .. import config, redis_cache
 
 OBJECT_TYPE = {
     "partner": config.HUBSPOT_PARTNER_OBJECT,
@@ -54,6 +54,24 @@ def get_association_type(object_type_id: str) -> dict:
 
 def _assoc_cache_path(kind: str):
     return config.CACHE_DIR / f"assoc_{kind}.json"
+
+
+def _assoc_redis_key(kind: str) -> str:
+    return f"cache:assoc:{kind}"
+
+
+def _assoc_cache_read(kind: str) -> dict | None:
+    if redis_cache.is_configured():
+        return redis_cache.get_json(_assoc_redis_key(kind))
+    p = _assoc_cache_path(kind)
+    return json.loads(p.read_text()) if p.exists() else None
+
+
+def _assoc_cache_write(kind: str, data: dict) -> None:
+    if redis_cache.is_configured():
+        redis_cache.set_json(_assoc_redis_key(kind), data)
+        return
+    _assoc_cache_path(kind).write_text(json.dumps(data))
 
 
 def fetch_all_records(kind: str) -> list[dict]:
@@ -98,36 +116,31 @@ def fetch_all_records(kind: str) -> list[dict]:
 
 
 def refresh_cache(kinds: list[str] | None = None) -> dict:
-    """Fetch all records for each kind and write them to disk. Run on a cron."""
+    """Fetch all records for each kind and cache them. Run on a cron."""
     kinds = kinds or ["project", "partner", "event"]
     result = {}
     for kind in kinds:
         recs = fetch_all_records(kind)
-        _assoc_cache_path(kind).write_text(json.dumps({"built_at": datetime.now(UTC).isoformat(), "records": recs}))
+        _assoc_cache_write(kind, {"built_at": datetime.now(UTC).isoformat(), "records": recs})
         result[kind] = len(recs)
     return result
 
 
-def _assoc_cache_age_hours(kind: str):
-    p = _assoc_cache_path(kind)
-    if not p.exists():
-        return None
-    try:
-        built = datetime.fromisoformat(json.loads(p.read_text())["built_at"])
-    except Exception:
-        return None
-    return (datetime.now(UTC) - built).total_seconds() / 3600
-
-
 def list_records(kind: str) -> list[dict]:
-    """Serve the full record list from cache (kept fresh by the cron). Only
-    fetches inline if the cache is missing or older than the TTL."""
-    age = _assoc_cache_age_hours(kind)
-    if age is not None and age <= config.ASSOC_CACHE_TTL_HOURS:
-        return json.loads(_assoc_cache_path(kind).read_text())["records"]
-    recs = fetch_all_records(kind)
-    _assoc_cache_path(kind).write_text(json.dumps({"built_at": datetime.now(UTC).isoformat(), "records": recs}))
-    return recs
+    """Serve the full record list from cache - a Vercel Cron Job (see
+    app/routes/cron.py) is the only thing that rebuilds this now; a real
+    request never fetches inline (removed - an unbounded-duration HubSpot
+    pagination call has no business running inside a request a human is
+    waiting on, or inside a Vercel function's duration limit). A stale cache
+    (past TTL) is still served - the caller (runner.py's associations step)
+    already treats a missing/failed cache as "fall back to manual entry"."""
+    data = _assoc_cache_read(kind)
+    if data is None:
+        raise RuntimeError(
+            f"{kind} dropdown cache has never been built - the cron (app/routes/cron.py) "
+            "populates it; wait for the next run or trigger it manually."
+        )
+    return data["records"]
 
 
 def _extract_id_from_url(value: str) -> str | None:

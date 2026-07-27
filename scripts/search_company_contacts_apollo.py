@@ -133,6 +133,32 @@ def select_candidates(people):
     return selected
 
 
+def select_candidates_per_persona(people, personas, per_persona_cap):
+    """Guarantee up to `per_persona_cap` candidates for EACH persona/title in
+    `personas`, instead of ranking everyone against the hardcoded PERSONA_TIERS
+    keyword list (which only recognizes the built-in HR titles). Within a
+    persona, has_email=true candidates are preferred. A candidate matching
+    more than one requested persona is only counted once, under whichever
+    persona it matches first in list order. Candidates matching none of the
+    listed personas are dropped - the point is guaranteed per-title coverage,
+    not a general top-N fill."""
+    selected, seen_ids = [], set()
+    for tier, persona in enumerate(personas):
+        needle = (persona or '').strip().lower()
+        if not needle:
+            continue
+        matches = [
+            p for p in people
+            if needle in (p.get('title') or '').lower() and p.get('id') not in seen_ids
+        ]
+        matches.sort(key=lambda p: p.get('has_email') is not True)
+        for p in matches[:per_persona_cap]:
+            p['_tier'] = tier  # index of the persona it matched, for the output's persona_tier column
+            selected.append(p)
+            seen_ids.add(p.get('id'))
+    return selected
+
+
 def main():
     args = sys.argv[1:]
     input_csv, company_col, domain_col, output_csv = args[:4]

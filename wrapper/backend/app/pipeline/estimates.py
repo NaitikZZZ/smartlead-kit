@@ -31,6 +31,7 @@ SECONDS_PER_UNIT = {
     "email_reveal": 0.5,
     "mobile_phone": 0.5,
     "outputs": 0.01,
+    "completeness": 4.0,  # 1 Claude + web_search call per gap row
 }
 
 
