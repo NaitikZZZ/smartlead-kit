@@ -2,6 +2,8 @@
 
 Accumulated rules for generating outbound copy and running campaigns for this kit. Consolidated from working sessions so they're versioned instead of living only in chat history.
 
+**→ Read [`HUMANVOICE_COPY_GUIDE.md`](HUMANVOICE_COPY_GUIDE.md) first for tone, voice, persona framing, and the ready-to-use prompt for generating new sequences.**
+
 ## Punctuation
 - Never use em dashes (—) or en dashes (–). Use hyphens, commas, or rewrite.
 - Zero exclamation points in cold outbound.

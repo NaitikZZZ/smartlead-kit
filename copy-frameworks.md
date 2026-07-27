@@ -1,9 +1,11 @@
 # ✍️ Cold Email Copy Frameworks — Xoxoday (Smartlead)
 
+**IMPORTANT: Read [`HUMANVOICE_COPY_GUIDE.md`](HUMANVOICE_COPY_GUIDE.md) first.** It sets the tone, voice, and persona-level framing for ALL frameworks below. Use it as your system instruction when generating any new sequences.
+
 > All templates use **Smartlead** merge tags (snake_case): `{{first_name}}`, `{{company_name}}`, `{{custom_var}}`.
 >
 > Product reference: **Xoxoday** — global rewards, recognition, loyalty, and incentives platform.
-> - **Empuls** — employee recognition + engagement (default angle below)
+> - **Empuls** — employee recognition + engagement
 > - **Plum** — rewards/incentives/payouts API, 10M+ reward catalog across 175+ countries
 > - **Compass** — sales commission automation
 > - **Loyalife** — customer loyalty programs
