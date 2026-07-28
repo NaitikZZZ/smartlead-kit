@@ -1,6 +1,12 @@
 import type { AppConfig, RunStatus } from "./types";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8731";
+// Falls back to same-origin ("") in a production build even if VITE_API_BASE
+// was never configured in Vercel - relying on that env var alone meant a
+// missing/misscoped dashboard setting silently baked "localhost:8731" into
+// the production bundle (confirmed live: it kept hitting ERR_CONNECTION_REFUSED
+// on localhost from real browsers). import.meta.env.PROD is set by Vite
+// itself at build time, so this no longer depends on Vercel config at all.
+const API_BASE = import.meta.env.VITE_API_BASE ?? (import.meta.env.PROD ? "" : "http://localhost:8731");
 
 export async function getConfig(): Promise<AppConfig> {
   const r = await fetch(`${API_BASE}/api/config`);
@@ -9,9 +15,10 @@ export async function getConfig(): Promise<AppConfig> {
 }
 
 export interface StartRunParams {
-  inputSource: "csv" | "hubspot_project";
+  inputSource: "csv" | "hubspot_project" | "campaign_idea";
   csvFile?: File;
   hubspotProjectId?: string;
+  campaignIdea?: string;
   mappingSheetFile?: File;
   companyCol?: string;
   domainCol?: string;
@@ -22,6 +29,7 @@ export async function startRun(params: StartRunParams): Promise<RunStatus> {
   const fd = new FormData();
   fd.append("input_source", params.inputSource);
   if (params.hubspotProjectId) fd.append("hubspot_project_id", params.hubspotProjectId);
+  if (params.campaignIdea) fd.append("campaign_idea", params.campaignIdea);
   if (params.companyCol) fd.append("company_col", params.companyCol);
   if (params.domainCol) fd.append("domain_col", params.domainCol);
   if (params.employeeCol) fd.append("employee_col", params.employeeCol);

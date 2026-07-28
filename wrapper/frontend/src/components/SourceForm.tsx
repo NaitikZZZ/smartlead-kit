@@ -3,9 +3,10 @@ import type { AppConfig } from "../lib/types";
 import { startRun, previewProject, type ProjectPreview } from "../lib/api";
 import Tooltip from "./Tooltip";
 
-const SOURCES: { value: "csv" | "hubspot_project"; title: string; desc: string }[] = [
+const SOURCES: { value: "csv" | "hubspot_project" | "campaign_idea"; title: string; desc: string }[] = [
   { value: "csv", title: "CSV file / data sheet", desc: "Upload a target-account list directly" },
   { value: "hubspot_project", title: "HubSpot Project", desc: "Pull ICP/context from an ABM Campaigns pipeline record" },
+  { value: "campaign_idea", title: "Describe your campaign", desc: "Free-text idea, with an optional company list attached" },
 ];
 
 // Canonical Apollo / Sales-Nav export header row the pipeline understands.
@@ -27,9 +28,10 @@ const HEADER_GUIDE: { h: string; note: string }[] = [
 ];
 
 export default function SourceForm({ onStarted, appConfig }: { onStarted: (runId: string) => void; appConfig: AppConfig | null }) {
-  const [source, setSource] = useState<"csv" | "hubspot_project">("csv");
+  const [source, setSource] = useState<"csv" | "hubspot_project" | "campaign_idea">("csv");
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [projectId, setProjectId] = useState("");
+  const [campaignIdea, setCampaignIdea] = useState("");
   const [preview, setPreview] = useState<ProjectPreview | null>(null);
   const [loadingProject, setLoadingProject] = useState(false);
   const [projectError, setProjectError] = useState<string | null>(null);
@@ -47,7 +49,8 @@ export default function SourceForm({ onStarted, appConfig }: { onStarted: (runId
     !!preview && !preview.list_fetchable && !preview.list_scrapable && !csvFile;
   const canSubmit =
     (source === "csv" && !!csvFile) ||
-    (source === "hubspot_project" && !!projectId && !needsUploadForProject);
+    (source === "hubspot_project" && !!projectId && !needsUploadForProject) ||
+    (source === "campaign_idea" && campaignIdea.trim().length > 0);
 
   async function loadProject() {
     if (!projectId.trim()) return;
@@ -106,6 +109,7 @@ export default function SourceForm({ onStarted, appConfig }: { onStarted: (runId
         inputSource: source,
         csvFile: csvFile || undefined,
         hubspotProjectId: projectId || undefined,
+        campaignIdea: source === "campaign_idea" ? campaignIdea.trim() : undefined,
         companyCol: companyCol || undefined,
         domainCol: domainCol || undefined,
         employeeCol: employeeCol || undefined,
@@ -126,7 +130,7 @@ export default function SourceForm({ onStarted, appConfig }: { onStarted: (runId
       </h2>
       <p style={{ marginBottom: 20 }}>Pick a source. Each step asks before it runs.</p>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12, marginBottom: 20 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 20 }}>
         {SOURCES.map((s) => (
           <button
             key={s.value}
@@ -265,6 +269,29 @@ export default function SourceForm({ onStarted, appConfig }: { onStarted: (runId
               (ICP, region, list link, concept). If the list is behind a login you'll be prompted to download and upload it.
             </p>
           )}
+        </>
+      )}
+
+      {source === "campaign_idea" && (
+        <>
+          <label style={{ display: "block", marginBottom: 12 }}>
+            <span style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 6, color: "var(--dark-200)" }}>
+              Describe your campaign
+            </span>
+            <textarea
+              rows={4}
+              value={campaignIdea}
+              placeholder="e.g. Customer Advocacy Platforms - target Product Managers and Partnership Heads for our advocacy use case, US/Canada"
+              onChange={(e) => setCampaignIdea(e.target.value)}
+            />
+          </label>
+          <FileField label="Optional: attach a company list (CSV/Excel) - otherwise you'll be asked for company names to search"
+                     file={csvFile} onChange={setCsvFile} accept=".csv,.xlsx,.xls" />
+          <p style={{ fontSize: 12, color: "var(--dark-200)", marginTop: -4, marginBottom: 8 }}>
+            The app matches your description to a Xoxoday use case, shows you the matched job titles/regions to
+            confirm or edit, then either searches Apollo by company name (no list attached) or runs People
+            Discovery against your attached list using the confirmed targeting.
+          </p>
         </>
       )}
 

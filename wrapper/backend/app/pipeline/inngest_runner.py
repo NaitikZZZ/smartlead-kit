@@ -63,16 +63,18 @@ import datetime
 import io
 import json
 import math
+import re
 
 import inngest
 import pandas as pd
+from anthropic import Anthropic
 
 from .. import config, run_status, vercel_blob
 from ..inngest_client import client
 from . import (
     apollo_enrich, association_resolve, copy_agent, domain_resolution, estimates,
-    github_pr, heyreach, hubspot_exclusion, hubspot_import, input_sources, naming,
-    normalize, outputs, web_completeness, web_scrape,
+    github_pr, heyreach, hubspot_exclusion, hubspot_import, icp_mapper, input_sources,
+    naming, normalize, outputs, web_completeness, web_scrape,
 )
 from .runner import COUNTRY_OPTIONS, REGION_OPTIONS, _map_existing_contact_columns
 
@@ -99,6 +101,30 @@ def _truthy(v) -> bool:
     if isinstance(v, bool):
         return v
     return str(v).strip().lower() in ("yes", "true", "y", "1")
+
+
+_URL_RE = re.compile(r"^(?:https?://)?(?:www\.)?([^/\s]+\.[a-z]{2,})(?:/.*)?$", re.I)
+
+
+def _parse_company_names(raw: str) -> list[str]:
+    """Splits a free-text company list on commas/semicolons/newlines when
+    present; falls back to whitespace-splitting for pasted space-separated
+    lists (e.g. a block of URLs). Any entry that looks like a URL/domain is
+    reduced to its bare hostname (e.g. "https://hootsuite.com/products/x" ->
+    "hootsuite.com") since that resolves far better than the raw URL through
+    the Clearbit/Apollo company lookup pipeline."""
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    parts = re.split(r"[,\n;]+", raw) if re.search(r"[,\n;]", raw) else raw.split()
+    names = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        m = _URL_RE.match(p)
+        names.append(m.group(1).lower() if m else p)
+    return names
 
 
 def _nan_safe(o):
@@ -236,6 +262,187 @@ async def _ask(step: inngest.Step, run_id: str, key: str, qtype: str, prompt: st
     return event.data["value"]
 
 
+async def _extract_and_confirm_icp(step: inngest.Step, run_id: str, campaign_idea: str, *,
+                                    extract_key: str, confirm_key: str, prompt_prefix: str = ""):
+    """Turns a free-text campaign idea into confirmed (persona_titles,
+    person_locations), reusing runner.py's exact extraction-prompt shape and
+    _ask_icp_confirm's exact context shape - the frontend's StepCard.tsx
+    already fully renders "icp_confirm_form" (built for the legacy engine,
+    never actually reachable there since that flow crashes on a missing
+    function before ever getting this far). extract_key/confirm_key must be
+    unique per call site, including per "add more prospects" loop iteration.
+
+    Two fallbacks to manual title entry, matching runner.py's existing
+    fallback shapes: no ICP workbook at all, or (the actual bug fix here)
+    Claude extracts a product/use-case that isn't in the workbook - runner.py
+    hard-raises in that case ("Could not map: {product} -> {use_case}"),
+    which would fire constantly for a real, missing product like "Global
+    API" (confirmed: the workbook only has 3 sheets). This degrades instead."""
+
+    async def _load_use_cases():
+        return icp_mapper.get_use_case_options()
+
+    use_case_options = await step.run(f"{extract_key}_load_use_cases", _load_use_cases)
+
+    if not use_case_options:
+        titles_answer = await _ask(
+            step, run_id, f"{confirm_key}_manual_titles", "text",
+            "ICP reference sheet not found - enter job titles to target (comma-separated):",
+            default="", context={"step": "source"},
+        )
+        persona_titles = [t.strip() for t in str(titles_answer).split(",") if t.strip()] or None
+        return persona_titles, None
+
+    async def _extract():
+        claude = Anthropic()
+        extract_prompt = f"""Analyze this campaign idea and extract the Xoxoday product and use case.
+
+Campaign Idea:
+{campaign_idea}
+
+Available products and use cases:
+{json.dumps({p: uc[:5] for p, uc in use_case_options.items()}, indent=2)}
+
+Return ONLY valid JSON:
+{{
+  "product": "Empuls use cases",
+  "use_case": "Engagement & Listening",
+  "reasoning": "brief explanation"
+}}
+
+If uncertain, pick the most likely match. Return ONLY JSON, no markdown."""
+        try:
+            resp = claude.messages.create(model="claude-opus-4-1", max_tokens=300,
+                                           messages=[{"role": "user", "content": extract_prompt}])
+            text = resp.content[0].text.strip()
+            if text.startswith("```"):
+                text = text.split("```")[1].lstrip("json\n")
+            extracted = json.loads(text)
+            return {"product": (extracted.get("product") or "").strip(),
+                    "use_case": (extracted.get("use_case") or "").strip(), "error": None}
+        except Exception as e:
+            return {"product": None, "use_case": None, "error": str(e)}
+
+    extracted = await step.run(f"{extract_key}_claude_extract", _extract)
+
+    if extracted["error"] or not extracted["product"]:
+        product_list = sorted(use_case_options.keys())
+        product = await _ask(step, run_id, f"{confirm_key}_manual_product", "choice",
+                              "Which Xoxoday product?", options=product_list, context={"step": "source"})
+        use_case = await _ask(step, run_id, f"{confirm_key}_manual_use_case", "choice",
+                               "Which use case?", options=use_case_options.get(product, []),
+                               context={"step": "source"})
+    else:
+        product, use_case = extracted["product"], extracted["use_case"]
+
+    icp_mapping = icp_mapper.map_use_case_to_icp(product, use_case)
+
+    if not icp_mapping:
+        titles_answer = await _ask(
+            step, run_id, f"{confirm_key}_manual_titles_unmapped", "text",
+            f"Couldn't map \"{product} - {use_case}\" to a known ICP (that product/use-case isn't in the "
+            "reference sheet yet) - enter job titles to target (comma-separated):",
+            default="", context={"step": "source"},
+        )
+        persona_titles = [t.strip() for t in str(titles_answer).split(",") if t.strip()] or None
+        return persona_titles, None
+
+    form_answer = await _ask(
+        step, run_id, confirm_key, "icp_confirm_form",
+        f"{prompt_prefix}Matched \"{campaign_idea[:80]}...\" to **{product} - {use_case}** "
+        f"(Economic Buyer: {icp_mapping.get('economic_buyer') or 'n/a'}, "
+        f"Champion: {icp_mapping.get('champion') or 'n/a'}). Pre-filled from the ICP sheet - edit if needed.",
+        default=None,
+        context={
+            "step": "source",
+            "icp_sheet_url": icp_mapper.ICP_SHEET_URL,
+            "economic_buyer": icp_mapping.get("economic_buyer", ""),
+            "champion": icp_mapping.get("champion", ""),
+            "influencer": icp_mapping.get("influencer", ""),
+            "fields": {
+                "job_titles": {
+                    "label": "Job titles (from the ICP sheet - uncheck any to exclude)",
+                    "options": icp_mapping.get("job_titles") or [],
+                    "default": icp_mapping.get("job_titles") or [],
+                },
+                "regions": {
+                    "label": "Regions (uncheck to exclude, or add more)",
+                    "options": REGION_OPTIONS, "country_options": COUNTRY_OPTIONS,
+                    "default": icp_mapping.get("regions") or [],
+                },
+            },
+        },
+    )
+    form_answer = form_answer or {}
+    persona_titles = form_answer.get("job_titles") or None
+    person_locations = form_answer.get("regions") or None
+    return persona_titles, person_locations
+
+
+async def _add_more_prospects_loop(step: inngest.Step, run_id: str, candidates_df: pd.DataFrame,
+                                    persona_titles, person_locations, do_search, max_iterations: int = 5):
+    """Bounded version of runner.py's unbounded `while add_more:` loop (lines
+    597-715 there) - Inngest step keys must be unique per run, so a real
+    while loop can't work here; capped at max_iterations rounds instead.
+    do_search(names, titles, locations, key_suffix) is the same closure the
+    caller used for the initial search, reused here for each iteration."""
+    total_found = len(candidates_df)
+    for i in range(1, max_iterations + 1):
+        add_more = await _ask(
+            step, run_id, f"apollo_add_more_prospects_{i}", "yes_no",
+            f"Found {total_found} prospect(s) so far.\n\nAdd more prospects from other companies or with different filters?",
+            default="no", context={"step": "source", "total_found": total_found, "iteration": i},
+        )
+        if not _truthy(add_more):
+            break
+
+        choice = await _ask(
+            step, run_id, f"apollo_add_more_choice_{i}", "choice",
+            "How would you like to add more prospects?",
+            options=["Search different companies with same filters", "Search same companies with different filters"],
+            context={"step": "source", "iteration": i},
+        )
+
+        if choice == "Search different companies with same filters":
+            more_companies = await _ask(
+                step, run_id, f"apollo_more_company_names_{i}", "text",
+                "Additional company names (comma-separated, or paste one per line/space-separated - "
+                "URLs are fine too):\ne.g. NewCo, AnotherCorp, TechStartup",
+                default="", context={"step": "source"},
+            )
+            names = _parse_company_names(str(more_companies))
+            if not names:
+                continue
+            more_df, _more_stats = await do_search(names, persona_titles, person_locations, key_suffix=f"_more_{i}")
+            candidates_df = pd.concat([candidates_df, more_df], ignore_index=True)
+        else:
+            new_idea = await _ask(
+                step, run_id, f"apollo_additional_campaign_idea_{i}", "text",
+                "New campaign idea for same companies:\n(e.g., 'Target different departments - Finance instead of HR')",
+                default="", context={"step": "source"},
+            )
+            if not new_idea.strip():
+                continue
+            new_persona_titles, new_person_locations = await _extract_and_confirm_icp(
+                step, run_id, new_idea,
+                extract_key=f"icp_extract_more_{i}", confirm_key=f"icp_confirm_more_{i}",
+                prompt_prefix="Refined filters - ",
+            )
+            persona_titles = new_persona_titles or persona_titles
+            person_locations = new_person_locations or person_locations
+            same_companies = candidates_df["Company"].dropna().unique().tolist()
+            new_df, _new_stats = await do_search(same_companies, persona_titles, person_locations, key_suffix=f"_refilter_{i}")
+            candidates_df = pd.concat([candidates_df, new_df], ignore_index=True)
+            if "obfuscated_name" in candidates_df.columns:
+                candidates_df = candidates_df.drop_duplicates(subset=["obfuscated_name", "Company"], keep="first")
+
+        total_found = len(candidates_df)
+        await _set_stat(step, f"stat_discovery_idea_more_{i}", run_id, "apollo_search",
+                         {"candidates_found": total_found})
+
+    return candidates_df, persona_titles, person_locations
+
+
 @client.create_function(
     fn_id="run_pipeline_slice1",
     trigger=inngest.TriggerEvent(event="run/start"),
@@ -261,6 +468,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
     csv_blob_pathname = data.get("csv_blob_pathname")
     csv_filename = data.get("csv_filename") or "input.csv"
     hubspot_project_id = data.get("hubspot_project_id")
+    campaign_idea = (data.get("campaign_idea") or "").strip()
     company_col = data.get("company_col")
     employee_col = data.get("employee_col")
     domain_col = data.get("domain_col")
@@ -404,264 +612,402 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                         "SharePoint/Drive login, download it and upload it as a CSV instead."
                     )
                 df = pd.DataFrame(fetch_result["records"])
+
+    elif input_source == "campaign_idea":
+        if not campaign_idea:
+            raise ValueError("campaign_idea input source requires a non-empty campaign_idea")
+        if csv_blob_pathname:
+            async def _fetch_csv():
+                blob_bytes = vercel_blob.get(vercel_blob.url_for(csv_blob_pathname))
+                return blob_bytes.decode("latin-1")
+
+            csv_text = await step.run("fetch_csv_from_blob", _fetch_csv)
+            df = input_sources.read_csv_bytes(csv_text.encode("latin-1"), csv_filename)
+        else:
+            df = None  # no company-list df yet - built entirely in the campaign_idea_no_csv block below
+
     else:
         raise ValueError(f"Unknown or unsupported input_source: {input_source!r}")
 
-    # Some exports (seen on a real HubSpot pull) carry the same header twice -
-    # df["Some Column"] then returns a DataFrame instead of a Series, and any
-    # .str/.isna() call on it downstream blows up.
-    if df.columns.duplicated().any():
-        df = df.loc[:, ~df.columns.duplicated()]
+    campaign_idea_no_csv = (input_source == "campaign_idea" and df is None)
 
-    input_count = len(df)
-    company_col = company_col or _guess_col(
-        df, ["Company", "Company Name", "company", "Account Name", "Organization", "organization"])
-    if not company_col:
-        raise ValueError(f"Could not find a company-name column. Columns present: {list(df.columns)}")
-    region_col = _guess_col(df, ["Region", "Country", "region", "country"])
-    if project_meta:
-        await _set_stat(step, "stat_project_meta", run_id, "project_meta", project_meta)
+    persona_titles_from_idea = None
+    person_locations_from_idea = None
 
-    if (company_col.strip().lower() not in {"company name", "company", "organization", "organisation", "account name"}
-            and "Company" not in df.columns):
-        df["Company"] = df[company_col]
+    if not campaign_idea_no_csv:
+        # Some exports (seen on a real HubSpot pull) carry the same header twice -
+        # df["Some Column"] then returns a DataFrame instead of a Series, and any
+        # .str/.isna() call on it downstream blows up.
+        if df.columns.duplicated().any():
+            df = df.loc[:, ~df.columns.duplicated()]
 
-    await _status(step, "status_normalizing", run_id, stage="normalizing", message="Normalizing names/company")
-    df, norm_stats = normalize.run_normalization(df)
-    resolved_company_col = "Cleaned Company Name" if "Cleaned Company Name" in df.columns else company_col
+        input_count = len(df)
+        company_col = company_col or _guess_col(
+            df, ["Company", "Company Name", "company", "Account Name", "Organization", "organization"])
+        if not company_col:
+            raise ValueError(f"Could not find a company-name column. Columns present: {list(df.columns)}")
+        region_col = _guess_col(df, ["Region", "Country", "region", "country"])
+        if project_meta:
+            await _set_stat(step, "stat_project_meta", run_id, "project_meta", project_meta)
 
-    src_summary = f"{input_count} row(s) read. Names & companies normalized."
-    if scrape_stats:
-        _rnote = f"resumed from #{scrape_stats.get('offset', 0) + 1}, " if scrape_stats.get("resumed") else ""
-        _tnote = (f" (more remain - re-run to continue from #{scrape_stats.get('total_extracted', 0) + 1})"
-                  if scrape_stats.get("truncated") else "")
-        src_summary = (
-            f"Auto-extracted {_rnote}{scrape_stats['scraped']} record(s) from the linked web page "
-            f"({scrape_stats['method']}){_tnote} - review recommended. " + src_summary
+        if (company_col.strip().lower() not in {"company name", "company", "organization", "organisation", "account name"}
+                and "Company" not in df.columns):
+            df["Company"] = df[company_col]
+
+        await _status(step, "status_normalizing", run_id, stage="normalizing", message="Normalizing names/company")
+        df, norm_stats = normalize.run_normalization(df)
+        resolved_company_col = "Cleaned Company Name" if "Cleaned Company Name" in df.columns else company_col
+
+        src_summary = f"{input_count} row(s) read. Names & companies normalized."
+        if scrape_stats:
+            _rnote = f"resumed from #{scrape_stats.get('offset', 0) + 1}, " if scrape_stats.get("resumed") else ""
+            _tnote = (f" (more remain - re-run to continue from #{scrape_stats.get('total_extracted', 0) + 1})"
+                      if scrape_stats.get("truncated") else "")
+            src_summary = (
+                f"Auto-extracted {_rnote}{scrape_stats['scraped']} record(s) from the linked web page "
+                f"({scrape_stats['method']}){_tnote} - review recommended. " + src_summary
+            )
+        if project_meta:
+            src_summary = (
+                f"Project '{project_meta.get('name', '?')}' - ICP: {project_meta.get('icp') or 'n/a'}, "
+                f"region: {project_meta.get('region') or 'n/a'}. " + src_summary
+            )
+
+        await _set_step(step, "step_source_done", run_id, "source", "Input & Normalization", "done", src_summary)
+
+        if input_source == "campaign_idea":
+            # description + CSV: description drives targeting, CSV drives the
+            # company list - confirm ICP now so People Discovery below can
+            # skip its manual discovery_form ask and use this directly.
+            persona_titles_from_idea, person_locations_from_idea = await _extract_and_confirm_icp(
+                step, run_id, campaign_idea,
+                extract_key="icp_extract_with_csv", confirm_key="icp_confirm_with_csv",
+            )
+
+        # ============ Domain Resolution (gated) ============
+        existing_domain_col = "Domain" if "Domain" in df.columns else _guess_col(df, ["domain", "website", "company domain"])
+        if existing_domain_col and existing_domain_col != "Domain":
+            df["Domain"] = df[existing_domain_col]
+        if "Domain" not in df.columns:
+            df["Domain"] = None
+        df["Domain"] = df["Domain"].apply(lambda v: outputs.strip_url_prefix(v) if pd.notna(v) else v)
+
+        missing_mask = _blank_domain_mask(df)
+        missing_count = int(missing_mask.sum())
+        already_present = len(df) - missing_count
+
+        if missing_count == 0:
+            await _set_step(step, "step_domain_auto_skipped", run_id, "domain", "Domain Resolution", "skipped",
+                             f"Auto-skipped - all {already_present} row(s) already have a domain.")
+            await _set_stat(step, "stat_domain_auto_skipped", run_id, "domain_resolution",
+                             {"skipped": True, "already_present": already_present,
+                              "reason": "every row already has a domain"})
+        else:
+            uncached = domain_resolution.count_uncached(df[missing_mask], resolved_company_col)
+            est = estimates.cost_block("domain_resolution", uncached)
+
+            dom_answer = await _ask(
+                step, run_id, "domain_resolution_needed", "yes_no",
+                f"{missing_count} of {len(df)} rows need a domain. {uncached} need a paid Apollo lookup "
+                f"(~{est['credits']} credits, ${est['usd']}); {missing_count - uncached} are cached (free). Resolve them?",
+                default="yes", context={"step": "domain", "estimate": est, "missing": missing_count, "uncached": uncached},
+            )
+
+            if _truthy(dom_answer):
+                await _status(step, "status_resolving_domains", run_id, stage="resolving_domains",
+                               message=f"Resolving {missing_count} missing company domain(s) via Apollo")
+                await _set_step(step, "step_domain_running", run_id, "domain", "Domain Resolution", "running")
+
+                async def _resolve():
+                    resolved_subset, domain_stats = domain_resolution.resolve_domains_for_df(
+                        df[missing_mask].copy(), resolved_company_col, employee_col)
+                    return _nan_safe({"records": resolved_subset.to_dict("records"), "domain_stats": domain_stats})
+
+                result = await step.run("resolve_domains", _resolve)
+                resolved_subset = pd.DataFrame(result["records"])
+                domain_stats = result["domain_stats"]
+
+                df.loc[missing_mask, "Domain"] = resolved_subset["Domain"].values
+                df.loc[missing_mask, "Resolved Country"] = resolved_subset["Resolved Country"].values
+                df.loc[missing_mask, "Resolved City"] = resolved_subset["Resolved City"].values
+
+                resolved_now = missing_count - int(_blank_domain_mask(df).sum())
+                domain_stats["already_present"] = already_present
+                domain_stats["resolved"] = resolved_now
+                source_note = (
+                    f" ({domain_stats.get('from_apollo', 0)} via Apollo, {domain_stats.get('from_clearbit', 0)} via Clearbit fallback)"
+                    if domain_stats.get("from_clearbit") else ""
+                )
+                await _set_step(step, "step_domain_done", run_id, "domain", "Domain Resolution", "done",
+                                 f"Resolved {resolved_now} of {missing_count} missing domain(s){source_note}; "
+                                 f"{already_present} already had one.")
+                await _set_stat(step, "stat_domain_resolved", run_id, "domain_resolution", domain_stats)
+            else:
+                await _set_step(step, "step_domain_declined", run_id, "domain", "Domain Resolution", "skipped",
+                                 f"Skipped by user - {missing_count} row(s) left without a domain.")
+                await _set_stat(step, "stat_domain_declined", run_id, "domain_resolution",
+                                 {"skipped": True, "already_present": already_present})
+
+        # ============ Exclusion Check (gated) ============
+        exclusion_answer = await _ask(
+            step, run_id, "exclusion_needed", "yes_no",
+            "Check these accounts against the HubSpot DNU list and drop existing clients?",
+            default="yes",
+            context={"step": "exclusion", "reference_url": config.exclusion_list_url(), "reference_label": "ABM EXCLSIONS - DNU"},
         )
-    if project_meta:
-        src_summary = (
-            f"Project '{project_meta.get('name', '?')}' - ICP: {project_meta.get('icp') or 'n/a'}, "
-            f"region: {project_meta.get('region') or 'n/a'}. " + src_summary
+
+        if _truthy(exclusion_answer):
+            await _status(step, "status_checking_exclusions", run_id, stage="checking_exclusions",
+                           message="Checking against HubSpot DNU list")
+            await _set_step(step, "step_exclusion_running", run_id, "exclusion", "Exclusion Check", "running")
+
+            exclusion_domain_col = "Domain" if "Domain" in df.columns else (domain_col or _guess_col(df, ["Domain", "Website"]))
+
+            async def _run_exclusion():
+                result_df, excl_stats = hubspot_exclusion.run_exclusion_check(df, exclusion_domain_col)
+                return _nan_safe({"records": result_df.to_dict("records"), "exclusion_stats": excl_stats})
+
+            excl_result = await step.run("run_exclusion_check", _run_exclusion)
+            df = pd.DataFrame(excl_result["records"])
+            exclusion_stats = excl_result["exclusion_stats"]
+            exclusion_stats["dnu_list_url"] = config.exclusion_list_url()
+
+            excl_name_col = resolved_company_col if resolved_company_col in df.columns else company_col
+            ex_df = df[df["Exclusion Status"] == "Excluded"]
+            exclusion_stats["excluded_rows"] = [
+                {
+                    "company": "" if pd.isna(r.get(excl_name_col)) else str(r.get(excl_name_col)),
+                    "domain": "" if pd.isna(r.get("Domain")) else str(r.get("Domain")),
+                    "reason": str(r.get("Exclusion Reason", "")),
+                }
+                for _, r in ex_df.head(500).iterrows()
+            ]
+
+            await _set_step(
+                step, "step_exclusion_done", run_id, "exclusion", "Exclusion Check", "done",
+                f"{exclusion_stats['excluded']} excluded, {exclusion_stats['ok_to_reach_out']} OK "
+                f"(of {exclusion_stats['total']}); matched vs {exclusion_stats['dnu_record_count']} DNU records "
+                f"from list {exclusion_stats['dnu_list_id']}.",
+            )
+            await _set_stat(step, "stat_exclusion_checked", run_id, "exclusion", exclusion_stats)
+        else:
+            df["Exclusion Status"] = "OK to reach out"
+            df["Exclusion Reason"] = "Exclusion check skipped by user"
+            exclusion_stats = {"skipped": True, "total": len(df), "excluded": 0, "ok_to_reach_out": len(df)}
+            await _set_step(step, "step_exclusion_skipped", run_id, "exclusion", "Exclusion Check", "skipped",
+                             f"Skipped - all {len(df)} treated as OK to reach out.")
+            await _set_stat(step, "stat_exclusion_skipped", run_id, "exclusion", exclusion_stats)
+
+        accounts_processed = df.copy()
+
+        # ============ People Discovery (gated; auto-skip if named contacts present) ============
+        ok_df = df[df["Exclusion Status"] == "OK to reach out"].copy()
+
+        job_change_idx = _job_change_indices(ok_df)
+        if job_change_idx:
+            await _set_stat(step, "stat_job_changes", run_id, "job_changes", len(job_change_idx))
+
+        email_col_existing = _guess_col(ok_df, ["email", "email address"])
+        resolved_first_col = "Cleaned First Name" if "Cleaned First Name" in ok_df.columns else _guess_col(ok_df, ["first name", "firstname"])
+        resolved_last_col = "Cleaned Last Name" if "Cleaned Last Name" in ok_df.columns else _guess_col(ok_df, ["last name", "lastname"])
+        has_existing_contacts = (
+            bool(resolved_first_col) and bool(resolved_last_col)
+            and int(ok_df[resolved_first_col].notna().sum()) > 0
         )
 
-    await _set_step(step, "step_source_done", run_id, "source", "Input & Normalization", "done", src_summary)
+        candidates_df = pd.DataFrame()
 
-    # ============ Domain Resolution (gated) ============
-    existing_domain_col = "Domain" if "Domain" in df.columns else _guess_col(df, ["domain", "website", "company domain"])
-    if existing_domain_col and existing_domain_col != "Domain":
-        df["Domain"] = df[existing_domain_col]
-    if "Domain" not in df.columns:
-        df["Domain"] = None
-    df["Domain"] = df["Domain"].apply(lambda v: outputs.strip_url_prefix(v) if pd.notna(v) else v)
+        if has_existing_contacts:
+            named = int(ok_df[email_col_existing].notna().sum()) if email_col_existing else 0
+            await _set_step(step, "step_discovery_auto_skipped", run_id, "discovery", "People Discovery", "skipped",
+                             f"Sheet already has {named} named contact(s) - discovery not needed.")
+            await _set_stat(step, "stat_discovery_auto_skipped", run_id, "apollo_search",
+                             {"skipped": True, "reason": "sheet already had named contacts"})
+        else:
+            disc_answer = await _ask(
+                step, run_id, "people_discovery_needed", "yes_no",
+                f"No contacts in the sheet. Find decision-makers at the {len(ok_df)} account(s)? "
+                "Search is free; revealing emails/phones later costs credits.",
+                default="yes", context={"step": "discovery"},
+            )
 
-    missing_mask = _blank_domain_mask(df)
-    missing_count = int(missing_mask.sum())
-    already_present = len(df) - missing_count
+            if _truthy(disc_answer):
+                if input_source == "campaign_idea" and persona_titles_from_idea is not None:
+                    # ICP already confirmed above from the campaign idea - skip
+                    # the manual discovery_form ask, use the confirmed targeting.
+                    persona_titles = persona_titles_from_idea
+                    person_locations = person_locations_from_idea
+                    per_title_cap = 2
+                else:
+                    icp_hint = project_meta.get("icp", "") if project_meta else ""
+                    form_answer = await _ask(
+                        step, run_id, "discovery_form", "discovery_form",
+                        "Set up People Discovery",
+                        default=None,
+                        context={
+                            "step": "discovery",
+                            "fields": {
+                                "persona_titles": {
+                                    "label": "Job titles to target (comma-separated)",
+                                    "placeholder": "Blank = default HR/People-leader list"
+                                    + (f", or the Project ICP: {icp_hint}" if icp_hint else ""),
+                                    "default": "",
+                                },
+                                "per_title_cap": {
+                                    "label": "People per company, per job title",
+                                    "default": 2, "min": 1, "max": 3,
+                                },
+                                "person_locations": {
+                                    "label": "Region / country (optional - blank = Global, pick as many as you like)",
+                                    "options": REGION_OPTIONS,
+                                    "country_options": COUNTRY_OPTIONS,
+                                    "default": [],
+                                },
+                            },
+                        },
+                    )
+                    form_answer = form_answer or {}
+                    persona_titles = [t.strip() for t in str(form_answer.get("persona_titles", "")).split(",") if t.strip()] or None
+                    try:
+                        per_title_cap = max(1, min(int(form_answer.get("per_title_cap") or 2), 3))
+                    except (TypeError, ValueError):
+                        per_title_cap = 2
+                    raw_locations = form_answer.get("person_locations")
+                    if isinstance(raw_locations, str):
+                        person_locations = [r.strip() for r in raw_locations.split(",") if r.strip()] or None
+                    else:
+                        person_locations = [str(r).strip() for r in (raw_locations or []) if str(r).strip()] or None
 
-    if missing_count == 0:
-        await _set_step(step, "step_domain_auto_skipped", run_id, "domain", "Domain Resolution", "skipped",
-                         f"Auto-skipped - all {already_present} row(s) already have a domain.")
-        await _set_stat(step, "stat_domain_auto_skipped", run_id, "domain_resolution",
-                         {"skipped": True, "already_present": already_present,
-                          "reason": "every row already has a domain"})
+                effective_per_title_cap = per_title_cap if persona_titles else None
+
+                await _status(step, "status_discovery_running", run_id, stage="enriching",
+                               message=f"Searching Apollo at {len(ok_df)} accounts")
+                await _set_step(step, "step_discovery_running", run_id, "discovery", "People Discovery", "running")
+
+                async def _search():
+                    found_df, search_stats = apollo_enrich.search_candidates(
+                        ok_df, resolved_company_col, "Domain", person_locations=person_locations,
+                        persona_titles=persona_titles, max_per_company=config.MAX_CONTACTS_PER_COMPANY_CAP,
+                        per_title_cap=effective_per_title_cap)
+                    return _nan_safe({"records": found_df.to_dict("records"), "search_stats": search_stats})
+
+                search_result = await step.run("search_candidates", _search)
+                candidates_df = pd.DataFrame(search_result["records"])
+                search_stats = search_result["search_stats"]
+
+                cap_note = f" (up to {per_title_cap} per title per company)" if effective_per_title_cap else ""
+                await _set_step(
+                    step, "step_discovery_done", run_id, "discovery", "People Discovery", "done",
+                    f"Searched {search_stats['companies_searched']} account(s), found "
+                    f"{search_stats['candidates_found']} candidate(s){cap_note}. Search is free.",
+                )
+                await _set_stat(step, "stat_discovery_searched", run_id, "apollo_search", search_stats)
+            else:
+                await _set_step(step, "step_discovery_declined", run_id, "discovery", "People Discovery", "skipped",
+                                 "Skipped by user.")
+                await _set_stat(step, "stat_discovery_declined", run_id, "apollo_search", {"skipped": True})
+
     else:
-        uncached = domain_resolution.count_uncached(df[missing_mask], resolved_company_col)
-        est = estimates.cost_block("domain_resolution", uncached)
-
-        dom_answer = await _ask(
-            step, run_id, "domain_resolution_needed", "yes_no",
-            f"{missing_count} of {len(df)} rows need a domain. {uncached} need a paid Apollo lookup "
-            f"(~{est['credits']} credits, ${est['usd']}); {missing_count - uncached} are cached (free). Resolve them?",
-            default="yes", context={"step": "domain", "estimate": est, "missing": missing_count, "uncached": uncached},
+        # ============ Campaign idea, no CSV: ICP confirm + company-names Apollo search ============
+        # Replaces Input & Normalization / Domain Resolution / Exclusion Check /
+        # People Discovery entirely for this path - there's no company-list df
+        # until after the search below produces candidates_df.
+        persona_titles, person_locations = await _extract_and_confirm_icp(
+            step, run_id, campaign_idea,
+            extract_key="icp_extract_no_csv", confirm_key="icp_confirm_no_csv",
         )
 
-        if _truthy(dom_answer):
-            await _status(step, "status_resolving_domains", run_id, stage="resolving_domains",
-                           message=f"Resolving {missing_count} missing company domain(s) via Apollo")
-            await _set_step(step, "step_domain_running", run_id, "domain", "Domain Resolution", "running")
+        await _set_step(step, "step_source_done_idea", run_id, "source", "Input & Normalization", "done",
+                         f"Campaign idea captured: \"{campaign_idea[:80]}\".")
+
+        companies_answer = await _ask(
+            step, run_id, "apollo_company_names", "text",
+            "Company names to search (comma-separated, or paste one per line/space-separated - "
+            "URLs are fine too):\ne.g. Acme Corp, TechCo Inc, StartUp Labs",
+            default="", context={"step": "source"},
+        )
+        company_names = _parse_company_names(str(companies_answer))
+        if not company_names:
+            raise ValueError("No company names provided for Apollo search.")
+
+        async def _do_search(names, p_titles, p_locations, key_suffix=""):
+            domains_df = pd.DataFrame([{"Company": c} for c in names])
 
             async def _resolve():
-                resolved_subset, domain_stats = domain_resolution.resolve_domains_for_df(
-                    df[missing_mask].copy(), resolved_company_col, employee_col)
-                return _nan_safe({"records": resolved_subset.to_dict("records"), "domain_stats": domain_stats})
+                resolved_df, dstats = domain_resolution.resolve_domains_for_df(domains_df, "Company", None)
+                return _nan_safe({"records": resolved_df.to_dict("records"), "domain_stats": dstats})
 
-            result = await step.run("resolve_domains", _resolve)
-            resolved_subset = pd.DataFrame(result["records"])
-            domain_stats = result["domain_stats"]
+            resolve_result = await step.run(f"resolve_domains_idea{key_suffix}", _resolve)
+            resolved_df = pd.DataFrame(resolve_result["records"])
 
-            df.loc[missing_mask, "Domain"] = resolved_subset["Domain"].values
-            df.loc[missing_mask, "Resolved Country"] = resolved_subset["Resolved Country"].values
-            df.loc[missing_mask, "Resolved City"] = resolved_subset["Resolved City"].values
-
-            resolved_now = missing_count - int(_blank_domain_mask(df).sum())
-            domain_stats["already_present"] = already_present
-            domain_stats["resolved"] = resolved_now
-            source_note = (
-                f" ({domain_stats.get('from_apollo', 0)} via Apollo, {domain_stats.get('from_clearbit', 0)} via Clearbit fallback)"
-                if domain_stats.get("from_clearbit") else ""
-            )
-            await _set_step(step, "step_domain_done", run_id, "domain", "Domain Resolution", "done",
-                             f"Resolved {resolved_now} of {missing_count} missing domain(s){source_note}; "
-                             f"{already_present} already had one.")
-            await _set_stat(step, "stat_domain_resolved", run_id, "domain_resolution", domain_stats)
-        else:
-            await _set_step(step, "step_domain_declined", run_id, "domain", "Domain Resolution", "skipped",
-                             f"Skipped by user - {missing_count} row(s) left without a domain.")
-            await _set_stat(step, "stat_domain_declined", run_id, "domain_resolution",
-                             {"skipped": True, "already_present": already_present})
-
-    # ============ Exclusion Check (gated) ============
-    exclusion_answer = await _ask(
-        step, run_id, "exclusion_needed", "yes_no",
-        "Check these accounts against the HubSpot DNU list and drop existing clients?",
-        default="yes",
-        context={"step": "exclusion", "reference_url": config.exclusion_list_url(), "reference_label": "ABM EXCLSIONS - DNU"},
-    )
-
-    if _truthy(exclusion_answer):
-        await _status(step, "status_checking_exclusions", run_id, stage="checking_exclusions",
-                       message="Checking against HubSpot DNU list")
-        await _set_step(step, "step_exclusion_running", run_id, "exclusion", "Exclusion Check", "running")
-
-        exclusion_domain_col = "Domain" if "Domain" in df.columns else (domain_col or _guess_col(df, ["Domain", "Website"]))
-
-        async def _run_exclusion():
-            result_df, excl_stats = hubspot_exclusion.run_exclusion_check(df, exclusion_domain_col)
-            return _nan_safe({"records": result_df.to_dict("records"), "exclusion_stats": excl_stats})
-
-        excl_result = await step.run("run_exclusion_check", _run_exclusion)
-        df = pd.DataFrame(excl_result["records"])
-        exclusion_stats = excl_result["exclusion_stats"]
-        exclusion_stats["dnu_list_url"] = config.exclusion_list_url()
-
-        excl_name_col = resolved_company_col if resolved_company_col in df.columns else company_col
-        ex_df = df[df["Exclusion Status"] == "Excluded"]
-        exclusion_stats["excluded_rows"] = [
-            {
-                "company": "" if pd.isna(r.get(excl_name_col)) else str(r.get(excl_name_col)),
-                "domain": "" if pd.isna(r.get("Domain")) else str(r.get("Domain")),
-                "reason": str(r.get("Exclusion Reason", "")),
-            }
-            for _, r in ex_df.head(500).iterrows()
-        ]
-
-        await _set_step(
-            step, "step_exclusion_done", run_id, "exclusion", "Exclusion Check", "done",
-            f"{exclusion_stats['excluded']} excluded, {exclusion_stats['ok_to_reach_out']} OK "
-            f"(of {exclusion_stats['total']}); matched vs {exclusion_stats['dnu_record_count']} DNU records "
-            f"from list {exclusion_stats['dnu_list_id']}.",
-        )
-        await _set_stat(step, "stat_exclusion_checked", run_id, "exclusion", exclusion_stats)
-    else:
-        df["Exclusion Status"] = "OK to reach out"
-        df["Exclusion Reason"] = "Exclusion check skipped by user"
-        exclusion_stats = {"skipped": True, "total": len(df), "excluded": 0, "ok_to_reach_out": len(df)}
-        await _set_step(step, "step_exclusion_skipped", run_id, "exclusion", "Exclusion Check", "skipped",
-                         f"Skipped - all {len(df)} treated as OK to reach out.")
-        await _set_stat(step, "stat_exclusion_skipped", run_id, "exclusion", exclusion_stats)
-
-    accounts_processed = df.copy()
-
-    # ============ People Discovery (gated; auto-skip if named contacts present) ============
-    ok_df = df[df["Exclusion Status"] == "OK to reach out"].copy()
-
-    job_change_idx = _job_change_indices(ok_df)
-    if job_change_idx:
-        await _set_stat(step, "stat_job_changes", run_id, "job_changes", len(job_change_idx))
-
-    email_col_existing = _guess_col(ok_df, ["email", "email address"])
-    resolved_first_col = "Cleaned First Name" if "Cleaned First Name" in ok_df.columns else _guess_col(ok_df, ["first name", "firstname"])
-    resolved_last_col = "Cleaned Last Name" if "Cleaned Last Name" in ok_df.columns else _guess_col(ok_df, ["last name", "lastname"])
-    has_existing_contacts = (
-        bool(resolved_first_col) and bool(resolved_last_col)
-        and int(ok_df[resolved_first_col].notna().sum()) > 0
-    )
-
-    candidates_df = pd.DataFrame()
-
-    if has_existing_contacts:
-        named = int(ok_df[email_col_existing].notna().sum()) if email_col_existing else 0
-        await _set_step(step, "step_discovery_auto_skipped", run_id, "discovery", "People Discovery", "skipped",
-                         f"Sheet already has {named} named contact(s) - discovery not needed.")
-        await _set_stat(step, "stat_discovery_auto_skipped", run_id, "apollo_search",
-                         {"skipped": True, "reason": "sheet already had named contacts"})
-    else:
-        disc_answer = await _ask(
-            step, run_id, "people_discovery_needed", "yes_no",
-            f"No contacts in the sheet. Find decision-makers at the {len(ok_df)} account(s)? "
-            "Search is free; revealing emails/phones later costs credits.",
-            default="yes", context={"step": "discovery"},
-        )
-
-        if _truthy(disc_answer):
-            icp_hint = project_meta.get("icp", "") if project_meta else ""
-            form_answer = await _ask(
-                step, run_id, "discovery_form", "discovery_form",
-                "Set up People Discovery",
-                default=None,
-                context={
-                    "step": "discovery",
-                    "fields": {
-                        "persona_titles": {
-                            "label": "Job titles to target (comma-separated)",
-                            "placeholder": "Blank = default HR/People-leader list"
-                            + (f", or the Project ICP: {icp_hint}" if icp_hint else ""),
-                            "default": "",
-                        },
-                        "per_title_cap": {
-                            "label": "People per company, per job title",
-                            "default": 2, "min": 1, "max": 3,
-                        },
-                        "person_locations": {
-                            "label": "Region / country (optional - blank = Global, pick as many as you like)",
-                            "options": REGION_OPTIONS,
-                            "country_options": COUNTRY_OPTIONS,
-                            "default": [],
-                        },
-                    },
-                },
-            )
-            form_answer = form_answer or {}
-            persona_titles = [t.strip() for t in str(form_answer.get("persona_titles", "")).split(",") if t.strip()] or None
-            try:
-                per_title_cap = max(1, min(int(form_answer.get("per_title_cap") or 2), 3))
-            except (TypeError, ValueError):
-                per_title_cap = 2
-            raw_locations = form_answer.get("person_locations")
-            if isinstance(raw_locations, str):
-                person_locations = [r.strip() for r in raw_locations.split(",") if r.strip()] or None
-            else:
-                person_locations = [str(r).strip() for r in (raw_locations or []) if str(r).strip()] or None
-
-            effective_per_title_cap = per_title_cap if persona_titles else None
-
-            await _status(step, "status_discovery_running", run_id, stage="enriching",
-                           message=f"Searching Apollo at {len(ok_df)} accounts")
-            await _set_step(step, "step_discovery_running", run_id, "discovery", "People Discovery", "running")
+            if "Domain" not in resolved_df.columns or resolved_df["Domain"].isna().all():
+                raise ValueError(f"Could not resolve domains for companies: {', '.join(names)}")
 
             async def _search():
-                found_df, search_stats = apollo_enrich.search_candidates(
-                    ok_df, resolved_company_col, "Domain", person_locations=person_locations,
-                    persona_titles=persona_titles, max_per_company=config.MAX_CONTACTS_PER_COMPANY_CAP,
-                    per_title_cap=effective_per_title_cap)
-                return _nan_safe({"records": found_df.to_dict("records"), "search_stats": search_stats})
+                found_df, sstats = apollo_enrich.search_candidates(
+                    resolved_df, "Company", "Domain", person_locations=p_locations,
+                    persona_titles=p_titles, max_per_company=config.MAX_CONTACTS_PER_COMPANY_DEFAULT)
+                return _nan_safe({"records": found_df.to_dict("records"), "search_stats": sstats})
 
-            search_result = await step.run("search_candidates", _search)
-            candidates_df = pd.DataFrame(search_result["records"])
-            search_stats = search_result["search_stats"]
+            search_result = await step.run(f"search_candidates_idea{key_suffix}", _search)
+            return pd.DataFrame(search_result["records"]), search_result["search_stats"]
 
-            cap_note = f" (up to {per_title_cap} per title per company)" if effective_per_title_cap else ""
-            await _set_step(
-                step, "step_discovery_done", run_id, "discovery", "People Discovery", "done",
-                f"Searched {search_stats['companies_searched']} account(s), found "
-                f"{search_stats['candidates_found']} candidate(s){cap_note}. Search is free.",
-            )
-            await _set_stat(step, "stat_discovery_searched", run_id, "apollo_search", search_stats)
+        candidates_df, search_stats = await _do_search(company_names, persona_titles, person_locations)
+        await _set_step(step, "step_domain_done_idea", run_id, "domain", "Domain Resolution", "done",
+                         f"Resolved domains for {len(company_names)} compan{'y' if len(company_names) == 1 else 'ies'}.")
+        await _set_step(
+            step, "step_discovery_done_idea", run_id, "discovery", "People Discovery", "done",
+            f"Searched {search_stats['companies_searched']} compan{'y' if search_stats['companies_searched'] == 1 else 'ies'}, "
+            f"found {search_stats['candidates_found']} candidate(s).",
+        )
+        await _set_stat(step, "stat_discovery_idea", run_id, "apollo_search", search_stats)
+
+        candidates_df, persona_titles, person_locations = await _add_more_prospects_loop(
+            step, run_id, candidates_df, persona_titles, person_locations, _do_search)
+
+        # Exclusion gate, applied to candidates - a separate small block rather
+        # than sharing code with the tested exclusion block above, deliberately,
+        # to avoid touching already-verified working code for a marginal dedup win.
+        exclusion_answer = await _ask(
+            step, run_id, "exclusion_needed_idea", "yes_no",
+            "Check these candidates against the HubSpot DNU list and drop existing clients?",
+            default="yes",
+            context={"step": "exclusion", "reference_url": config.exclusion_list_url(), "reference_label": "ABM EXCLSIONS - DNU"},
+        )
+        if _truthy(exclusion_answer):
+            await _set_step(step, "step_exclusion_running_idea", run_id, "exclusion", "Exclusion Check", "running")
+
+            async def _run_exclusion_idea():
+                result_df, estats = hubspot_exclusion.run_exclusion_check(candidates_df, "Domain")
+                return _nan_safe({"records": result_df.to_dict("records"), "exclusion_stats": estats})
+
+            excl_result = await step.run("run_exclusion_check_idea", _run_exclusion_idea)
+            candidates_df = pd.DataFrame(excl_result["records"])
+            exclusion_stats = excl_result["exclusion_stats"]
+            await _set_step(step, "step_exclusion_done_idea", run_id, "exclusion", "Exclusion Check", "done",
+                             f"{exclusion_stats['excluded']} excluded, {exclusion_stats['ok_to_reach_out']} OK.")
+            await _set_stat(step, "stat_exclusion_checked_idea", run_id, "exclusion", exclusion_stats)
+            candidates_df = candidates_df[candidates_df["Exclusion Status"] == "OK to reach out"].copy()
         else:
-            await _set_step(step, "step_discovery_declined", run_id, "discovery", "People Discovery", "skipped",
+            candidates_df["Exclusion Status"] = "OK to reach out"
+            await _set_step(step, "step_exclusion_skipped_idea", run_id, "exclusion", "Exclusion Check", "skipped",
                              "Skipped by user.")
-            await _set_stat(step, "stat_discovery_declined", run_id, "apollo_search", {"skipped": True})
+            await _set_stat(step, "stat_exclusion_skipped_idea", run_id, "exclusion", {"skipped": True})
+
+        # Populate every variable the rest of the pipeline (Email Reveal onward) depends on.
+        company_col = "Company"
+        resolved_company_col = "Company"
+        region_col = None
+        df = candidates_df.copy()
+        accounts_processed = df.copy()
+        ok_df = candidates_df.copy()
+        job_change_idx = set()
+        email_col_existing = None
+        resolved_first_col = None
+        resolved_last_col = None
+        # False forces Email Reveal into the enrich_candidates(candidates_df)
+        # branch below - correct, candidates_df already has that exact shape.
+        has_existing_contacts = False
 
     # ============ Email Reveal & Validation ============
     core_df = pd.DataFrame()

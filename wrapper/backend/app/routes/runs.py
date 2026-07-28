@@ -56,6 +56,7 @@ def _nan_safe(o):
 async def create_run(
     input_source: str = Form(...),
     hubspot_project_id: Optional[str] = Form(None),
+    campaign_idea: Optional[str] = Form(None),
     company_col: Optional[str] = Form(None),
     domain_col: Optional[str] = Form(None),
     employee_col: Optional[str] = Form(None),
@@ -69,7 +70,9 @@ async def create_run(
         raise HTTPException(400, "csv input source requires csv_file")
     if input_source == "hubspot_project" and not hubspot_project_id:
         raise HTTPException(400, "hubspot_project input source requires hubspot_project_id")
-    if input_source not in ("csv", "hubspot_project"):
+    if input_source == "campaign_idea" and not (campaign_idea and campaign_idea.strip()):
+        raise HTTPException(400, "campaign_idea input source requires a non-empty campaign_idea")
+    if input_source not in ("csv", "hubspot_project", "campaign_idea"):
         raise HTTPException(400, f"Unsupported input_source {input_source!r} (form-link source is temporarily disabled)")
 
     # Both input sources now run on the Inngest engine (mapping_sheet_file is
@@ -89,6 +92,8 @@ async def create_run(
         event_data["csv_filename"] = csv_filename
     if input_source == "hubspot_project":
         event_data["hubspot_project_id"] = hubspot_project_id
+    if input_source == "campaign_idea":
+        event_data["campaign_idea"] = campaign_idea.strip()
 
     inngest_client.send_sync(inngest.Event(name="run/start", data=event_data))
     return _to_status(run_id, "inngest")

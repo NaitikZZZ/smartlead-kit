@@ -1,4 +1,4 @@
-export type InputSourceType = "csv" | "hubspot_project";
+export type InputSourceType = "csv" | "hubspot_project" | "campaign_idea";
 // hubspot_form_link intentionally removed for now - will come back later.
 
 export type RunStage =
