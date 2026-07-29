@@ -47,12 +47,23 @@ def _valid_email(v) -> bool:
 
 def batch_upsert_contacts(rows: list[dict]) -> list[dict]:
     # Drop any blank/invalid-email row at the API-write chokepoint, and use the
-    # stripped email as the idempotency key + property value.
+    # stripped email as the idempotency key + property value. Also dedupe by
+    # email (keep first) - HubSpot rejects an ENTIRE batch if the same
+    # idProperty value (email) appears twice in one call, confirmed live: a
+    # 179-row real run had 12 duplicate emails (same person surfaced via
+    # multiple Apollo search variants) and 400'd with zero detail (see the
+    # response-body capture below - added because this exact failure mode
+    # took a manual archaeology pass to diagnose from a bare
+    # "400 Client Error: Bad Request" with no HubSpot message).
     inputs = []
+    seen_emails = set()
     for r in rows:
         if not _valid_email(r.get("email")):
             continue
-        email = str(r["email"]).strip()
+        email = str(r["email"]).strip().lower()
+        if email in seen_emails:
+            continue
+        seen_emails.add(email)
         props = {k: _json_safe(v) for k, v in r.items()}
         props["email"] = email
         inputs.append({"idProperty": "email", "id": email, "properties": props})
@@ -63,7 +74,8 @@ def batch_upsert_contacts(rows: list[dict]) -> list[dict]:
             "https://api.hubapi.com/crm/v3/objects/contacts/batch/upsert",
             headers=_headers(), json={"inputs": chunk}, timeout=60,
         )
-        r.raise_for_status()
+        if not r.ok:
+            raise requests.HTTPError(f"{r.status_code} {r.reason} for {r.url}: {r.text[:1000]}", response=r)
         results.extend(r.json().get("results", []))
     return results
 
@@ -75,7 +87,8 @@ def associate_contacts(contact_ids: list[str], object_type_id: str, to_object_id
         f"https://api.hubapi.com/crm/v4/associations/contacts/{object_type_id}/batch/create",
         headers=_headers(), json={"inputs": inputs}, timeout=60,
     )
-    r.raise_for_status()
+    if not r.ok:
+        raise requests.HTTPError(f"{r.status_code} {r.reason} for {r.url}: {r.text[:1000]}", response=r)
     return len(r.json().get("results", []))
 
 

@@ -1,3 +1,4 @@
+import json
 import math
 import mimetypes
 import os
@@ -14,7 +15,7 @@ from fastapi.responses import Response
 from .. import config, run_status, vercel_blob
 from ..inngest_client import client as inngest_client
 from ..models import AnswerRequest, ImportConfirmRequest, PendingQuestion, RunStatus
-from ..pipeline import runner, input_sources, outputs
+from ..pipeline import runner, input_sources, outputs, icp_mapper
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -57,6 +58,7 @@ async def create_run(
     input_source: str = Form(...),
     hubspot_project_id: Optional[str] = Form(None),
     campaign_idea: Optional[str] = Form(None),
+    targeting_json: Optional[str] = Form(None),
     company_col: Optional[str] = Form(None),
     domain_col: Optional[str] = Form(None),
     employee_col: Optional[str] = Form(None),
@@ -94,6 +96,14 @@ async def create_run(
         event_data["hubspot_project_id"] = hubspot_project_id
     if input_source == "campaign_idea":
         event_data["campaign_idea"] = campaign_idea.strip()
+        if targeting_json:
+            # Wizard-confirmed targeting (job_titles/regions/employee_ranges,
+            # picked directly by the user) - when present, the pipeline skips
+            # Claude extraction and the icp_confirm_form re-ask entirely.
+            try:
+                event_data["wizard_targeting"] = json.loads(targeting_json)
+            except json.JSONDecodeError:
+                raise HTTPException(400, "targeting_json must be valid JSON")
 
     inngest_client.send_sync(inngest.Event(name="run/start", data=event_data))
     return _to_status(run_id, "inngest")
@@ -118,6 +128,28 @@ def project_preview(project_id: str = Body(..., embed=True)):
         "list_scrapable": meta.get("list_link_kind") == "webpage"
         and (bool(config.ANTHROPIC_API_KEY) or bool(os.environ.get("CLAUDE_CODE_EXECPATH"))),
     })
+
+
+@router.get("/icp-options")
+def icp_options():
+    """Read-only reference data for the campaign-idea wizard - lets it offer
+    real use-case/region/employee-size choices before a run even starts,
+    instead of only surfacing this mid-run via a pending question."""
+    return {
+        "use_cases": icp_mapper.get_use_case_options(),
+        "regions": runner.REGION_OPTIONS,
+        "countries": runner.COUNTRY_OPTIONS,
+        "employee_size_buckets": [label for label, _ in config.EMPLOYEE_SIZE_BUCKETS],
+    }
+
+
+@router.get("/icp-mapping")
+def icp_mapping(product: str, use_case: str):
+    """Read-only: the ICP sheet's default job_titles/regions/economic_buyer/etc.
+    for one product+use_case pair, so the campaign-idea wizard can prefill
+    sensible defaults the moment the user picks a use case - same lookup
+    `_extract_and_confirm_icp` does mid-run, just callable before Start."""
+    return icp_mapper.map_use_case_to_icp(product, use_case) or {}
 
 
 @router.get("/{run_id}", response_model=RunStatus)

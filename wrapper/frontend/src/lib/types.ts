@@ -122,3 +122,23 @@ export interface AppConfig {
   exclusion_list_id?: string;
   exclusion_list_url?: string;
 }
+
+// Reference data for the campaign-idea wizard - fetched once before any run
+// starts, so use-case/region/employee-size choices are real, not guessed.
+export interface IcpOptions {
+  use_cases: Record<string, string[]>; // product/sheet name -> its use cases
+  regions: string[];
+  countries: string[];
+  employee_size_buckets: string[];
+}
+
+// What the campaign-idea wizard sends when the user has confirmed their own
+// targeting - the backend skips Claude extraction and icp_confirm_form
+// entirely when this is present (see inngest_runner._targeting_from_wizard).
+export interface WizardTargeting {
+  product?: string;
+  use_case?: string;
+  job_titles: string[];
+  employee_sizes: string[];
+  regions: string[];
+}

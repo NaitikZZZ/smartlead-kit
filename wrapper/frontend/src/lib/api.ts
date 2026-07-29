@@ -1,4 +1,4 @@
-import type { AppConfig, RunStatus } from "./types";
+import type { AppConfig, IcpOptions, RunStatus, WizardTargeting } from "./types";
 
 // Falls back to same-origin ("") in a production build even if VITE_API_BASE
 // was never configured in Vercel - relying on that env var alone meant a
@@ -14,11 +14,33 @@ export async function getConfig(): Promise<AppConfig> {
   return r.json();
 }
 
+export async function getIcpOptions(): Promise<IcpOptions> {
+  const r = await fetch(`${API_BASE}/api/runs/icp-options`);
+  if (!r.ok) throw new Error("Failed to load ICP reference data");
+  return r.json();
+}
+
+export interface IcpMapping {
+  job_titles?: string[];
+  regions?: string[];
+  economic_buyer?: string;
+  champion?: string;
+  influencer?: string;
+}
+
+export async function getIcpMapping(product: string, useCase: string): Promise<IcpMapping> {
+  const params = new URLSearchParams({ product, use_case: useCase });
+  const r = await fetch(`${API_BASE}/api/runs/icp-mapping?${params.toString()}`);
+  if (!r.ok) throw new Error("Failed to load ICP mapping");
+  return r.json();
+}
+
 export interface StartRunParams {
   inputSource: "csv" | "hubspot_project" | "campaign_idea";
   csvFile?: File;
   hubspotProjectId?: string;
   campaignIdea?: string;
+  wizardTargeting?: WizardTargeting;
   mappingSheetFile?: File;
   companyCol?: string;
   domainCol?: string;
@@ -30,6 +52,7 @@ export async function startRun(params: StartRunParams): Promise<RunStatus> {
   fd.append("input_source", params.inputSource);
   if (params.hubspotProjectId) fd.append("hubspot_project_id", params.hubspotProjectId);
   if (params.campaignIdea) fd.append("campaign_idea", params.campaignIdea);
+  if (params.wizardTargeting) fd.append("targeting_json", JSON.stringify(params.wizardTargeting));
   if (params.companyCol) fd.append("company_col", params.companyCol);
   if (params.domainCol) fd.append("domain_col", params.domainCol);
   if (params.employeeCol) fd.append("employee_col", params.employeeCol);

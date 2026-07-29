@@ -136,7 +136,7 @@ def _run_parallel(items, fn, max_workers, progress=None):
 
 
 def search_candidates(df: pd.DataFrame, company_col: str, domain_col: str, person_locations=None, persona_titles=None,
-                       max_per_company=None, per_title_cap=None):
+                       max_per_company=None, per_title_cap=None, employee_ranges=None):
     """per_title_cap (1-3 typically) switches selection to
     select_candidates_per_persona: every title in persona_titles is guaranteed
     up to per_title_cap candidates per company, instead of ranking against the
@@ -158,7 +158,7 @@ def search_candidates(df: pd.DataFrame, company_col: str, domain_col: str, perso
         old_personas, old_cap = _search.PERSONAS, _search.MAX_PER_COMPANY
         _search.PERSONAS, _search.MAX_PER_COMPANY = personas, cap
         try:
-            people = _search.search_people(session, domain, person_locations)
+            people = _search.search_people(session, domain, person_locations, employee_ranges)
             if per_title_cap:
                 selected = _search.select_candidates_per_persona(people, personas, per_title_cap)
             else:

@@ -1,7 +1,8 @@
 import { useState } from "react";
-import type { AppConfig } from "../lib/types";
+import type { AppConfig, IcpOptions } from "../lib/types";
 import { startRun, previewProject, type ProjectPreview } from "../lib/api";
 import Tooltip from "./Tooltip";
+import CampaignIdeaWizard from "./CampaignIdeaWizard";
 
 const SOURCES: { value: "csv" | "hubspot_project" | "campaign_idea"; title: string; desc: string }[] = [
   { value: "csv", title: "CSV file / data sheet", desc: "Upload a target-account list directly" },
@@ -27,11 +28,12 @@ const HEADER_GUIDE: { h: string; note: string }[] = [
   { h: "City, State, Country, Region", note: "HubSpot geo fields (Country/City are HubSpot-mandatory)." },
 ];
 
-export default function SourceForm({ onStarted, appConfig }: { onStarted: (runId: string) => void; appConfig: AppConfig | null }) {
+export default function SourceForm({
+  onStarted, appConfig, icpOptions,
+}: { onStarted: (runId: string) => void; appConfig: AppConfig | null; icpOptions: IcpOptions | null }) {
   const [source, setSource] = useState<"csv" | "hubspot_project" | "campaign_idea">("csv");
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [projectId, setProjectId] = useState("");
-  const [campaignIdea, setCampaignIdea] = useState("");
   const [preview, setPreview] = useState<ProjectPreview | null>(null);
   const [loadingProject, setLoadingProject] = useState(false);
   const [projectError, setProjectError] = useState<string | null>(null);
@@ -47,10 +49,12 @@ export default function SourceForm({ onStarted, appConfig }: { onStarted: (runId
   // auto-fetchable spreadsheet AND not an auto-scrapable web page.
   const needsUploadForProject =
     !!preview && !preview.list_fetchable && !preview.list_scrapable && !csvFile;
+  // campaign_idea has its own self-contained wizard with its own Start
+  // button (CampaignIdeaWizard) - this shared canSubmit/Start no longer
+  // applies to it.
   const canSubmit =
     (source === "csv" && !!csvFile) ||
-    (source === "hubspot_project" && !!projectId && !needsUploadForProject) ||
-    (source === "campaign_idea" && campaignIdea.trim().length > 0);
+    (source === "hubspot_project" && !!projectId && !needsUploadForProject);
 
   async function loadProject() {
     if (!projectId.trim()) return;
@@ -109,7 +113,6 @@ export default function SourceForm({ onStarted, appConfig }: { onStarted: (runId
         inputSource: source,
         csvFile: csvFile || undefined,
         hubspotProjectId: projectId || undefined,
-        campaignIdea: source === "campaign_idea" ? campaignIdea.trim() : undefined,
         companyCol: companyCol || undefined,
         domainCol: domainCol || undefined,
         employeeCol: employeeCol || undefined,
@@ -273,26 +276,7 @@ export default function SourceForm({ onStarted, appConfig }: { onStarted: (runId
       )}
 
       {source === "campaign_idea" && (
-        <>
-          <label style={{ display: "block", marginBottom: 12 }}>
-            <span style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 6, color: "var(--dark-200)" }}>
-              Describe your campaign
-            </span>
-            <textarea
-              rows={4}
-              value={campaignIdea}
-              placeholder="e.g. Customer Advocacy Platforms - target Product Managers and Partnership Heads for our advocacy use case, US/Canada"
-              onChange={(e) => setCampaignIdea(e.target.value)}
-            />
-          </label>
-          <FileField label="Optional: attach a company list (CSV/Excel) - otherwise you'll be asked for company names to search"
-                     file={csvFile} onChange={setCsvFile} accept=".csv,.xlsx,.xls" />
-          <p style={{ fontSize: 12, color: "var(--dark-200)", marginTop: -4, marginBottom: 8 }}>
-            The app matches your description to a Xoxoday use case, shows you the matched job titles/regions to
-            confirm or edit, then either searches Apollo by company name (no list attached) or runs People
-            Discovery against your attached list using the confirmed targeting.
-          </p>
-        </>
+        <CampaignIdeaWizard icpOptions={icpOptions} onStarted={onStarted} />
       )}
 
       <p style={{ marginTop: 16, fontSize: 12, color: "var(--dark-200)" }}>
@@ -356,16 +340,20 @@ export default function SourceForm({ onStarted, appConfig }: { onStarted: (runId
         </div>
       )}
 
-      {error && <p style={{ color: "var(--red-300)", marginTop: 12 }}>{error}</p>}
+      {source !== "campaign_idea" && (
+        <>
+          {error && <p style={{ color: "var(--red-300)", marginTop: 12 }}>{error}</p>}
 
-      <button
-        className="btn-primary"
-        style={{ marginTop: 20, width: "100%" }}
-        disabled={!canSubmit || submitting}
-        onClick={handleSubmit}
-      >
-        {submitting ? "Starting..." : "Start"}
-      </button>
+          <button
+            className="btn-primary"
+            style={{ marginTop: 20, width: "100%" }}
+            disabled={!canSubmit || submitting}
+            onClick={handleSubmit}
+          >
+            {submitting ? "Starting..." : "Start"}
+          </button>
+        </>
+      )}
     </div>
   );
 }
@@ -381,7 +369,7 @@ function TextField({
   );
 }
 
-function FileField({
+export function FileField({
   label, file, onChange, accept,
 }: { label: string; file: File | null; onChange: (f: File | null) => void; accept: string }) {
   return (

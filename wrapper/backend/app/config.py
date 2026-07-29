@@ -127,6 +127,16 @@ HUBSPOT_APP_SUBDOMAIN = os.environ.get("HUBSPOT_APP_SUBDOMAIN", "app-na2.hubspot
 MAX_CONTACTS_PER_COMPANY_DEFAULT = 7
 MAX_CONTACTS_PER_COMPANY_CAP = 10
 
+# (label shown to the user, Apollo "min,max" organization_num_employees_ranges
+# value) - Apollo has no per-use-case employee-size data of its own (confirmed:
+# not in reference/Use cases & ICP.xlsx), so this is the one canonical bucket
+# list the campaign-idea wizard and icp_confirm_form both offer.
+EMPLOYEE_SIZE_BUCKETS = [
+    ("1-10", "1,10"), ("11-20", "11,20"), ("21-50", "21,50"), ("51-100", "51,100"),
+    ("101-200", "101,200"), ("201-500", "201,500"), ("501-1000", "501,1000"),
+    ("1001-5000", "1001,5000"), ("5001-10000", "5001,10000"), ("10000+", "10001,"),
+]
+
 try:
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
 except OSError:

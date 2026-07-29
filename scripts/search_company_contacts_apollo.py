@@ -81,7 +81,7 @@ def persona_tier(title):
     return 99  # unmatched title - lowest priority, still eligible
 
 
-def search_people(session, domain, person_locations=None):
+def search_people(session, domain, person_locations=None, employee_ranges=None):
     # person_seniorities matters a lot for large companies: without it, a
     # single page of title-matched results can be dominated by hundreds of
     # "HR Business Partner" hits and never surface the actual CHRO/CPO at
@@ -99,6 +99,8 @@ def search_people(session, domain, person_locations=None):
     }
     if person_locations:
         payload['person_locations'] = person_locations
+    if employee_ranges:
+        payload['organization_num_employees_ranges'] = employee_ranges
     try:
         r = session.post(
             'https://api.apollo.io/api/v1/mixed_people/api_search',

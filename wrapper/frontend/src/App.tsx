@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import "./theme.css";
-import { getConfig, getRun, fileUrl } from "./lib/api";
-import type { AppConfig, RunStatus } from "./lib/types";
+import { getConfig, getIcpOptions, getRun, fileUrl } from "./lib/api";
+import type { AppConfig, IcpOptions, RunStatus } from "./lib/types";
 import SourceForm from "./components/SourceForm";
 import StepSidebar from "./components/StepSidebar";
 import StepCard from "./components/StepCard";
@@ -18,12 +18,14 @@ const POLL_STOP = new Set(["done", "failed"]);
 
 export default function App() {
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
+  const [icpOptions, setIcpOptions] = useState<IcpOptions | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
   const [run, setRun] = useState<RunStatus | null>(null);
   const pollRef = useRef<number | null>(null);
 
   useEffect(() => {
     getConfig().then(setAppConfig).catch(() => setAppConfig(null));
+    getIcpOptions().then(setIcpOptions).catch(() => setIcpOptions(null));
   }, []);
 
   useEffect(() => {
@@ -65,7 +67,7 @@ export default function App() {
         {run && <ProjectInfo run={run} />}
         {run && !REVIEW_STAGES.has(run.stage) && run.output_files.length > 0 && <MidRunDownloads run={run} />}
 
-        {!runId && <SourceForm onStarted={setRunId} appConfig={appConfig} />}
+        {!runId && <SourceForm onStarted={setRunId} appConfig={appConfig} icpOptions={icpOptions} />}
 
         {run && run.stage === "awaiting_answer" && run.pending_question && (
           <StepCard

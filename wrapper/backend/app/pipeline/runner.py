@@ -1333,7 +1333,10 @@ def run_confirmed_import(run_id: str, run_dir: Path):
     # import that already succeeded).
     heyreach_result = {"status": "skipped"}
     if outputs.file_exists(run_dir, "linkedin_upload.csv"):
-        li_df = pd.read_csv(io.BytesIO(outputs.read_file(run_dir, "linkedin_upload.csv")))
+        try:
+            li_df = pd.read_csv(io.BytesIO(outputs.read_file(run_dir, "linkedin_upload.csv")))
+        except pd.errors.EmptyDataError:
+            li_df = pd.DataFrame()
         if not li_df.empty:
             li_df = li_df.where(pd.notna(li_df), None)
             heyreach_result = heyreach.push_leads(li_df.to_dict(orient="records"), campaign_title)

@@ -127,6 +127,44 @@ def _parse_company_names(raw: str) -> list[str]:
     return names
 
 
+_EMPLOYEE_RANGE_RE = re.compile(r"^\s*(\d+)\s*(?:-|,|to)\s*(\d+)\s*$|^\s*(\d+)\s*\+\s*$", re.I)
+
+
+def _normalize_employee_size_labels(labels: list[str]) -> list[str] | None:
+    """Maps checkbox labels (e.g. "51-100") to Apollo's "min,max" range
+    format via config.EMPLOYEE_SIZE_BUCKETS, and best-effort parses any
+    free-text "Other" entry the user typed (e.g. "50-200", "500+") into the
+    same format. Anything unparseable is dropped rather than sent to Apollo
+    malformed - it would just be silently ignored there anyway."""
+    bucket_map = dict(config.EMPLOYEE_SIZE_BUCKETS)
+    ranges = []
+    for label in labels or []:
+        if label in bucket_map:
+            ranges.append(bucket_map[label])
+            continue
+        m = _EMPLOYEE_RANGE_RE.match(label)
+        if not m:
+            continue
+        if m.group(3):
+            ranges.append(f"{m.group(3)},")
+        else:
+            ranges.append(f"{m.group(1)},{m.group(2)}")
+    return ranges or None
+
+
+def _targeting_from_wizard(wizard_targeting: dict):
+    """The campaign-idea wizard lets the user confirm job titles/employee
+    size/regions themselves before ever hitting Start - when that happened,
+    there's nothing left to infer or re-confirm, so callers skip
+    _extract_and_confirm_icp (no Claude call, no icp_confirm_form ask) and
+    use this directly. Returns (persona_titles, person_locations,
+    employee_ranges), same shape _extract_and_confirm_icp returns."""
+    job_titles = [t.strip() for t in (wizard_targeting.get("job_titles") or []) if str(t).strip()]
+    regions = [r.strip() for r in (wizard_targeting.get("regions") or []) if str(r).strip()]
+    employee_ranges = _normalize_employee_size_labels(wizard_targeting.get("employee_sizes") or [])
+    return job_titles or None, regions or None, employee_ranges
+
+
 def _nan_safe(o):
     """Recursively replaces non-finite floats (NaN/Infinity) with None.
     EVERY step.run() handler that returns data derived from a DataFrame (via
@@ -262,22 +300,28 @@ async def _ask(step: inngest.Step, run_id: str, key: str, qtype: str, prompt: st
     return event.data["value"]
 
 
+_OTHER = "Other - not listed"
+
+
 async def _extract_and_confirm_icp(step: inngest.Step, run_id: str, campaign_idea: str, *,
                                     extract_key: str, confirm_key: str, prompt_prefix: str = ""):
     """Turns a free-text campaign idea into confirmed (persona_titles,
-    person_locations), reusing runner.py's exact extraction-prompt shape and
-    _ask_icp_confirm's exact context shape - the frontend's StepCard.tsx
-    already fully renders "icp_confirm_form" (built for the legacy engine,
-    never actually reachable there since that flow crashes on a missing
-    function before ever getting this far). extract_key/confirm_key must be
-    unique per call site, including per "add more prospects" loop iteration.
+    person_locations, employee_ranges), reusing runner.py's exact
+    extraction-prompt shape and _ask_icp_confirm's exact context shape - the
+    frontend's StepCard.tsx already fully renders "icp_confirm_form" (built
+    for the legacy engine, never actually reachable there since that flow
+    crashes on a missing function before ever getting this far).
+    extract_key/confirm_key must be unique per call site, including per "add
+    more prospects" loop iteration.
 
-    Two fallbacks to manual title entry, matching runner.py's existing
-    fallback shapes: no ICP workbook at all, or (the actual bug fix here)
-    Claude extracts a product/use-case that isn't in the workbook - runner.py
-    hard-raises in that case ("Could not map: {product} -> {use_case}"),
-    which would fire constantly for a real, missing product like "Global
-    API" (confirmed: the workbook only has 3 sheets). This degrades instead."""
+    Three fallbacks to manual title entry, matching runner.py's existing
+    fallback shapes: no ICP workbook at all, Claude extracts a product/use-case
+    that isn't in the workbook (runner.py hard-raises in that case - "Could
+    not map: {product} -> {use_case}" - which would fire constantly for a
+    real, missing product like "Global API", confirmed: the workbook only has
+    3 sheets), or the user explicitly picks "Other" instead of any listed
+    product/use-case (nothing to look wrong here - they just aren't locked
+    into the sheet's list). All three degrade the same way instead."""
 
     async def _load_use_cases():
         return icp_mapper.get_use_case_options()
@@ -291,7 +335,7 @@ async def _extract_and_confirm_icp(step: inngest.Step, run_id: str, campaign_ide
             default="", context={"step": "source"},
         )
         persona_titles = [t.strip() for t in str(titles_answer).split(",") if t.strip()] or None
-        return persona_titles, None
+        return persona_titles, None, None
 
     async def _extract():
         claude = Anthropic()
@@ -325,33 +369,43 @@ If uncertain, pick the most likely match. Return ONLY JSON, no markdown."""
 
     extracted = await step.run(f"{extract_key}_claude_extract", _extract)
 
+    async def _manual_titles_fallback(reason: str):
+        titles_answer = await _ask(
+            step, run_id, f"{confirm_key}_manual_titles_unmapped", "text",
+            f"{reason} - enter job titles to target (comma-separated):",
+            default="", context={"step": "source"},
+        )
+        persona_titles = [t.strip() for t in str(titles_answer).split(",") if t.strip()] or None
+        return persona_titles, None, None
+
     if extracted["error"] or not extracted["product"]:
-        product_list = sorted(use_case_options.keys())
+        product_list = sorted(use_case_options.keys()) + [_OTHER]
         product = await _ask(step, run_id, f"{confirm_key}_manual_product", "choice",
                               "Which Xoxoday product?", options=product_list, context={"step": "source"})
+        if product == _OTHER:
+            return await _manual_titles_fallback("Product not listed")
+        use_case_list = use_case_options.get(product, []) + [_OTHER]
         use_case = await _ask(step, run_id, f"{confirm_key}_manual_use_case", "choice",
-                               "Which use case?", options=use_case_options.get(product, []),
+                               "Which use case?", options=use_case_list,
                                context={"step": "source"})
+        if use_case == _OTHER:
+            return await _manual_titles_fallback("Use case not listed")
     else:
         product, use_case = extracted["product"], extracted["use_case"]
 
     icp_mapping = icp_mapper.map_use_case_to_icp(product, use_case)
 
     if not icp_mapping:
-        titles_answer = await _ask(
-            step, run_id, f"{confirm_key}_manual_titles_unmapped", "text",
+        return await _manual_titles_fallback(
             f"Couldn't map \"{product} - {use_case}\" to a known ICP (that product/use-case isn't in the "
-            "reference sheet yet) - enter job titles to target (comma-separated):",
-            default="", context={"step": "source"},
+            "reference sheet yet)"
         )
-        persona_titles = [t.strip() for t in str(titles_answer).split(",") if t.strip()] or None
-        return persona_titles, None
 
     form_answer = await _ask(
         step, run_id, confirm_key, "icp_confirm_form",
         f"{prompt_prefix}Matched \"{campaign_idea[:80]}...\" to **{product} - {use_case}** "
         f"(Economic Buyer: {icp_mapping.get('economic_buyer') or 'n/a'}, "
-        f"Champion: {icp_mapping.get('champion') or 'n/a'}). Pre-filled from the ICP sheet - edit if needed.",
+        f"Champion: {icp_mapping.get('champion') or 'n/a'}). Pre-filled from the ICP sheet - edit or add your own.",
         default=None,
         context={
             "step": "source",
@@ -361,12 +415,17 @@ If uncertain, pick the most likely match. Return ONLY JSON, no markdown."""
             "influencer": icp_mapping.get("influencer", ""),
             "fields": {
                 "job_titles": {
-                    "label": "Job titles (from the ICP sheet - uncheck any to exclude)",
+                    "label": "Job titles (from the ICP sheet - uncheck any to exclude, or add your own)",
                     "options": icp_mapping.get("job_titles") or [],
                     "default": icp_mapping.get("job_titles") or [],
                 },
+                "employee_sizes": {
+                    "label": "Employee size (optional - leave blank for no filter, or add your own)",
+                    "options": [label for label, _ in config.EMPLOYEE_SIZE_BUCKETS],
+                    "default": [],
+                },
                 "regions": {
-                    "label": "Regions (uncheck to exclude, or add more)",
+                    "label": "Regions (uncheck to exclude, or add your own)",
                     "options": REGION_OPTIONS, "country_options": COUNTRY_OPTIONS,
                     "default": icp_mapping.get("regions") or [],
                 },
@@ -376,16 +435,19 @@ If uncertain, pick the most likely match. Return ONLY JSON, no markdown."""
     form_answer = form_answer or {}
     persona_titles = form_answer.get("job_titles") or None
     person_locations = form_answer.get("regions") or None
-    return persona_titles, person_locations
+    employee_ranges = _normalize_employee_size_labels(form_answer.get("employee_sizes") or [])
+    return persona_titles, person_locations, employee_ranges
 
 
 async def _add_more_prospects_loop(step: inngest.Step, run_id: str, candidates_df: pd.DataFrame,
-                                    persona_titles, person_locations, do_search, max_iterations: int = 5):
+                                    persona_titles, person_locations, employee_ranges, do_search,
+                                    max_iterations: int = 5):
     """Bounded version of runner.py's unbounded `while add_more:` loop (lines
     597-715 there) - Inngest step keys must be unique per run, so a real
     while loop can't work here; capped at max_iterations rounds instead.
-    do_search(names, titles, locations, key_suffix) is the same closure the
-    caller used for the initial search, reused here for each iteration."""
+    do_search(names, titles, locations, employee_ranges, key_suffix) is the
+    same closure the caller used for the initial search, reused here for
+    each iteration."""
     total_found = len(candidates_df)
     for i in range(1, max_iterations + 1):
         add_more = await _ask(
@@ -413,7 +475,8 @@ async def _add_more_prospects_loop(step: inngest.Step, run_id: str, candidates_d
             names = _parse_company_names(str(more_companies))
             if not names:
                 continue
-            more_df, _more_stats = await do_search(names, persona_titles, person_locations, key_suffix=f"_more_{i}")
+            more_df, _more_stats = await do_search(names, persona_titles, person_locations, employee_ranges,
+                                                     key_suffix=f"_more_{i}")
             candidates_df = pd.concat([candidates_df, more_df], ignore_index=True)
         else:
             new_idea = await _ask(
@@ -423,15 +486,17 @@ async def _add_more_prospects_loop(step: inngest.Step, run_id: str, candidates_d
             )
             if not new_idea.strip():
                 continue
-            new_persona_titles, new_person_locations = await _extract_and_confirm_icp(
+            new_persona_titles, new_person_locations, new_employee_ranges = await _extract_and_confirm_icp(
                 step, run_id, new_idea,
                 extract_key=f"icp_extract_more_{i}", confirm_key=f"icp_confirm_more_{i}",
                 prompt_prefix="Refined filters - ",
             )
             persona_titles = new_persona_titles or persona_titles
             person_locations = new_person_locations or person_locations
+            employee_ranges = new_employee_ranges or employee_ranges
             same_companies = candidates_df["Company"].dropna().unique().tolist()
-            new_df, _new_stats = await do_search(same_companies, persona_titles, person_locations, key_suffix=f"_refilter_{i}")
+            new_df, _new_stats = await do_search(same_companies, persona_titles, person_locations, employee_ranges,
+                                                   key_suffix=f"_refilter_{i}")
             candidates_df = pd.concat([candidates_df, new_df], ignore_index=True)
             if "obfuscated_name" in candidates_df.columns:
                 candidates_df = candidates_df.drop_duplicates(subset=["obfuscated_name", "Company"], keep="first")
@@ -440,7 +505,7 @@ async def _add_more_prospects_loop(step: inngest.Step, run_id: str, candidates_d
         await _set_stat(step, f"stat_discovery_idea_more_{i}", run_id, "apollo_search",
                          {"candidates_found": total_found})
 
-    return candidates_df, persona_titles, person_locations
+    return candidates_df, persona_titles, person_locations, employee_ranges
 
 
 @client.create_function(
@@ -469,6 +534,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
     csv_filename = data.get("csv_filename") or "input.csv"
     hubspot_project_id = data.get("hubspot_project_id")
     campaign_idea = (data.get("campaign_idea") or "").strip()
+    wizard_targeting = data.get("wizard_targeting") or {}
     company_col = data.get("company_col")
     employee_col = data.get("employee_col")
     domain_col = data.get("domain_col")
@@ -633,6 +699,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
 
     persona_titles_from_idea = None
     person_locations_from_idea = None
+    employee_ranges_from_idea = None
 
     if not campaign_idea_no_csv:
         # Some exports (seen on a real HubSpot pull) carry the same header twice -
@@ -679,10 +746,17 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             # description + CSV: description drives targeting, CSV drives the
             # company list - confirm ICP now so People Discovery below can
             # skip its manual discovery_form ask and use this directly.
-            persona_titles_from_idea, person_locations_from_idea = await _extract_and_confirm_icp(
-                step, run_id, campaign_idea,
-                extract_key="icp_extract_with_csv", confirm_key="icp_confirm_with_csv",
-            )
+            if wizard_targeting:
+                # User already confirmed targeting in the wizard - skip Claude
+                # extraction and the icp_confirm_form re-ask entirely.
+                persona_titles_from_idea, person_locations_from_idea, employee_ranges_from_idea = \
+                    _targeting_from_wizard(wizard_targeting)
+            else:
+                persona_titles_from_idea, person_locations_from_idea, employee_ranges_from_idea = \
+                    await _extract_and_confirm_icp(
+                        step, run_id, campaign_idea,
+                        extract_key="icp_extract_with_csv", confirm_key="icp_confirm_with_csv",
+                    )
 
         # ============ Domain Resolution (gated) ============
         existing_domain_col = "Domain" if "Domain" in df.columns else _guess_col(df, ["domain", "website", "company domain"])
@@ -837,8 +911,10 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                     # the manual discovery_form ask, use the confirmed targeting.
                     persona_titles = persona_titles_from_idea
                     person_locations = person_locations_from_idea
+                    employee_ranges = employee_ranges_from_idea
                     per_title_cap = 2
                 else:
+                    employee_ranges = None  # discovery_form doesn't collect this (out of scope, see plan)
                     icp_hint = project_meta.get("icp", "") if project_meta else ""
                     form_answer = await _ask(
                         step, run_id, "discovery_form", "discovery_form",
@@ -888,7 +964,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                     found_df, search_stats = apollo_enrich.search_candidates(
                         ok_df, resolved_company_col, "Domain", person_locations=person_locations,
                         persona_titles=persona_titles, max_per_company=config.MAX_CONTACTS_PER_COMPANY_CAP,
-                        per_title_cap=effective_per_title_cap)
+                        per_title_cap=effective_per_title_cap, employee_ranges=employee_ranges)
                     return _nan_safe({"records": found_df.to_dict("records"), "search_stats": search_stats})
 
                 search_result = await step.run("search_candidates", _search)
@@ -912,10 +988,15 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         # Replaces Input & Normalization / Domain Resolution / Exclusion Check /
         # People Discovery entirely for this path - there's no company-list df
         # until after the search below produces candidates_df.
-        persona_titles, person_locations = await _extract_and_confirm_icp(
-            step, run_id, campaign_idea,
-            extract_key="icp_extract_no_csv", confirm_key="icp_confirm_no_csv",
-        )
+        if wizard_targeting:
+            # User already confirmed targeting in the wizard - skip Claude
+            # extraction and the icp_confirm_form re-ask entirely.
+            persona_titles, person_locations, employee_ranges = _targeting_from_wizard(wizard_targeting)
+        else:
+            persona_titles, person_locations, employee_ranges = await _extract_and_confirm_icp(
+                step, run_id, campaign_idea,
+                extract_key="icp_extract_no_csv", confirm_key="icp_confirm_no_csv",
+            )
 
         await _set_step(step, "step_source_done_idea", run_id, "source", "Input & Normalization", "done",
                          f"Campaign idea captured: \"{campaign_idea[:80]}\".")
@@ -930,7 +1011,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         if not company_names:
             raise ValueError("No company names provided for Apollo search.")
 
-        async def _do_search(names, p_titles, p_locations, key_suffix=""):
+        async def _do_search(names, p_titles, p_locations, p_employee_ranges=None, key_suffix=""):
             domains_df = pd.DataFrame([{"Company": c} for c in names])
 
             async def _resolve():
@@ -946,13 +1027,14 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             async def _search():
                 found_df, sstats = apollo_enrich.search_candidates(
                     resolved_df, "Company", "Domain", person_locations=p_locations,
-                    persona_titles=p_titles, max_per_company=config.MAX_CONTACTS_PER_COMPANY_DEFAULT)
+                    persona_titles=p_titles, max_per_company=config.MAX_CONTACTS_PER_COMPANY_DEFAULT,
+                    employee_ranges=p_employee_ranges)
                 return _nan_safe({"records": found_df.to_dict("records"), "search_stats": sstats})
 
             search_result = await step.run(f"search_candidates_idea{key_suffix}", _search)
             return pd.DataFrame(search_result["records"]), search_result["search_stats"]
 
-        candidates_df, search_stats = await _do_search(company_names, persona_titles, person_locations)
+        candidates_df, search_stats = await _do_search(company_names, persona_titles, person_locations, employee_ranges)
         await _set_step(step, "step_domain_done_idea", run_id, "domain", "Domain Resolution", "done",
                          f"Resolved domains for {len(company_names)} compan{'y' if len(company_names) == 1 else 'ies'}.")
         await _set_step(
@@ -962,8 +1044,8 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         )
         await _set_stat(step, "stat_discovery_idea", run_id, "apollo_search", search_stats)
 
-        candidates_df, persona_titles, person_locations = await _add_more_prospects_loop(
-            step, run_id, candidates_df, persona_titles, person_locations, _do_search)
+        candidates_df, persona_titles, person_locations, employee_ranges = await _add_more_prospects_loop(
+            step, run_id, candidates_df, persona_titles, person_locations, employee_ranges, _do_search)
 
         # Exclusion gate, applied to candidates - a separate small block rather
         # than sharing code with the tested exclusion block above, deliberately,
@@ -1378,7 +1460,10 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
 
     async def _push_heyreach():
         if outputs.file_exists(run_dir, "linkedin_upload.csv"):
-            li_df = pd.read_csv(io.BytesIO(outputs.read_file(run_dir, "linkedin_upload.csv")))
+            try:
+                li_df = pd.read_csv(io.BytesIO(outputs.read_file(run_dir, "linkedin_upload.csv")))
+            except pd.errors.EmptyDataError:
+                li_df = pd.DataFrame()
             if not li_df.empty:
                 li_df = li_df.where(pd.notna(li_df), None)
                 return _nan_safe(heyreach.push_leads(li_df.to_dict(orient="records"), campaign_title))

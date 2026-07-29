@@ -179,8 +179,8 @@ def build_channel_files(enriched_df: pd.DataFrame, campaign_title: str) -> dict[
         if li is not None:
             linkedin_rows.append({
                 "first_name": first, "last_name": last, "company_name": company,
-                "job_title": title, "linkedin_url": li, "company_domain": domain,
-                "campaign_title": campaign_title,
+                "job_title": title, "linkedin_url": li, "email": _clean_cell(row.get("email")),
+                "company_domain": domain, "campaign_title": campaign_title,
             })
         if phone is not None:
             calling_rows.append({
@@ -189,10 +189,12 @@ def build_channel_files(enriched_df: pd.DataFrame, campaign_title: str) -> dict[
                 "company_domain": domain, "campaign_title": campaign_title,
             })
 
+    linkedin_columns = ["first_name", "last_name", "company_name", "job_title", "linkedin_url", "email", "company_domain", "campaign_title"]
+    calling_columns = ["first_name", "last_name", "company_name", "job_title", "phone", "email", "company_domain", "campaign_title"]
     return {
         "email": email_df,
-        "linkedin": pd.DataFrame(linkedin_rows),
-        "calling": pd.DataFrame(calling_rows),
+        "linkedin": pd.DataFrame(linkedin_rows, columns=linkedin_columns),
+        "calling": pd.DataFrame(calling_rows, columns=calling_columns),
     }
 
 

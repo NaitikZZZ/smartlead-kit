@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { PendingQuestion } from "../lib/types";
 import { answerQuestion } from "../lib/api";
 import LocationMultiSelect from "./LocationMultiSelect";
+import AddCustomChip from "./AddCustomChip";
 
 const KIND_LABEL: Record<string, string> = { project: "Project", partner: "Partner", event: "Event" };
 
@@ -20,6 +21,7 @@ export default function StepCard({
   const [formRegions, setFormRegions] = useState<string[]>(fields?.person_locations?.default ?? []);
   const [icpTitles, setIcpTitles] = useState<string[]>(fields?.job_titles?.default ?? []);
   const [icpRegions, setIcpRegions] = useState<string[]>(fields?.regions?.default ?? []);
+  const [icpEmployeeSizes, setIcpEmployeeSizes] = useState<string[]>(fields?.employee_sizes?.default ?? []);
 
   const est = question.context?.estimate as
     | { credits: number; usd: number; units: number }
@@ -191,9 +193,42 @@ export default function StepCard({
                 ))}
               </div>
             ) : (
-              <p style={{ fontSize: 12, color: "var(--dark-200)" }}>No titles mapped from the sheet - the default list will be used.</p>
+              <p style={{ fontSize: 12, color: "var(--dark-200)" }}>No titles mapped from the sheet - add your own below.</p>
             )}
+            <AddCustomChip
+              placeholder="Add a title not listed above..."
+              disabled={submitting}
+              onAdd={(t) => setIcpTitles((cur) => (cur.includes(t) ? cur : [...cur, t]))}
+            />
           </div>
+
+          {fields.employee_sizes && (
+            <div>
+              <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                {fields.employee_sizes.label}
+              </label>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+                {(fields.employee_sizes.options as string[] || []).map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    className={`pill ${icpEmployeeSizes.includes(s) ? "active" : ""}`}
+                    disabled={submitting}
+                    onClick={() =>
+                      setIcpEmployeeSizes((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]))
+                    }
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+              <AddCustomChip
+                placeholder="Add a custom range, e.g. 200-400 or 5000+"
+                disabled={submitting}
+                onAdd={(v) => setIcpEmployeeSizes((cur) => (cur.includes(v) ? cur : [...cur, v]))}
+              />
+            </div>
+          )}
 
           <div>
             <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
@@ -206,13 +241,18 @@ export default function StepCard({
               onChange={setIcpRegions}
               disabled={submitting}
             />
+            <AddCustomChip
+              placeholder="Add a region/country not listed above..."
+              disabled={submitting}
+              onAdd={(r) => setIcpRegions((cur) => (cur.includes(r) ? cur : [...cur, r]))}
+            />
           </div>
 
           <div>
             <button
               className="btn-primary"
               disabled={submitting}
-              onClick={() => submit({ job_titles: icpTitles, regions: icpRegions })}
+              onClick={() => submit({ job_titles: icpTitles, regions: icpRegions, employee_sizes: icpEmployeeSizes })}
             >
               {submitting ? "Submitting..." : "Continue"}
             </button>
