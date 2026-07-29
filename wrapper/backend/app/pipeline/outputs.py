@@ -82,10 +82,51 @@ def strip_url_prefix(domain):
     return re.sub(r"^https?://(www\.)?", "", str(domain)).rstrip("/")
 
 
+# Contact property "demographics" (label "Demographics (Geography)") is a
+# locked enumeration on the live Xoxoday portal - confirmed via a read-only
+# properties lookup, exactly 9 allowed values (shown as label -> value below).
+# Sending anything else 400s the whole batch, same failure mode as the
+# duplicate-email bug. Country names are matched case-insensitively; anything
+# not in this table but still having SOME location signal (country/state/city)
+# falls back to "Rest of the World" rather than being left blank, per the
+# "mandatory if you have any location info" rule.
+DEMOGRAPHICS_BY_COUNTRY = {
+    "india": "India",
+    "united states": "US/ Canada", "united states of america": "US/ Canada", "usa": "US/ Canada", "us": "US/ Canada",
+    "canada": "US/ Canada",
+    "united kingdom": "Europe Region", "uk": "Europe Region", "great britain": "Europe Region",
+    "germany": "Europe Region", "france": "Europe Region", "netherlands": "Europe Region",
+    "spain": "Europe Region", "italy": "Europe Region", "ireland": "Europe Region",
+    "belgium": "Europe Region", "switzerland": "Europe Region", "sweden": "Europe Region",
+    "poland": "Europe Region", "portugal": "Europe Region", "austria": "Europe Region",
+    "saudi arabia": "KSA + LENA",
+    "united arab emirates": "GCC  and Turkey", "uae": "GCC  and Turkey", "qatar": "GCC  and Turkey",
+    "kuwait": "GCC  and Turkey", "bahrain": "GCC  and Turkey", "oman": "GCC  and Turkey", "turkey": "GCC  and Turkey",
+    "south africa": "Africa", "nigeria": "Africa", "kenya": "Africa", "egypt": "Africa",
+    "philippines": "Rest  APAC", "indonesia": "Rest  APAC", "singapore": "Rest  APAC",
+    "malaysia": "Rest  APAC", "thailand": "Rest  APAC", "vietnam": "Rest  APAC",
+    "australia": "Rest  APAC", "new zealand": "Rest  APAC", "japan": "Rest  APAC",
+    "china": "Rest  APAC", "hong kong": "Rest  APAC", "south korea": "Rest  APAC",
+}
+DEMOGRAPHICS_FALLBACK = "Rest of the World"
+
+
+def demographics_for(country, state, city) -> str | None:
+    if not (country or state or city):
+        return None  # no location signal at all - nothing to derive, leave blank
+    if country:
+        match = DEMOGRAPHICS_BY_COUNTRY.get(str(country).strip().lower())
+        if match:
+            return match
+    return DEMOGRAPHICS_FALLBACK
+
+
 def build_hubspot_import_file(enriched_df: pd.DataFrame, campaign_title: str) -> pd.DataFrame:
     """Mirrors the mapping validated against the live Xoxoday HubSpot portal
-    this session - only fields with a confirmed HubSpot property, company_domain
-    excluded (it's a locked picklist unrelated to arbitrary domains in this portal)."""
+    this session - only fields with a confirmed HubSpot property. The raw
+    domain goes to "website" (free text), NOT "company_domain" (confirmed via
+    a read-only properties lookup: that's a locked picklist with 8 unrelated
+    fixed values on this portal - sending an arbitrary domain there 400s)."""
     verified = enriched_df[enriched_df.get("email_status") == "verified"].copy() if "email_status" in enriched_df.columns else enriched_df.copy()
 
     def clean(v):
@@ -97,6 +138,8 @@ def build_hubspot_import_file(enriched_df: pd.DataFrame, campaign_title: str) ->
 
     rows = []
     for _, row in verified.iterrows():
+        country, state, city = clean(row.get("country")), clean(row.get("state")), clean(row.get("city"))
+        domain = clean(row.get("company_domain")) or strip_url_prefix(clean(row.get("Domain")))
         rows.append({
             "firstname": clean(row.get("first_name")),
             "lastname": clean(row.get("last_name")),
@@ -106,16 +149,18 @@ def build_hubspot_import_file(enriched_df: pd.DataFrame, campaign_title: str) ->
             "hs_linkedin_url": clean(row.get("linkedin_url")),
             "company": clean(row.get("organization_name") or row.get("search_company")),
             "company_linkedin_url": clean(row.get("organization_linkedin_url")),
+            "website": domain,
             "industry": clean(row.get("organization_industry")),
             "numemployees": bucket_employees(row.get("organization_estimated_num_employees")),
             "annualrevenue": clean(row.get("organization_annual_revenue")),
             "total_funding": clean(row.get("organization_total_funding")),
             "technologies": clean(row.get("technologies")),
             "seniority_level": SENIORITY_MAP.get(row.get("seniority")),
-            "country": clean(row.get("country")),
-            "state": clean(row.get("state")),
+            "country": country,
+            "state": state,
             "address": clean(row.get("formatted_address")),
-            "city": clean(row.get("city")),
+            "city": city,
+            "demographics": demographics_for(country, state, city),
             "department___job_function__apollo_": clean(row.get("departments")),
             "campaign_title": campaign_title,
         })
@@ -124,8 +169,8 @@ def build_hubspot_import_file(enriched_df: pd.DataFrame, campaign_title: str) ->
         # email_df["email"] filter then KeyErrors instead of yielding an empty file.
         return pd.DataFrame(columns=[
             "firstname", "lastname", "email", "jobtitle", "phone", "hs_linkedin_url", "company",
-            "company_linkedin_url", "industry", "numemployees", "annualrevenue", "total_funding",
-            "technologies", "seniority_level", "country", "state", "address", "city",
+            "company_linkedin_url", "website", "industry", "numemployees", "annualrevenue", "total_funding",
+            "technologies", "seniority_level", "country", "state", "address", "city", "demographics",
             "department___job_function__apollo_", "campaign_title",
         ])
     return pd.DataFrame(rows)

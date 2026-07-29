@@ -41,6 +41,15 @@ def _headers():
 
 
 def _lead(row: dict) -> dict | None:
+    """profileUrl is the only hard requirement (HeyReach identifies a lead by
+    LinkedIn profile). email is pushed as emailAddress whenever we have one -
+    the user's HeyReach workspace is synced to email, so a lead without it
+    won't line up with that integration. Anything else this pipeline has
+    per-prospect but that isn't one of HeyReach's standard lead fields
+    (confirmed via the real payload shape used in this account's prior
+    HeyReach pushes: firstName/lastName/profileUrl/emailAddress/companyName/
+    position - no other standard fields exist) goes into customUserFields,
+    HeyReach's supported arbitrary-custom-field mechanism."""
     url = (row.get("linkedin_url") or "").strip()
     if not url:
         return None
@@ -55,6 +64,19 @@ def _lead(row: dict) -> dict | None:
     position = (row.get("job_title") or "").strip()
     if position:
         lead["position"] = position
+    email = (row.get("email") or "").strip()
+    if email:
+        lead["emailAddress"] = email
+
+    custom_fields = []
+    domain = (row.get("company_domain") or "").strip()
+    if domain:
+        custom_fields.append({"name": "company_domain", "value": domain})
+    campaign = (row.get("campaign_title") or "").strip()
+    if campaign:
+        custom_fields.append({"name": "campaign_title", "value": campaign})
+    if custom_fields:
+        lead["customUserFields"] = custom_fields
     return lead
 
 
