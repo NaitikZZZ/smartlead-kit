@@ -28,9 +28,18 @@ def _verify_cron_secret(authorization: Optional[str]):
 
 @router.get("/refresh-exclusion")
 def refresh_exclusion(authorization: Optional[str] = Header(None)):
+    """Advances the DNU cache rebuild by one time-bounded slice.
+
+    A full rebuild cannot fit in Vercel's 300s function cap (membership
+    pagination alone is ~391s and is cursor-based, so it can't be
+    parallelized), so this resumes from saved progress and returns
+    done=false until the build completes. Schedule it frequently - it
+    no-ops cheaply once the cache is fresh and no build is in flight."""
     _verify_cron_secret(authorization)
-    meta = hubspot_exclusion.refresh_cache()
-    return {"status": "ok", "record_count": meta["record_count"], "built_at": meta["built_at"]}
+    if hubspot_exclusion.cache_is_fresh():
+        return {"status": "skipped", "reason": "cache is fresh and no build in progress"}
+    result = hubspot_exclusion.refresh_cache_resumable(budget_seconds=240)
+    return {"status": "ok", **result}
 
 
 @router.get("/refresh-associations")
