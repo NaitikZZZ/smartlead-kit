@@ -1,8 +1,9 @@
 """Step 10: Copy Agent (Enhanced) - Persona-driven email/LinkedIn copy generation.
 
 Uses ICP_PERSONAS_REFERENCE + HUMANVOICE_COPY_GUIDE to generate targeted sequences
-based on detected persona, use case, and geography. Generates a single 5-step email
-sequence + a mirrored LinkedIn sequence (no A/B variants).
+based on detected persona, use case, and geography. Generates a single 12-step email
+sequence + a mirrored LinkedIn sequence (no A/B variants) - see PRODUCT_ANGLES for
+the grounded why/features/validation content each product's step 2/3/5 draws from.
 
 Runs after HubSpot import succeeds (best-effort: never sinks the import).
 """
@@ -165,56 +166,128 @@ Voice rules (HUMANVOICE_COPY_GUIDE standard):
 - No banned phrases: "I hope you're doing well", "leverage", "seamless", "cutting-edge",
   "I'd love to pick your brain", "Just checking in", "Would you be open to a quick chat?",
   "grabbing coffee", "grabbing lunch"
+- NEVER include a signature block or sign-off name ("Best, [Name]", "Thanks, [Name]",
+  a standalone name line, or a company tagline) at the end of any email body. Smartlead
+  auto-appends the sender's real signature - a signature in the body causes a double
+  signature at send time. End each email on its last real content sentence (the
+  question or CTA), nothing after it.
 
-Sequence arc (apply to both channels):
-1. State the ask clearly in the FIRST sentence itself: same field (and same
+Sequence arc - 12 emails total, each with a defined job (apply the formal/no-names/
+show-don't-tell rules above to every one of them):
+
+1. **The ask.** State it clearly in the FIRST sentence itself: same field (and same
    location/city if known) + wanting to show/discuss a solution that solved a
    specific problem for global customers. No pitch yet. End on a soft, low-stakes
    question.
-2. "Following up on X." Introduce [PRODUCT] inline as "a global [category] company."
-   Offer before you ask - lead with offering to show the ROI, not a request for their
-   time. First anonymized-client proof point (real metric, no real name). End with an
-   easy, low-friction CTA.
-3. Reframe [PRODUCT] around what this specific role/level cares about (their KPI, their
-   goal) - never around what they're doing wrong. Second anonymized proof point or
-   mechanic. End on an either/or diagnostic question.
-4. The big-stakes beat — board optics / time-saved / cost-saved, whichever fits this
-   seniority, backed by 2-3 concrete metrics. Ask for 15 minutes or "happy to meet in
-   person to discuss," framed as "I'd rather show you X than keep describing it."
-5. The breakup email. No new pitch. Give them a clean, guilt-free exit, door left
-   open ("just reply, easy to pick back up").
+2. **Why [PRODUCT].** Use the why_product framing below verbatim as the grounding fact,
+   in your own words - don't just restate it as a slogan, explain what it means for
+   THIS persona's day-to-day. Offer before you ask - lead with offering to show this,
+   not a request for their time.
+3. **Product features.** Pick 2-3 of the key_features below most relevant to this
+   persona/seniority and explain what each one solves for them concretely - not a
+   bullet dump, weave them into the specific workflow this role owns.
+4. **Case studies and customer testimonials.** An anonymized case-study-style
+   narrative (a global/regional client in [industry] - never the real name, even
+   though some of these are named on the public website) with a before/after arc and
+   a real metric, framed as a testimonial-style result rather than a bare stat.
+5. **Third-party validation.** Use the third_party_validation figure below - G2
+   rating/review count, or the award/company-wide stat if this product has no
+   product-specific number (say so plainly, e.g. "we're rated 4.7 on G2 as a
+   company" rather than inventing a product-specific figure that doesn't exist).
+6. **Recap.** Briefly recap the ask, the why, the features, the case study, and the
+   validation from emails 1-5 in a few tight sentences - not a bullet list, a natural
+   summary - then close with a clear, low-pressure CTA (15 minutes, or happy to meet
+   in person to discuss).
+7-12. **Recap, restated.** Same job as email 6 - recap + low-pressure CTA - but each
+   one reframes the recap differently (lead with a different piece of proof, a
+   different angle on the ask, or a different seniority-relevant hook) so it never
+   reads as a literal copy-paste of email 6. The last one or two of these can be a
+   genuine breakup email: no new pitch, a clean guilt-free exit, door left open
+   ("just reply, easy to pick back up").
 
 LinkedIn messages must be shorter and chattier than the emails, and must not repeat
-any line, stat, or phrase from the email track word-for-word.
+any line, stat, or phrase from the email track word-for-word. Mirror the same 12-step
+arc and jobs above, just condensed per channel norms.
 
 Vary sentence openers across the sequence — don't start every message with "Hi
 {{first_name}}," followed by the same structure.
 """
 
+    # why_product/key_features/third_party_validation are grounded in real
+    # source material (reference/xoxoday_brandbook_2026.md and
+    # reference/xoxoday-website/) - confirmed via a dedicated research pass,
+    # NOT invented. Where no product-specific G2/Gartner figure exists (Plum,
+    # Compass, Loyalife), third_party_validation falls back to the real
+    # company-wide figure/award instead of a fabricated product-specific one.
     PRODUCT_ANGLES = {
         "Empuls": {
             "pain_summary": "Recognition is fragmented (Slack, spreadsheets, annual events). Doesn't scale, doesn't integrate, leaders can't prove ROI.",
             "proof_keywords": "adoption timeline, days to rollout, user adoption %, QBR proof",
             "cta_style": "soft question about timeline or adoption for their size",
             "global_framing": "a global employee experience and recognition company",
+            "why_product": "An AI-powered employee engagement platform that brings recognition, rewards, surveys, benefits, and a social intranet into one place - trusted by 5,000+ companies across 150+ countries, so engagement becomes how the company works day to day, not a program run on the side.",
+            "key_features": [
+                "Recognition & Rewards - peer, manager, milestone, and values-based recognition with 10M+ reward options",
+                "Social Intranet - company feed, groups, town halls, polls",
+                "Surveys & Insights - pulse, lifecycle, 360-degree, and custom surveys with AI-recommended action plans",
+                "Perks & Benefits - 10,000+ brand discounts, Lifestyle Spending Accounts, wellness/insurance/financial wellbeing benefits",
+                "Sales Incentives - real-time leaderboards, contests, automated commission/SPIFF management",
+                "Empuls AI - nudges, sentiment analysis, action recommendations",
+                "50+ HRIS, collaboration, and SSO integrations",
+            ],
+            "third_party_validation": "4.6/5 on G2 (1,400+ reviews) - Best Employee Engagement Software on G2",
         },
         "Plum": {
             "pain_summary": "Manual rewards management. Gift cards from procurement (slow), single-country catalogs (limited), no real choice (low redemption).",
             "proof_keywords": "cost savings %, delivery time reduction, countries supported, integration speed",
             "cta_style": "easy yes about seeing how it works for their use case",
             "global_framing": "a global rewards and incentives company",
+            "why_product": "Global rewards and payouts infrastructure built for scale - multiple languages/currencies, enterprise-grade security, no hidden markups, 24/7 global support, and a fully configurable, white-labeled marketplace so anyone can be rewarded anywhere.",
+            "key_features": [
+                "Reward Points - credit points to user accounts, redeemable from a global marketplace",
+                "Reward Codes - alphanumeric codes redeemable instantly without login",
+                "Reward Links - trackable links shareable via email, SMS, WhatsApp",
+                "Rewards API - automate reward distribution into your own workflows",
+                "Marketplace Integration via SSO (SAML 2.0, OIDC, SCIM)",
+                "iFrame Embed - responsive rewards catalog embed for web/mobile",
+                "10M+ rewards across 150+ countries, 30+ categories",
+            ],
+            "third_party_validation": "no Plum-specific G2/Gartner rating found - use the company-wide figure instead: 4.7 G2 rating, 5,000+ companies worldwide, 150+ countries",
         },
         "Compass": {
             "pain_summary": "Commission spreadsheets. Manual calcs, month-end disputes, reps can't see real-time earnings, finance recalculates by hand.",
             "proof_keywords": "accuracy %, dispute reduction %, time saved per month, rep adoption",
             "cta_style": "sandbox demo or 15-min walkthrough to see live earnings",
             "global_framing": "a global sales commission automation company",
+            "why_product": "A no-code, scalable commission automation and analytics platform covering data management, commission automation, sales rep motivation, compensation, ROI, and AI-powered gamification.",
+            "key_features": [
+                "No-code, schema-agnostic data integrations - one-click, webhook, or CSV",
+                "Metric library - aggregate, formula-based, and mapping-variable metrics for compensation logic",
+                "Milestone, plan-based commission plans with configurable conditions",
+                "Multi-stage approval workflows for plans and rewards",
+                "Real-time leaderboards with configurable ranking metrics",
+                "Ticketed escalation routing for plan/incentive disputes",
+                "Mobile app - earnings breakdown, plan tracking, in-app redemption",
+            ],
+            "third_party_validation": "no Compass-specific G2/Gartner rating found - use the company-wide figure instead: 4.7 G2 rating",
         },
         "Loyalife": {
             "pain_summary": "Loyalty is generic (points + tiers). Low engagement, churn on redemption, no brand differentiation.",
             "proof_keywords": "churn reduction %, redemption rate lift, member engagement %, CLTV impact",
             "cta_style": "case study or benchmarking call",
             "global_framing": "a global customer loyalty company",
+            "why_product": "Unifies programs, rewards, engagement, and member data so enterprises can launch and manage omnichannel loyalty programs without stitching together fragmented tools - built around actionable AI.",
+            "key_features": [
+                "Loyalty Programs - multi-brand, channel, influencer, omnichannel, coalition models",
+                "Member Management - built-in CDP with 360-degree member profiles",
+                "Rule Engine - earn, burn, and eligibility logic with governed conditions",
+                "Member Engagement toolset - segments, tiers, campaigns, gamification, referrals",
+                "Loyalty Rewards - points, cards, digital wallet, location/scan/claim-based rewards",
+                "Reports & Insights - real-time and AI-powered analytics dashboard",
+                "Anomaly detection and maker-checker governance for fraud prevention",
+                "White-labeled mobile app and verified WhatsApp bot for redemption",
+            ],
+            "third_party_validation": "no Loyalife-specific G2/Gartner rating found - use the company-wide figure instead: 4.7 G2 rating. (Loyalife does have real enterprise customers - CBI, Mutual Trust Bank, Ola Energy, TBO Holidays - but per the no-real-client-names rule, still anonymize as 'a global banking/energy/travel client' rather than naming them.)",
         },
     }
 
@@ -231,7 +304,7 @@ Vary sentence openers across the sequence — don't start every message with "Hi
         product_angle = cls.PRODUCT_ANGLES.get(product, {})
         seniority_angle = cls.SENIORITY_ANGLES.get(seniority, "ROI and adoption")
 
-        return f"""Generate a 5-email outbound sequence + a mirrored 5-message LinkedIn sequence for:
+        return f"""Generate a 12-email outbound sequence + a mirrored 12-message LinkedIn sequence for:
 {persona_summary}
 
 Product: {product}
@@ -239,6 +312,15 @@ Introduce it as: {product_angle.get('global_framing', 'a global company in this 
 Pain point: {product_angle.get('pain_summary', 'See relevant doc')}
 Proof style (for this seniority): {seniority_angle}
 One-line CTA style: {product_angle.get('cta_style', 'soft ask')}
+
+why_product (ground email 2 in this, don't just restate it):
+{product_angle.get('why_product', 'See relevant doc')}
+
+key_features (email 3 picks 2-3 of these most relevant to this persona):
+{json.dumps(product_angle.get('key_features', []), indent=2)}
+
+third_party_validation (email 5 uses this real figure - never invent a number):
+{product_angle.get('third_party_validation', 'No verified figure available - do not invent one, mention credibility another way')}
 
 Sample leads (for tone/context, not exhaustive):
 {json.dumps(sample_leads, indent=2, default=str)}
@@ -249,11 +331,11 @@ Return ONLY valid JSON, no markdown:
 {{
   "email_sequences": [
     {{"step": 1, "delay_days": 0, "subject": "...", "body": "<p>...</p>"}},
-    ...
+    ... (steps 1 through 12)
   ],
   "linkedin_sequences": [
     {{"step": 1, "action": "Profile visit", "message": null}},
-    ...
+    ... (steps 1 through 12)
   ]
 }}
 """
@@ -302,7 +384,7 @@ def generate_copy(
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=3000,
+            max_tokens=8000,  # 12 emails + 12 LinkedIn messages, up from 5+5 - 3000 would truncate
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text
