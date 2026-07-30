@@ -17,7 +17,7 @@
     { "source": "/(.*)", "destination": { "service": "abm-wrapper-web" } }
   ],
   "crons": [
-    { "path": "/api/cron/refresh-exclusion", "schedule": "*/10 2-4 * * *" },
-    { "path": "/api/cron/refresh-associations?kinds=project,partner,event", "schedule": "0 5 * * *" }
+    { "path": "/api/cron/refresh-exclusion", "schedule": "0 2 * * *" },
+    { "path": "/api/cron/refresh-associations?kinds=project,partner,event", "schedule": "0 3 * * *" }
   ]
 }
