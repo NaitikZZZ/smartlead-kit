@@ -1,8 +1,8 @@
 """Step 10: Copy Agent (Enhanced) - Persona-driven email/LinkedIn copy generation.
 
 Uses ICP_PERSONAS_REFERENCE + HUMANVOICE_COPY_GUIDE to generate targeted sequences
-based on detected persona, use case, and geography. Generates 5-step email + LinkedIn
-with A/B variants.
+based on detected persona, use case, and geography. Generates a single 5-step email
+sequence + a mirrored LinkedIn sequence (no A/B variants).
 
 Runs after HubSpot import succeeds (best-effort: never sinks the import).
 """
@@ -142,27 +142,45 @@ class HumanVoicePromptBuilder:
 
     HUMANVOICE_RULES = """
 Voice rules (HUMANVOICE_COPY_GUIDE standard):
-- Sound like a curious human peer, not a vendor. No brochure language, no buzzwords,
-  no exclamation points, no em dashes.
-- Short sentences, contractions, occasional fragments for punch.
-- One proof point per email: a named customer + one concrete detail (timeframe, %,
-  cost saving, or G2 rating 4.6/5, 100+ reports).
+- Always formal - this is not friends-and-family correspondence. Short, declarative
+  sentences and no hedging is fine (still human, not stiff), but no casual social
+  framing until a relationship exists.
+- No brochure language, no buzzwords, no exclamation points, no em dashes.
+- Assume the prospect has never heard of Xoxoday - introduce the product explicitly
+  as "a global [category] company" (see product_global_framing below), don't rely on
+  the name alone to carry credibility.
+- NEVER name a real client/customer company. Every proof point is a real, specific
+  metric (timeframe, %, cost saving, rating) paired with an ANONYMIZED reference -
+  "a global [industry] company", "a leading [region] client in [industry]" - never
+  the actual company name.
+- Show, don't tell - cardinal rule. Prove ROI with 2-3 concrete data points, never
+  adjective claims ("powerful", "seamless", "game-changing").
+- Never diminish the prospect's current approach, tool, or role (no "what you do
+  doesn't get noticed" style framing) - this reads as an insult, not an insight.
+- No casual meetup language ("grab coffee", "grab lunch") on a cold first touch -
+  use "happy to meet in person to discuss [topic]" instead. "Same neighbourhood/city"
+  framing is fine, the casual verb is the problem.
 - Ground every pain point in a specific, sensory scene from this persona's day-to-day
   (not generic "employees" — the actual role and context).
 - No banned phrases: "I hope you're doing well", "leverage", "seamless", "cutting-edge",
-  "I'd love to pick your brain", "Just checking in", "Would you be open to a quick chat?"
+  "I'd love to pick your brain", "Just checking in", "Would you be open to a quick chat?",
+  "grabbing coffee", "grabbing lunch"
 
 Sequence arc (apply to both channels):
-1. Name a narrow, specific pain for this persona/vertical. No pitch. End on a soft,
-   low-stakes question.
-2. "Following up on X." Introduce [PRODUCT] inline as an aside. First named-customer
-   proof point. End with an easy, low-friction CTA.
+1. State the ask clearly in the FIRST sentence itself: same field (and same
+   location/city if known) + wanting to show/discuss a solution that solved a
+   specific problem for global customers. No pitch yet. End on a soft, low-stakes
+   question.
+2. "Following up on X." Introduce [PRODUCT] inline as "a global [category] company."
+   Offer before you ask - lead with offering to show the ROI, not a request for their
+   time. First anonymized-client proof point (real metric, no real name). End with an
+   easy, low-friction CTA.
 3. Reframe [PRODUCT] around what this specific role/level cares about (their KPI, their
-   pain point, their goal). Second proof point or mechanic. End on an either/or
-   diagnostic question.
-4. The big-stakes beat — board optics / G2 rating / time-saved / cost-saved, whichever
-   fits this seniority. Ask for 15 minutes, framed as "I'd rather show you X than keep
-   describing it."
+   goal) - never around what they're doing wrong. Second anonymized proof point or
+   mechanic. End on an either/or diagnostic question.
+4. The big-stakes beat — board optics / time-saved / cost-saved, whichever fits this
+   seniority, backed by 2-3 concrete metrics. Ask for 15 minutes or "happy to meet in
+   person to discuss," framed as "I'd rather show you X than keep describing it."
 5. The breakup email. No new pitch. Give them a clean, guilt-free exit, door left
    open ("just reply, easy to pick back up").
 
@@ -178,21 +196,25 @@ Vary sentence openers across the sequence — don't start every message with "Hi
             "pain_summary": "Recognition is fragmented (Slack, spreadsheets, annual events). Doesn't scale, doesn't integrate, leaders can't prove ROI.",
             "proof_keywords": "adoption timeline, days to rollout, user adoption %, QBR proof",
             "cta_style": "soft question about timeline or adoption for their size",
+            "global_framing": "a global employee experience and recognition company",
         },
         "Plum": {
             "pain_summary": "Manual rewards management. Gift cards from procurement (slow), single-country catalogs (limited), no real choice (low redemption).",
             "proof_keywords": "cost savings %, delivery time reduction, countries supported, integration speed",
             "cta_style": "easy yes about seeing how it works for their use case",
+            "global_framing": "a global rewards and incentives company",
         },
         "Compass": {
             "pain_summary": "Commission spreadsheets. Manual calcs, month-end disputes, reps can't see real-time earnings, finance recalculates by hand.",
             "proof_keywords": "accuracy %, dispute reduction %, time saved per month, rep adoption",
             "cta_style": "sandbox demo or 15-min walkthrough to see live earnings",
+            "global_framing": "a global sales commission automation company",
         },
         "Loyalife": {
             "pain_summary": "Loyalty is generic (points + tiers). Low engagement, churn on redemption, no brand differentiation.",
             "proof_keywords": "churn reduction %, redemption rate lift, member engagement %, CLTV impact",
             "cta_style": "case study or benchmarking call",
+            "global_framing": "a global customer loyalty company",
         },
     }
 
@@ -213,6 +235,7 @@ Vary sentence openers across the sequence — don't start every message with "Hi
 {persona_summary}
 
 Product: {product}
+Introduce it as: {product_angle.get('global_framing', 'a global company in this category')}
 Pain point: {product_angle.get('pain_summary', 'See relevant doc')}
 Proof style (for this seniority): {seniority_angle}
 One-line CTA style: {product_angle.get('cta_style', 'soft ask')}
@@ -225,7 +248,7 @@ Sample leads (for tone/context, not exhaustive):
 Return ONLY valid JSON, no markdown:
 {{
   "email_sequences": [
-    {{"step": 1, "delay_days": 0, "subject_a": "...", "subject_b": "...", "body_a": "<p>...</p>", "body_b": "<p>...</p>"}},
+    {{"step": 1, "delay_days": 0, "subject": "...", "body": "<p>...</p>"}},
     ...
   ],
   "linkedin_sequences": [
@@ -256,6 +279,7 @@ def _lead_brief(row: dict) -> dict:
         "company": row.get("organization_name") or row.get("company_name") or row.get("search_company"),
         "title": row.get("title"),
         "industry": row.get("industry"),
+        "linkedin_signal": row.get("personalized_line") or None,
     }
 
 
@@ -363,10 +387,8 @@ def build_markdown(campaign_title: str, result: dict) -> str:
     seq = result["copy"]
     for email in seq.get("email_sequences", []):
         lines.append(f"\n## Step {email['step']} (day {email['delay_days']})")
-        lines.append(f"**Subject A:** {email['subject_a']}")
-        lines.append(f"**Subject B:** {email['subject_b']}")
-        lines.append(f"\n**Body A:**\n{email['body_a']}")
-        lines.append(f"\n**Body B:**\n{email['body_b']}")
+        lines.append(f"**Subject:** {email['subject']}")
+        lines.append(f"\n**Body:**\n{email['body']}")
 
     li = seq.get("linkedin_sequences", [])
     if li:
