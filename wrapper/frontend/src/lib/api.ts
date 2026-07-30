@@ -35,9 +35,55 @@ export async function getIcpMapping(product: string, useCase: string): Promise<I
   return r.json();
 }
 
+export interface UploadedCsv {
+  runId: string;
+  pathname: string;
+}
+
+/** Uploads a CSV straight from the browser to Vercel Blob, bypassing our own
+ * backend. Vercel caps a serverless function's request body at 4.5MB (hard,
+ * not configurable), so POSTing a real Apollo export to /api/runs 413s at the
+ * edge. This asks the backend only for a short-lived token scoped to one
+ * pathname, then PUTs the bytes directly. Returns what startRun() needs to
+ * point the pipeline at the uploaded file. */
+export async function uploadCsvDirect(file: File): Promise<UploadedCsv> {
+  const tokenRes = await fetch(`${API_BASE}/api/runs/upload-token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename: file.name, content_type: file.type || "text/csv" }),
+  });
+  if (!tokenRes.ok) {
+    const body = await tokenRes.json().catch(() => ({}));
+    throw new Error(body.detail || `Could not start upload (${tokenRes.status})`);
+  }
+  const t = await tokenRes.json();
+
+  // Header set is exact and was established empirically - see
+  // vercel_blob.create_client_token's docstring. x-vercel-blob-access is
+  // required (the store is private); omitting it fails the PUT.
+  const putRes = await fetch(t.upload_url, {
+    method: "PUT",
+    headers: {
+      authorization: `Bearer ${t.token}`,
+      "x-api-version": String(t.api_version),
+      "x-vercel-blob-store-id": t.store_id,
+      "x-vercel-blob-access": "private",
+      "x-content-type": t.content_type,
+    },
+    body: file,
+  });
+  if (!putRes.ok) {
+    const body = await putRes.json().catch(() => ({}));
+    throw new Error(body?.error?.message || `Upload failed (${putRes.status})`);
+  }
+  return { runId: t.run_id, pathname: t.pathname };
+}
+
 export interface StartRunParams {
   inputSource: "csv" | "hubspot_project" | "campaign_idea";
   csvFile?: File;
+  csvBlobPathname?: string;
+  runId?: string;
   hubspotProjectId?: string;
   campaignIdea?: string;
   wizardTargeting?: WizardTargeting;
@@ -56,6 +102,8 @@ export async function startRun(params: StartRunParams): Promise<RunStatus> {
   if (params.companyCol) fd.append("company_col", params.companyCol);
   if (params.domainCol) fd.append("domain_col", params.domainCol);
   if (params.employeeCol) fd.append("employee_col", params.employeeCol);
+  if (params.csvBlobPathname) fd.append("csv_blob_pathname", params.csvBlobPathname);
+  if (params.runId) fd.append("run_id", params.runId);
   if (params.csvFile) fd.append("csv_file", params.csvFile);
   if (params.mappingSheetFile) fd.append("mapping_sheet_file", params.mappingSheetFile);
 

@@ -53,6 +53,39 @@ def _nan_safe(o):
     return o
 
 
+MAX_CSV_BYTES = 200 * 1024 * 1024  # generous ceiling on a direct-to-Blob upload
+
+
+@router.post("/upload-token")
+def upload_token(filename: str = Body(...), content_type: Optional[str] = Body(None)):
+    """Mints a run_id + a Blob client token so the BROWSER can upload the CSV
+    straight to Vercel Blob, bypassing this function entirely.
+
+    Why: Vercel caps a serverless function's request body at 4.5MB (hard, not
+    configurable), so a real Apollo export POSTed to /api/runs 413s at the edge
+    before FastAPI runs. The browser PUTs to Blob itself, then calls /api/runs
+    with just the resulting pathname. See vercel_blob.create_client_token for
+    the exact headers the browser must send."""
+    if not filename or not filename.strip():
+        raise HTTPException(400, "filename is required")
+    if not vercel_blob.is_configured():
+        raise HTTPException(503, "Blob storage is not configured on this server")
+    run_id = uuid.uuid4().hex[:12]
+    # Same pathname convention create_run uses, and what inngest_runner
+    # reconstructs via vercel_blob.url_for() - must not drift.
+    pathname = f"runs/{run_id}/{Path(filename).name}"
+    token = vercel_blob.create_client_token(pathname, max_bytes=MAX_CSV_BYTES)
+    return {
+        "run_id": run_id,
+        "pathname": pathname,
+        "token": token,
+        "upload_url": vercel_blob.upload_url_for(pathname),
+        "store_id": vercel_blob.store_id(),
+        "api_version": vercel_blob.API_VERSION,
+        "content_type": content_type or "text/csv",
+    }
+
+
 @router.post("", response_model=RunStatus)
 async def create_run(
     input_source: str = Form(...),
@@ -63,12 +96,29 @@ async def create_run(
     domain_col: Optional[str] = Form(None),
     employee_col: Optional[str] = Form(None),
     csv_file: Optional[UploadFile] = File(None),
+    csv_blob_pathname: Optional[str] = Form(None),  # set instead of csv_file when the browser already uploaded direct-to-Blob
+    run_id: Optional[str] = Form(None),  # the run_id /upload-token minted, so the pathname it scoped the token to still matches
     mapping_sheet_file: Optional[UploadFile] = File(None),  # accepted for request-shape compat, unused (confirmed-dead feature)
 ):
-    csv_bytes = await csv_file.read() if csv_file else None
-    csv_filename = csv_file.filename if csv_file else None
+    # Two upload paths: the browser either pre-uploaded straight to Blob (large
+    # files - passes csv_blob_pathname + run_id) or streamed the file through
+    # here the old way (kept working so a rollback is safe, and so a caller
+    # that hasn't migrated still functions).
+    pre_uploaded = bool(csv_blob_pathname)
+    if pre_uploaded:
+        if not run_id:
+            raise HTTPException(400, "csv_blob_pathname requires the run_id that /upload-token returned")
+        # Don't let a caller point the pipeline at an arbitrary blob.
+        if not csv_blob_pathname.startswith(f"runs/{run_id}/"):
+            raise HTTPException(400, "csv_blob_pathname must be under runs/{run_id}/")
+        if not vercel_blob.exists(csv_blob_pathname):
+            raise HTTPException(400, "No uploaded file found at csv_blob_pathname - did the upload finish?")
 
-    if input_source == "csv" and not csv_bytes:
+    csv_bytes = await csv_file.read() if csv_file else None
+    csv_filename = (Path(csv_blob_pathname).name if pre_uploaded
+                    else (csv_file.filename if csv_file else None))
+
+    if input_source == "csv" and not (csv_bytes or pre_uploaded):
         raise HTTPException(400, "csv input source requires csv_file")
     if input_source == "hubspot_project" and not hubspot_project_id:
         raise HTTPException(400, "hubspot_project input source requires hubspot_project_id")
@@ -81,13 +131,18 @@ async def create_run(
     # a confirmed-dead feature - accepted here for backward compatibility but
     # never referenced by either engine). runner.start_run()/_execute() stay
     # on disk, unused from here, as a fallback until this has real mileage.
-    run_id = uuid.uuid4().hex[:12]
+    # Reuse the run_id /upload-token already minted, so the pre-uploaded blob's
+    # pathname (which the token is cryptographically scoped to) still matches.
+    run_id = run_id if pre_uploaded else uuid.uuid4().hex[:12]
     run_status.init(run_id)  # synchronous, so an immediate GET right after this returns never 404s
     event_data = {
         "run_id": run_id, "input_source": input_source,
         "company_col": company_col, "domain_col": domain_col, "employee_col": employee_col,
     }
-    if csv_bytes:
+    if pre_uploaded:
+        event_data["csv_blob_pathname"] = csv_blob_pathname
+        event_data["csv_filename"] = csv_filename
+    elif csv_bytes:
         csv_blob_pathname = f"runs/{run_id}/{csv_filename}"
         vercel_blob.put(csv_blob_pathname, csv_bytes, content_type=csv_file.content_type if csv_file else None)
         event_data["csv_blob_pathname"] = csv_blob_pathname

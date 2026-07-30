@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { IcpOptions, WizardTargeting } from "../lib/types";
-import { startRun, getIcpMapping } from "../lib/api";
+import { startRun, uploadCsvDirect, getIcpMapping } from "../lib/api";
 import { FileField } from "./SourceForm";
 import LocationMultiSelect from "./LocationMultiSelect";
 import AddCustomChip from "./AddCustomChip";
@@ -25,7 +25,11 @@ export default function CampaignIdeaWizard({
     setAiSubmitting(true);
     setAiError(null);
     try {
-      const run = await startRun({ inputSource: "campaign_idea", campaignIdea: aiIdea.trim(), csvFile: aiCsvFile || undefined });
+      const uploaded = aiCsvFile ? await uploadCsvDirect(aiCsvFile) : undefined;
+      const run = await startRun({
+        inputSource: "campaign_idea", campaignIdea: aiIdea.trim(),
+        csvBlobPathname: uploaded?.pathname, runId: uploaded?.runId,
+      });
       onStarted(run.run_id);
     } catch (e: any) {
       setAiError(e.message || "Failed to start run");
@@ -93,11 +97,13 @@ export default function CampaignIdeaWizard({
         regions,
       };
       const campaignIdea = idea.trim() || effectiveUseCase || "Campaign idea (targeting set via wizard)";
+      const uploaded = csvFile ? await uploadCsvDirect(csvFile) : undefined;
       const run = await startRun({
         inputSource: "campaign_idea",
         campaignIdea,
         wizardTargeting,
-        csvFile: csvFile || undefined,
+        csvBlobPathname: uploaded?.pathname,
+        runId: uploaded?.runId,
       });
       onStarted(run.run_id);
     } catch (e: any) {

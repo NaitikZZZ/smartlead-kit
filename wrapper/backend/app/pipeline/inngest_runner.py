@@ -165,6 +165,24 @@ def _targeting_from_wizard(wizard_targeting: dict):
     return job_titles or None, regions or None, employee_ranges
 
 
+def _read_csv_blob(csv_blob_pathname: str, csv_filename: str) -> pd.DataFrame:
+    """Reads an uploaded CSV blob into a DataFrame.
+
+    Deliberately NOT wrapped in step.run(): Inngest memoizes step outputs by
+    serializing them, and it caps that payload ("output_too_large: Your
+    function's response body exceeds the maximum size limit"). Returning a
+    whole CSV as a step output blew up on a real 11.7MB Apollo export - the
+    run failed at reading_input even though the upload itself succeeded.
+
+    Skipping memoization is safe here precisely because a blob read is a pure,
+    idempotent read of immutable storage: every replay re-reads the same bytes
+    and rebuilds the same df, which is exactly what the memoized version did
+    anyway (only csv_text was ever cached - df was always rebuilt per replay).
+    The tradeoff is re-downloading per replay instead of per run."""
+    blob_bytes = vercel_blob.get(vercel_blob.url_for(csv_blob_pathname))
+    return input_sources.read_csv_bytes(blob_bytes, csv_filename)
+
+
 def _nan_safe(o):
     """Recursively replaces non-finite floats (NaN/Infinity) with None.
     EVERY step.run() handler that returns data derived from a DataFrame (via
@@ -553,12 +571,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
     # ============ Input & Normalization ============
     scrape_stats = None
     if input_source == "csv":
-        async def _fetch_csv():
-            blob_bytes = vercel_blob.get(vercel_blob.url_for(csv_blob_pathname))
-            return blob_bytes.decode("latin-1")  # lossless byte<->str round-trip for any content
-
-        csv_text = await step.run("fetch_csv_from_blob", _fetch_csv)
-        df = input_sources.read_csv_bytes(csv_text.encode("latin-1"), csv_filename)
+        df = _read_csv_blob(csv_blob_pathname, csv_filename)
 
     elif input_source == "hubspot_project":
         await _status(step, "status_reading_project", run_id, message="Reading Project properties from HubSpot")
@@ -569,12 +582,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         project_meta = await step.run("fetch_hubspot_project", _fetch_project)
 
         if csv_blob_pathname:
-            async def _fetch_csv():
-                blob_bytes = vercel_blob.get(vercel_blob.url_for(csv_blob_pathname))
-                return blob_bytes.decode("latin-1")
-
-            csv_text = await step.run("fetch_csv_from_blob", _fetch_csv)
-            df = input_sources.read_csv_bytes(csv_text.encode("latin-1"), csv_filename)
+            df = _read_csv_blob(csv_blob_pathname, csv_filename)
         else:
             link = project_meta.get("target_list_link")
             kind = project_meta.get("list_link_kind")
@@ -683,12 +691,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         if not campaign_idea:
             raise ValueError("campaign_idea input source requires a non-empty campaign_idea")
         if csv_blob_pathname:
-            async def _fetch_csv():
-                blob_bytes = vercel_blob.get(vercel_blob.url_for(csv_blob_pathname))
-                return blob_bytes.decode("latin-1")
-
-            csv_text = await step.run("fetch_csv_from_blob", _fetch_csv)
-            df = input_sources.read_csv_bytes(csv_text.encode("latin-1"), csv_filename)
+            df = _read_csv_blob(csv_blob_pathname, csv_filename)
         else:
             df = None  # no company-list df yet - built entirely in the campaign_idea_no_csv block below
 
