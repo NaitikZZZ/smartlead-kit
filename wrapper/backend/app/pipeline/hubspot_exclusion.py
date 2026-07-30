@@ -36,6 +36,17 @@ _CACHE_FILE = config.CACHE_DIR / f"exclusion_domains_{config.HUBSPOT_EXCLUSION_L
 _REDIS_KEY = f"cache:exclusion:{config.HUBSPOT_EXCLUSION_LIST_ID}"
 _MEMBERSHIP_PAGE = 250
 _READ_BATCH = 100
+# The LinkedIn URL property that actually holds data in this portal. The code
+# previously asked for "linkedinurl", which is not a property here at all (of
+# 1,086 contact properties, no such name) - HubSpot silently ignores unknown
+# property names, so the LinkedIn match rule was comparing against empty
+# strings and could never fire. Measured on 500 DNU contacts:
+# hs_linkedin_url 72.2% populated, linkedin_url 71.4%, every other candidate
+# 0%. Their union is also 72.2% (only 4 contacts have hs_linkedin_url alone,
+# 0 the reverse), so the second field adds no coverage and would only
+# introduce conflicts (7 of 357 disagree). This also matches the property the
+# write side already uses in outputs.build_hubspot_import_file.
+_LINKEDIN_PROP = "hs_linkedin_url"
 
 
 def _cache_read() -> dict | None:
@@ -111,7 +122,7 @@ def build_exclusion_set(progress=None) -> dict:
                         "company",
                         "website",
                         "linkedinprofileid",
-                        "linkedinurl"
+                        _LINKEDIN_PROP,
                     ],
                     "inputs": [{"id": cid} for cid in chunk]
                 },
@@ -140,7 +151,7 @@ def build_exclusion_set(progress=None) -> dict:
                     "full_name": full_name,
                     "company_name": (props.get("company", "") or "").strip().lower(),
                     "company_domain": normalize_domain(props.get("website", "")),
-                    "linkedin_url": (props.get("linkedinurl", "") or "").strip().lower(),
+                    "linkedin_url": (props.get(_LINKEDIN_PROP, "") or "").strip().lower(),
                 }
                 if any([record["email_domains"], record["first_name"], record["last_name"],
                         record["company_name"], record["company_domain"], record["linkedin_url"]]):
@@ -217,7 +228,7 @@ def _read_contact_batch(headers: dict, chunk: list[str]) -> list[dict]:
         "https://api.hubapi.com/crm/v3/objects/contacts/batch/read",
         headers=headers,
         json={"properties": ["hs_email_domain", "work_email", "firstname", "lastname",
-                             "company", "website", "linkedinurl"],
+                             "company", "website", _LINKEDIN_PROP],
               "inputs": [{"id": cid} for cid in chunk]},
         timeout=60,
     )
@@ -241,7 +252,7 @@ def _read_contact_batch(headers: dict, chunk: list[str]) -> list[dict]:
             "full_name": f"{first_name} {last_name}".strip() if first_name or last_name else "",
             "company_name": (props.get("company", "") or "").strip().lower(),
             "company_domain": normalize_domain(props.get("website", "")),
-            "linkedin_url": (props.get("linkedinurl", "") or "").strip().lower(),
+            "linkedin_url": (props.get(_LINKEDIN_PROP, "") or "").strip().lower(),
         }
         if any([record["email_domains"], record["first_name"], record["last_name"],
                 record["company_name"], record["company_domain"], record["linkedin_url"]]):
@@ -301,6 +312,19 @@ def refresh_cache_resumable(budget_seconds: int = 240, progress=None) -> dict:
             break
 
     if exhausted:
+        # Dedupe before publishing. Two builds appending to the same Redis state
+        # concurrently would otherwise double-count (observed live: a racing
+        # manual run plus the scheduled one produced 173,250 records against an
+        # expected 121,263). Cheap insurance that the published snapshot is
+        # correct regardless of how the accumulated state got there.
+        seen = set()
+        deduped = []
+        for r in records:
+            key = json.dumps(r, sort_keys=True)
+            if key not in seen:
+                seen.add(key)
+                deduped.append(r)
+        records = deduped
         meta = {
             "built_at": datetime.now(UTC).isoformat(),
             "list_id": lid,
@@ -374,7 +398,7 @@ def _build_dnu_index(dnu_records: list[dict]) -> dict:
         "email_exact": set(), "email_parents": set(),
         "first_exact": {}, "first_parents": {},
         "last_exact": {}, "last_parents": {},
-        "full_names": set(),
+        "full_names": set(), "full_name_ctx": {},
         "company_domain_exact": set(), "company_domain_parents": set(),
         "company_names": set(), "linkedin_urls": set(),
     }
@@ -396,7 +420,17 @@ def _build_dnu_index(dnu_records: list[dict]) -> dict:
                         p.update(_parent_suffixes(d))
 
         if rec.get("full_name"):
-            idx["full_names"].add(rec["full_name"])
+            fname = rec["full_name"]
+            idx["full_names"].add(fname)
+            # Context behind each name, so a name match can require corroboration
+            # (see the Match 4 comment in run_exclusion_check).
+            ctx = idx["full_name_ctx"].setdefault(fname, {"companies": set(), "domains": set()})
+            if rec.get("company_name"):
+                ctx["companies"].add(rec["company_name"])
+            if rec.get("company_domain"):
+                ctx["domains"].add(rec["company_domain"])
+            for d in domains:
+                ctx["domains"].add(d)
         cd = rec.get("company_domain")
         if cd:
             idx["company_domain_exact"].add(cd)
@@ -494,24 +528,43 @@ def run_exclusion_check(df: pd.DataFrame, domain_col: str | None, progress=None)
                            idx["last_parents"].get(row_last_name, frozenset())):
                 match_reason = "Last name + email domain matches DNU"
 
-        # Match 4: Full name
+        # Row company/domain, needed by Match 4's corroboration check as well
+        # as Matches 5 and 6.
+        try:
+            row_company_domain = normalize_domain(row.get(domain_col_found)) if domain_col_found else ""
+        except Exception:
+            row_company_domain = ""
+        try:
+            row_company_name = (row.get(company_col) or "").strip().lower() if company_col else ""
+        except Exception:
+            row_company_name = ""
+
+        # Match 4: Full name - but ONLY when the company or domain corroborates it.
+        # A bare name match excluded anyone sharing a name with any of 96,538 DNU
+        # names: measured on 6,000 real prospects, 226 rows were excluded on name
+        # alone and only 5 had any corroborating company/domain, i.e. ~221 false
+        # positives (21.5% of all exclusions) - real people like "Imran Khan" at
+        # kizad.ae dropped because an unrelated Imran Khan sits at another
+        # account. Requiring corroboration keeps genuine same-person hits while
+        # recovering those prospects; the strong signals (email/company domain,
+        # company name, LinkedIn) are already covered by the other rules.
         if not match_reason and row_full_name and row_full_name in idx["full_names"]:
-            match_reason = "Full name matches DNU"
+            ctx = idx["full_name_ctx"].get(row_full_name)
+            if ctx and ((row_company_name and row_company_name in ctx["companies"])
+                        or (row_company_domain and row_company_domain in ctx["domains"])
+                        or (email_domain and email_domain in ctx["domains"])):
+                match_reason = "Full name + company/domain matches DNU"
 
         # Match 5: Company domain
-        if not match_reason and domain_col_found:
-            try:
-                company_domain = normalize_domain(row.get(domain_col_found))
-                if company_domain and _domain_hit(company_domain, idx["company_domain_exact"],
-                                                  idx["company_domain_parents"]):
-                    match_reason = "Company domain matches DNU"
-            except Exception:
-                pass
+        if not match_reason and row_company_domain:
+            if _domain_hit(row_company_domain, idx["company_domain_exact"],
+                           idx["company_domain_parents"]):
+                match_reason = "Company domain matches DNU"
 
         # Match 6: Company name
-        if not match_reason and company_col:
+        if not match_reason and row_company_name:
             try:
-                company_name = (row.get(company_col) or "").strip().lower()
+                company_name = row_company_name
                 if company_name and company_name in idx["company_names"]:
                     match_reason = "Company name matches DNU"
             except Exception:
