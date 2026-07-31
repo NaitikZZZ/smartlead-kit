@@ -195,6 +195,25 @@ export default function StepCard({
             ) : (
               <p style={{ fontSize: 12, color: "var(--dark-200)" }}>No titles mapped from the sheet - add your own below.</p>
             )}
+            {/* Titles the user typed in aren't in `options`, so the checkbox list
+                above can never show them - render them as their own removable
+                chips or they'd be silently invisible despite being selected. */}
+            {icpTitles.filter((t) => !((fields.job_titles?.options as string[]) || []).includes(t)).length > 0 && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                {icpTitles
+                  .filter((t) => !((fields.job_titles?.options as string[]) || []).includes(t))
+                  .map((t) => (
+                    <span
+                      key={t}
+                      className="pill active"
+                      style={{ fontSize: 12, cursor: "pointer" }}
+                      onClick={() => setIcpTitles((cur) => cur.filter((x) => x !== t))}
+                    >
+                      {t} ✕
+                    </span>
+                  ))}
+              </div>
+            )}
             <AddCustomChip
               placeholder="Add a title not listed above..."
               disabled={submitting}
@@ -222,6 +241,24 @@ export default function StepCard({
                   </button>
                 ))}
               </div>
+              {/* Same as job titles: a typed-in range isn't in `options`, so it
+                  needs its own chip or it stays invisible. */}
+              {icpEmployeeSizes.filter((s) => !((fields.employee_sizes?.options as string[]) || []).includes(s)).length > 0 && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                  {icpEmployeeSizes
+                    .filter((s) => !((fields.employee_sizes?.options as string[]) || []).includes(s))
+                    .map((s) => (
+                      <span
+                        key={s}
+                        className="pill active"
+                        style={{ fontSize: 12, cursor: "pointer" }}
+                        onClick={() => setIcpEmployeeSizes((cur) => cur.filter((x) => x !== s))}
+                      >
+                        {s} ✕
+                      </span>
+                    ))}
+                </div>
+              )}
               <AddCustomChip
                 placeholder="Add a custom range, e.g. 200-400 or 5000+"
                 disabled={submitting}
