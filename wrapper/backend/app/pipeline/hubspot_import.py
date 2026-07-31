@@ -4,6 +4,7 @@ Only ever called after an explicit confirm from the API caller - never runs
 as part of the automatic pipeline stages."""
 from __future__ import annotations
 import math
+import re
 
 import requests
 
@@ -45,7 +46,19 @@ def _valid_email(v) -> bool:
     return bool(s) and s.lower() != "nan" and "@" in s
 
 
-def batch_upsert_contacts(rows: list[dict]) -> list[dict]:
+_INVALID_EMAIL_RE = re.compile(r"Email address\s+(\S+?)\s+is invalid", re.I)
+
+
+def _invalid_emails_from_error(body: str) -> set[str]:
+    """Pulls the addresses HubSpot named as invalid out of a 400 body.
+
+    HubSpot reports these both in the top-level `message` and in an `errors`
+    array, and may name several at once, so parse the raw text rather than
+    depending on one shape. Lowercased to match how the inputs are keyed."""
+    return {m.group(1).strip().strip('\\"').lower() for m in _INVALID_EMAIL_RE.finditer(body or "")}
+
+
+def batch_upsert_contacts(rows: list[dict]) -> tuple[list[dict], list[dict]]:
     # Drop any blank/invalid-email row at the API-write chokepoint, and use the
     # stripped email as the idempotency key + property value. Also dedupe by
     # email (keep first) - HubSpot rejects an ENTIRE batch if the same
@@ -68,16 +81,42 @@ def batch_upsert_contacts(rows: list[dict]) -> list[dict]:
         props["email"] = email
         inputs.append({"idProperty": "email", "id": email, "properties": props})
     results = []
+    rejected: list[dict] = []
     for i in range(0, len(inputs), 100):  # HubSpot batch limit
         chunk = inputs[i:i + 100]
-        r = requests.post(
-            "https://api.hubapi.com/crm/v3/objects/contacts/batch/upsert",
-            headers=_headers(), json={"inputs": chunk}, timeout=60,
-        )
-        if not r.ok:
-            raise requests.HTTPError(f"{r.status_code} {r.reason} for {r.url}: {r.text[:1000]}", response=r)
-        results.extend(r.json().get("results", []))
-    return results
+        # HubSpot rejects the ENTIRE batch when any single record is invalid, so
+        # one typo'd address would otherwise block up to 99 good contacts and
+        # fail the whole run (seen live: "harsh.kaushik9@gmail.con is invalid"
+        # - note .con - killed an import). We can't pre-empt this locally:
+        # gmail.con is a syntactically valid address, and HubSpot's rules
+        # (typo/deliverability heuristics) aren't reproducible client-side. So
+        # take HubSpot's own verdict - drop exactly what it names, retry the
+        # rest, and report the drops rather than silently losing them.
+        for _attempt in range(6):
+            if not chunk:
+                break
+            r = requests.post(
+                "https://api.hubapi.com/crm/v3/objects/contacts/batch/upsert",
+                headers=_headers(), json={"inputs": chunk}, timeout=60,
+            )
+            if r.ok:
+                results.extend(r.json().get("results", []))
+                break
+            bad = _invalid_emails_from_error(r.text) if r.status_code == 400 else set()
+            # Only retry when we can identify (and therefore actually remove)
+            # an offender - otherwise we'd spin on an unrelated 400.
+            removable = {e for e in bad if any(inp["id"] == e for inp in chunk)}
+            if not removable:
+                raise requests.HTTPError(
+                    f"{r.status_code} {r.reason} for {r.url}: {r.text[:1000]}", response=r)
+            for e in sorted(removable):
+                rejected.append({"email": e, "reason": "rejected by HubSpot as invalid"})
+            chunk = [inp for inp in chunk if inp["id"] not in removable]
+        else:
+            raise requests.HTTPError(
+                "HubSpot kept rejecting this batch after removing every address it named; "
+                f"last response: {r.text[:600]}", response=r)
+    return results, rejected
 
 
 def associate_contacts(contact_ids: list[str], object_type_id: str, to_object_id: str):
@@ -103,7 +142,7 @@ def import_contacts_with_list(rows: list[dict], campaign_title: str, association
     valid_rows = [r for r in rows if _valid_email(r.get("email"))]
     dropped = len(rows) - len(valid_rows)
 
-    upsert_results = batch_upsert_contacts(valid_rows)
+    upsert_results, rejected_invalid = batch_upsert_contacts(valid_rows)
     contact_ids = [r["id"] for r in upsert_results]
     new_count = sum(1 for r in upsert_results if r.get("new"))
     updated_count = len(upsert_results) - new_count
@@ -121,4 +160,7 @@ def import_contacts_with_list(rows: list[dict], campaign_title: str, association
         "total": len(upsert_results), "new": new_count, "updated": updated_count,
         "dropped_blank_email": dropped, "contact_ids": contact_ids,
         "list": list_result, "associations": assoc_results,
+        # Surfaced so a dropped contact is visible, not silently missing.
+        "rejected_invalid_email": rejected_invalid,
+        "dropped_invalid_email": len(rejected_invalid),
     }

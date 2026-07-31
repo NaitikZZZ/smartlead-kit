@@ -187,6 +187,16 @@ export default function ReviewUpload({ run, onImported }: { run: RunStatus; onIm
               List: <a href={importResult.list.list_url} target="_blank" rel="noreferrer">{importResult.list.list_url}</a>
             </p>
           )}
+          {importResult.dropped_invalid_email > 0 && (
+            <p style={{ fontSize: 13, marginTop: 6 }}>
+              <span className="tag-warning">Skipped</span>{" "}
+              {importResult.dropped_invalid_email} contact(s) HubSpot rejected as invalid emails
+              (everything else imported):{" "}
+              {(importResult.rejected_invalid_email || [])
+                .map((x: any) => x.email)
+                .join(", ")}
+            </p>
+          )}
           {importResult.heyreach && importResult.heyreach.status !== "skipped" && (
             <p style={{ fontSize: 13, marginTop: 6 }}>
               {importResult.heyreach.status === "pushed" ? (
