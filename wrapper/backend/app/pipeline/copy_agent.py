@@ -229,7 +229,14 @@ Voice rules (HUMANVOICE_COPY_GUIDE standard):
   "We're the [X] of [Y]", "We're disrupting", "I wanted to reach out", "Would you
   be open to a quick chat?", "We help companies like yours", "Thought you might be
   interested", "Not sure if you're the right person", "Touching base", "Circling
-  back", "Quick question" (as filler), "grabbing coffee", "grabbing lunch"
+  back", "Quick question" (as filler), "grabbing coffee", "grabbing lunch", "As
+  mentioned in my last email", "This is my final follow-up", "This is my closing note"
+- No one-line emails. Every email stands on its own with enough context and value,
+  never a single throwaway sentence.
+- Every claim (feature, stat, rating, customer story) must trace back to real
+  Xoxoday material (website, product decks, help docs, case studies) - see
+  PRODUCT_ANGLES below, which is grounded the same way. Never invent a number,
+  feature, or claim that isn't backed by that material.
 - No banned buzzwords: leverage, seamless, seamlessly, cutting-edge, groundbreaking,
   game-changing, revolutionize, transform, elevate, unlock, meticulous, delve,
   landscape, realm, tapestry, navigate (verb), robust, harness, empower
@@ -277,8 +284,9 @@ as if it could be the first one they've gotten from you, no "as discussed,"
    reads as a literal copy-paste of email 6. Keep the tone even and professional
    throughout, never frustrated, never a "last touch."
 
-LinkedIn messages must be shorter and chattier than the emails, and must not repeat
-any line, stat, or phrase from the email track word-for-word. Mirror the same 12-step
+LinkedIn carries the same core message as its paired email step (same theme, same
+proof point), shorter and chattier, native to the channel, and must not repeat any
+line, stat, or phrase from the email track word-for-word. Mirror the same 12-step
 arc and jobs above, just condensed per channel norms.
 
 Vary sentence openers across the sequence — don't start every message with "Hi
