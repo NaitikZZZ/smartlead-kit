@@ -9,26 +9,28 @@ Accumulated rules for generating outbound copy and running campaigns for this ki
 - Zero exclamation points in cold outbound.
 
 ## Step 1 Cold Outbound Email Format
-- Exactly 4 sentences. Each under 15 words. Each on its own line.
+Full rule set: [`reference/cold_outbound_email_sop.md`](reference/cold_outbound_email_sop.md) (Manoj Agarwal SOP, authoritative). Summary:
+- No fixed sentence/word count. Complete, substantive introduction, not a thin one. Structured with bullets where a list runs 3+, not dense paragraphs.
+- No selling: no stats, no ROI numbers, no feature pitch, no product deep-dive. Positioned purely as an introduction.
 - Subject: under 5 words, specific, neutral, no cleverness, no emojis.
-- Structure: (1) why now, (2) challenge they face, (3) Xoxoday as credibility signal only, (4) low-pressure question.
-- No product pitch. No feature list. No pricing.
+- Lead with a concrete, low-effort ask in sentence 1 (e.g. same location/domain, offer to show how a similar problem was solved).
+- Xoxoday positioned as a global company (credibility signal, customized to the product), not a name-drop.
 - No signature block (Smartlead auto-appends it at the account level).
-- Output: subject line, blank line, 4-sentence body. No labels, no explanations.
+- Output: subject line, blank line, body. No labels, no explanations.
 
-## Follow-ups (Step 2-5)
-Under 100 words. No banned phrases. No pitching. Low-pressure CTA. No dashes. No buzzwords.
+## Sequencing (Step 2 onward)
+- Every email reads as if it's the first, no "as discussed," "following up," "third note," or any sequence-position reference, ever.
+- Never imply the sequence is ending ("before I close," "last mail," "closing the loop"). Cadence is open-ended until the prospect responds.
+- Under 100 words. No banned phrases. No pitching until the arc calls for it (see SOP section 3). Low-pressure CTA. No dashes. No buzzwords.
+- Funnel runs Email -> WhatsApp -> SDR call as a waterfall, not email alone.
 
 ## LinkedIn / WhatsApp / Call Scripts
-4-sentence rule does not apply. All other rules do.
+All formatting/banned-phrase rules apply. No sentence-count rule.
 - LinkedIn: no name sign-off at the end (sender profile shows automatically).
 - Calls/WhatsApp: include name sign-off.
 
-## A/B Testing (always on)
-Every email produced needs both:
-- **Variant A** - the 4-sentence short cold-outbound format above.
-- **Variant B** - long-form, pulled from the relevant product/use-case framework in `copy-frameworks.md`.
-Ask which product/use case if not stated before writing either variant.
+## Variants
+Single variant only, no A/B split. Follow the 7-email arc in `reference/cold_outbound_email_sop.md` section 3 for what content goes in which step. Ask which product/use case if not stated before writing.
 
 ## Banned Phrases
 "I hope you're doing well", "Impressive background", "Your X caught my attention",
