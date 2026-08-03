@@ -165,9 +165,16 @@ Voice rules (HUMANVOICE_COPY_GUIDE standard):
   framing is fine, the casual verb is the problem.
 - Ground every pain point in a specific, sensory scene from this persona's day-to-day
   (not generic "employees" — the actual role and context).
-- No banned phrases: "I hope you're doing well", "leverage", "seamless", "cutting-edge",
-  "I'd love to pick your brain", "Just checking in", "Would you be open to a quick chat?",
-  "grabbing coffee", "grabbing lunch"
+- No banned phrases, ever, not even close variants: "I hope you're doing well",
+  "Impressive background", "Your [X] caught my attention", "I'd love to pick your
+  brain", "I know you're busy", "Just checking in", "Let me introduce myself",
+  "We're the [X] of [Y]", "We're disrupting", "I wanted to reach out", "Would you
+  be open to a quick chat?", "We help companies like yours", "Thought you might be
+  interested", "Not sure if you're the right person", "Touching base", "Circling
+  back", "Quick question" (as filler), "grabbing coffee", "grabbing lunch"
+- No banned buzzwords: leverage, seamless, seamlessly, cutting-edge, groundbreaking,
+  game-changing, revolutionize, transform, elevate, unlock, meticulous, delve,
+  landscape, realm, tapestry, navigate (verb), robust, harness, empower
 - NEVER include a signature block or sign-off name ("Best, [Name]", "Thanks, [Name]",
   a standalone name line, or a company tagline) at the end of any email body. Smartlead
   auto-appends the sender's real signature - a signature in the body causes a double
@@ -313,6 +320,11 @@ Vary sentence openers across the sequence — don't start every message with "Hi
 
         return f"""Generate a 12-email outbound sequence + a mirrored 12-message LinkedIn sequence for:
 {persona_summary}
+
+Merge tags: use ONLY {{{{first_name}}}}, {{{{last_name}}}}, {{{{company_name}}}},
+{{{{email}}}} (snake_case, these are the real Smartlead fields) - never invent a
+tag like {{{{company}}}}, it will render as literal text since Smartlead has no
+matching field.
 
 Product: {product}
 Introduce it as: {product_angle.get('global_framing', 'a global company in this category')}
