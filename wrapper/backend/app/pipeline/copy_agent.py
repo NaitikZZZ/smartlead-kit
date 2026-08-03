@@ -154,8 +154,10 @@ Voice rules (HUMANVOICE_COPY_GUIDE standard):
   metric (timeframe, %, cost saving, rating) paired with an ANONYMIZED reference -
   "a global [industry] company", "a leading [region] client in [industry]" - never
   the actual company name.
-- Show, don't tell - cardinal rule. Prove ROI with 2-3 concrete data points, never
-  adjective claims ("powerful", "seamless", "game-changing").
+- Show, don't tell - cardinal rule for emails 2 onward. Prove ROI with 2-3 concrete
+  data points, never adjective claims ("powerful", "seamless", "game-changing").
+  Email 1 is the one exception: no stats, no ROI, no feature talk there at all -
+  it is a pure relevance hook, nothing to prove yet.
 - Never diminish the prospect's current approach, tool, or role (no "what you do
   doesn't get noticed" style framing) - this reads as an insult, not an insight.
 - No casual meetup language ("grab coffee", "grab lunch") on a cold first touch -
@@ -173,16 +175,22 @@ Voice rules (HUMANVOICE_COPY_GUIDE standard):
   question or CTA), nothing after it.
 
 Sequence arc - 12 emails total, each with a defined job (apply the formal/no-names/
-show-don't-tell rules above to every one of them):
+show-don't-tell rules above to every one of them). Cadence is open-ended: never
+frame any email as the last one, a breakup, or "closing the loop" - the sequence
+keeps going until the prospect replies, and every email (not just #1) should read
+as if it could be the first one they've gotten from you, no "as discussed,"
+"following up," or sequence-position language anywhere:
 
 1. **The ask.** State it clearly in the FIRST sentence itself: same field (and same
    location/city if known) + wanting to show/discuss a solution that solved a
-   specific problem for global customers. No pitch yet. End on a soft, low-stakes
-   question.
+   specific problem for global customers. No pitch, no stats, no ROI numbers, no
+   feature talk - pure relevance hook. Still a complete, substantive email (not
+   thin or short for its own sake). End on a soft, low-stakes question.
 2. **Why [PRODUCT].** Use the why_product framing below verbatim as the grounding fact,
    in your own words - don't just restate it as a slogan, explain what it means for
    THIS persona's day-to-day. Offer before you ask - lead with offering to show this,
-   not a request for their time.
+   not a request for their time. Proof/ROI data belongs from here onward, never in
+   email 1.
 3. **Product features.** Pick 2-3 of the key_features below most relevant to this
    persona/seniority and explain what each one solves for them concretely - not a
    bullet dump, weave them into the specific workflow this role owns.
@@ -194,16 +202,15 @@ show-don't-tell rules above to every one of them):
    rating/review count, or the award/company-wide stat if this product has no
    product-specific number (say so plainly, e.g. "we're rated 4.7 on G2 as a
    company" rather than inventing a product-specific figure that doesn't exist).
-6. **Recap.** Briefly recap the ask, the why, the features, the case study, and the
-   validation from emails 1-5 in a few tight sentences - not a bullet list, a natural
+6. **Recap.** Briefly recap the why, the features, the case study, and the
+   validation from emails 2-5 in a few tight sentences - not a bullet list, a natural
    summary - then close with a clear, low-pressure CTA (15 minutes, or happy to meet
    in person to discuss).
 7-12. **Recap, restated.** Same job as email 6 - recap + low-pressure CTA - but each
    one reframes the recap differently (lead with a different piece of proof, a
    different angle on the ask, or a different seniority-relevant hook) so it never
-   reads as a literal copy-paste of email 6. The last one or two of these can be a
-   genuine breakup email: no new pitch, a clean guilt-free exit, door left open
-   ("just reply, easy to pick back up").
+   reads as a literal copy-paste of email 6. Keep the tone even and professional
+   throughout, never frustrated, never a "last touch."
 
 LinkedIn messages must be shorter and chattier than the emails, and must not repeat
 any line, stat, or phrase from the email track word-for-word. Mirror the same 12-step
