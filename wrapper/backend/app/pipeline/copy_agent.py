@@ -31,13 +31,54 @@ _SAMPLE_SIZE = 10  # real leads for tone context
 class PersonaDetector:
     """Detect persona, use case, and product angle from prospect data."""
 
-    # Persona title keywords
-    CHRO_KEYWORDS = {"chro", "chief people", "chief human", "vp people", "head of people", "chief talent"}
-    VP_HR_KEYWORDS = {"vp hr", "vice president hr", "director hr", "head of hr", "head hr"}
-    HR_OPS_KEYWORDS = {"hr ops", "hr operations", "people ops", "hr manager", "hr coordinator", "talent operations"}
-    VP_SALES_KEYWORDS = {"vp sales", "vice president sales", "head of sales", "chief revenue", "cro", "sales leader"}
-    VP_REVOPS_KEYWORDS = {"vp revops", "revenue operations", "sales ops", "head of ops"}
-    VP_CX_KEYWORDS = {"vp customer success", "head of cx", "vp loyalty", "customer success", "cpo"}
+    # Persona title keywords. Matched against a normalized title (lowercased,
+    # " of "/commas stripped - see _normalize_title) so entries here should NOT
+    # contain "of" (e.g. "head of hr" -> "head hr").
+    CHRO_KEYWORDS = {
+        "chro", "chief people", "chief human", "chief talent", "chief hr",
+        "vp people", "svp people", "evp people", "avp people",
+        "head people", "global head people",
+    }
+    VP_HR_KEYWORDS = {
+        "vp hr", "vp human resources",
+        "vice president hr", "vice president human resources",
+        "svp hr", "svp human resources",
+        "evp hr", "evp human resources",
+        "avp hr", "avp human resources",
+        "senior vice president hr", "senior vice president human resources",
+        "executive vice president hr", "executive vice president human resources",
+        "director hr", "director human resources",
+        "head hr", "head human resources",
+    }
+    HR_OPS_KEYWORDS = {
+        "hr ops", "hr operations", "human resources operations",
+        "people ops", "people operations",
+        "hr manager", "hr coordinator", "hr generalist", "hr business partner", "hrbp",
+        "human resources manager", "human resources coordinator", "human resources generalist",
+        "talent operations", "talent management",
+    }
+    VP_SALES_KEYWORDS = {
+        "vp sales", "vice president sales",
+        "svp sales", "evp sales", "avp sales",
+        "senior vice president sales", "executive vice president sales",
+        "director sales", "head sales", "sales leader",
+        "chief revenue", "cro", "chief sales officer", "cso",
+    }
+    VP_REVOPS_KEYWORDS = {
+        "vp revops", "vp revenue operations", "vp sales ops", "vp sales operations",
+        "director revops", "director revenue operations",
+        "svp revops", "evp revops",
+        "revenue operations", "sales ops", "sales operations",
+        "head ops", "head revops", "head revenue operations",
+    }
+    VP_CX_KEYWORDS = {
+        "vp customer success", "vp customer experience", "vp cx", "vp loyalty",
+        "director customer success", "director cx",
+        "svp customer success", "evp customer success",
+        "head customer success", "head cx",
+        "customer success", "customer experience",
+        "chief customer officer", "cco", "cpo",
+    }
 
     # Use case detection from title/company context
     RECOGNITION_KEYWORDS = {"recognition", "engagement", "retention", "peopleware", "culture"}
@@ -54,26 +95,26 @@ class PersonaDetector:
     @classmethod
     def detect_persona(cls, title: Optional[str], company_size: Optional[int], industry: Optional[str]) -> dict:
         """Detect persona from title, company size, and industry."""
-        title_lower = (title or "").lower()
-        industry_lower = (industry or "").lower()
+        title_norm = cls._normalize_title(title)
+        industry_lower = cls._safe_str(industry).lower()
 
         # Detect seniority level
-        if cls._matches(title_lower, cls.CHRO_KEYWORDS):
+        if cls._matches(title_norm, cls.CHRO_KEYWORDS):
             seniority = "C-Suite"
             persona_type = "CHRO/CPO"
-        elif cls._matches(title_lower, cls.VP_HR_KEYWORDS):
+        elif cls._matches(title_norm, cls.VP_HR_KEYWORDS):
             seniority = "VP/Director"
             persona_type = "VP HR"
-        elif cls._matches(title_lower, cls.HR_OPS_KEYWORDS):
+        elif cls._matches(title_norm, cls.HR_OPS_KEYWORDS):
             seniority = "Director/Manager"
             persona_type = "HR Ops Lead"
-        elif cls._matches(title_lower, cls.VP_SALES_KEYWORDS):
+        elif cls._matches(title_norm, cls.VP_SALES_KEYWORDS):
             seniority = "VP/Director"
             persona_type = "VP Sales"
-        elif cls._matches(title_lower, cls.VP_REVOPS_KEYWORDS):
+        elif cls._matches(title_norm, cls.VP_REVOPS_KEYWORDS):
             seniority = "VP/Director"
             persona_type = "VP RevOps"
-        elif cls._matches(title_lower, cls.VP_CX_KEYWORDS):
+        elif cls._matches(title_norm, cls.VP_CX_KEYWORDS):
             seniority = "VP/Director"
             persona_type = "VP CX"
         else:
@@ -81,13 +122,13 @@ class PersonaDetector:
             persona_type = "Prospect"
 
         # Detect use case angle
-        if cls._matches(title_lower, cls.COMMISSION_KEYWORDS):
+        if cls._matches(title_norm, cls.COMMISSION_KEYWORDS):
             primary_product = "Compass"
             use_case = "Commission Automation"
-        elif cls._matches(title_lower, cls.REWARDS_KEYWORDS):
+        elif cls._matches(title_norm, cls.REWARDS_KEYWORDS):
             primary_product = "Plum"
             use_case = "Global Rewards"
-        elif cls._matches(title_lower, cls.SURVEY_KEYWORDS):
+        elif cls._matches(title_norm, cls.SURVEY_KEYWORDS):
             primary_product = "Plum"
             use_case = "Survey Incentives"
         else:
@@ -107,7 +148,7 @@ class PersonaDetector:
             vertical = "General"
 
         # Estimate company size category
-        if not company_size:
+        if not company_size or (isinstance(company_size, float) and pd.isna(company_size)):
             size_category = "Unknown"
         elif company_size < 200:
             size_category = "Small (< 200)"
@@ -127,6 +168,23 @@ class PersonaDetector:
             "size_category": size_category,
             "company_size": company_size,
         }
+
+    @staticmethod
+    def _normalize_title(title: Optional[str]) -> str:
+        """Lowercase and strip connector words/punctuation so keyword sets
+        don't need a separate entry for every "X of Y" phrasing."""
+        text = PersonaDetector._safe_str(title).lower().replace(",", " ")
+        text = text.replace(" of ", " ")
+        return " ".join(text.split())
+
+    @staticmethod
+    def _safe_str(value) -> str:
+        """None/NaN-safe stringify - pandas leaves blank CSV cells as a float
+        NaN, and `NaN or ""` evaluates to NaN (NaN is truthy), which crashes
+        the very next `.lower()` call. Empty/missing input becomes ""."""
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return ""
+        return str(value)
 
     @staticmethod
     def _matches(text: str, keywords: set) -> bool:
