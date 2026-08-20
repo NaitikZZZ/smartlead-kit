@@ -165,6 +165,17 @@ def _targeting_from_wizard(wizard_targeting: dict):
     return job_titles or None, regions or None, employee_ranges
 
 
+def _company_names_from_wizard(wizard_targeting: dict) -> list[str]:
+    """Same deal as _targeting_from_wizard, for the no-CSV path's target
+    companies - if the wizard's review step already collected them, the
+    mid-run "company names to search" ask below is skipped entirely instead
+    of re-asking for something the user already gave. Routed through
+    _parse_company_names so a pasted URL still gets reduced to a bare
+    hostname the same way a runtime answer would."""
+    names = wizard_targeting.get("company_names") or []
+    return _parse_company_names("\n".join(str(n) for n in names))
+
+
 def _read_csv_blob(csv_blob_pathname: str, csv_filename: str) -> pd.DataFrame:
     """Reads an uploaded CSV blob into a DataFrame.
 
@@ -1004,13 +1015,19 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         await _set_step(step, "step_source_done_idea", run_id, "source", "Input & Normalization", "done",
                          f"Campaign idea captured: \"{campaign_idea[:80]}\".")
 
-        companies_answer = await _ask(
-            step, run_id, "apollo_company_names", "text",
-            "Company names to search (comma-separated, or paste one per line/space-separated - "
-            "URLs are fine too):\ne.g. Acme Corp, TechCo Inc, StartUp Labs",
-            default="", context={"step": "source"},
-        )
-        company_names = _parse_company_names(str(companies_answer))
+        wizard_company_names = _company_names_from_wizard(wizard_targeting) if wizard_targeting else []
+        if wizard_company_names:
+            # Already collected in the wizard's review step - asking again
+            # would just repeat a question the user already answered.
+            company_names = wizard_company_names
+        else:
+            companies_answer = await _ask(
+                step, run_id, "apollo_company_names", "text",
+                "Company names to search (comma-separated, or paste one per line/space-separated - "
+                "URLs are fine too):\ne.g. Acme Corp, TechCo Inc, StartUp Labs",
+                default="", context={"step": "source"},
+            )
+            company_names = _parse_company_names(str(companies_answer))
         if not company_names:
             raise ValueError("No company names provided for Apollo search.")
 

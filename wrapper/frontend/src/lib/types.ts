@@ -141,4 +141,5 @@ export interface WizardTargeting {
   job_titles: string[];
   employee_sizes: string[];
   regions: string[];
+  company_names?: string[];
 }

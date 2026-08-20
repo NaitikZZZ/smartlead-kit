@@ -9,9 +9,12 @@ export default function AddCustomChip({
   const [value, setValue] = useState("");
 
   function commit() {
-    const v = value.trim();
-    if (!v) return;
-    onAdd(v);
+    const raw = value.trim();
+    if (!raw) return;
+    // A pasted comma/semicolon/newline-separated list becomes one chip per
+    // item, not one giant chip containing the whole blob.
+    const parts = raw.split(/[,\n;]+/).map((p) => p.trim()).filter(Boolean);
+    parts.forEach(onAdd);
     setValue("");
   }
 
