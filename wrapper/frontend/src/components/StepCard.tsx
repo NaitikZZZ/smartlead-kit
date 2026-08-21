@@ -20,6 +20,7 @@ export default function StepCard({
   const [formCap, setFormCap] = useState<number>(fields?.per_title_cap?.default ?? 2);
   const [formIncludeLookalikes, setFormIncludeLookalikes] = useState<boolean>(fields?.include_lookalikes?.default ?? false);
   const [formRegions, setFormRegions] = useState<string[]>(fields?.person_locations?.default ?? []);
+  const [formOrgLocations, setFormOrgLocations] = useState<string>(fields?.organization_locations?.default ?? "");
   const [icpTitles, setIcpTitles] = useState<string[]>(fields?.job_titles?.default ?? []);
   const [icpRegions, setIcpRegions] = useState<string[]>(fields?.regions?.default ?? []);
   const [icpEmployeeSizes, setIcpEmployeeSizes] = useState<string[]>(fields?.employee_sizes?.default ?? []);
@@ -363,6 +364,20 @@ export default function StepCard({
             />
           </div>
 
+          {fields.organization_locations && (
+            <div>
+              <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                {fields.organization_locations.label}
+              </label>
+              <input
+                type="text"
+                value={formOrgLocations}
+                onChange={(e) => setFormOrgLocations(e.target.value)}
+                placeholder={fields.organization_locations?.placeholder || ""}
+              />
+            </div>
+          )}
+
           <div>
             <button
               className="btn-primary"
@@ -373,6 +388,7 @@ export default function StepCard({
                   per_title_cap: formCap,
                   include_lookalikes: formIncludeLookalikes,
                   person_locations: formRegions,
+                  organization_locations: formOrgLocations,
                 })
               }
             >

@@ -51,6 +51,7 @@ export default function CampaignIdeaWizard({
   const [includeLookalikes, setIncludeLookalikes] = useState(false);
   const [employeeSizes, setEmployeeSizes] = useState<string[]>([]);
   const [regions, setRegions] = useState<string[]>([]);
+  const [hqLocationsText, setHqLocationsText] = useState("");
   const [companyNames, setCompanyNames] = useState<string[]>([]);
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -102,6 +103,10 @@ export default function CampaignIdeaWizard({
     try {
       const effectiveUseCase = selectedUseCases.map((s) => s.useCase).join(", ") || useCaseOther.trim();
       const effectiveProduct = Array.from(new Set(selectedUseCases.map((s) => s.product))).join(", ");
+      // Split on ";" or newline, not "," - a single HQ location is often
+      // itself a "City, State" pair, so a comma can't double as the
+      // between-locations separator here (unlike the region/country field).
+      const hqLocations = hqLocationsText.split(/[;\n]+/).map((s) => s.trim()).filter(Boolean);
       const wizardTargeting: WizardTargeting = {
         product: effectiveProduct || undefined,
         use_case: effectiveUseCase || undefined,
@@ -109,6 +114,7 @@ export default function CampaignIdeaWizard({
         include_lookalikes: includeLookalikes,
         employee_sizes: employeeSizes,
         regions,
+        organization_locations: hqLocations,
         company_names: csvFile ? undefined : companyNames,
       };
       const campaignIdea = idea.trim() || effectiveUseCase || "Campaign idea (targeting set via wizard)";
@@ -344,6 +350,18 @@ export default function CampaignIdeaWizard({
                 placeholder="Add a region/country not listed above..."
                 onAdd={(r) => setRegions((cur) => (cur.includes(r) ? cur : [...cur, r]))}
               />
+
+              <p style={{ fontSize: 13, margin: "20px 0 8px" }}>
+                Company HQ location (optional) - for targeting companies headquartered somewhere
+                specific (city, state, or country), regardless of where the contact themselves sits.
+                Semicolon-separated for more than one.
+              </p>
+              <input
+                type="text"
+                value={hqLocationsText}
+                onChange={(e) => setHqLocationsText(e.target.value)}
+                placeholder="e.g. Austin, Texas; Bengaluru, India"
+              />
             </div>
           )}
 
@@ -369,6 +387,7 @@ export default function CampaignIdeaWizard({
                     </tr>
                     <tr><td style={{ fontWeight: 600 }}>Employee size</td><td>{employeeSizes.length ? employeeSizes.join(", ") : "No filter"}</td></tr>
                     <tr><td style={{ fontWeight: 600 }}>Region</td><td>{regions.length ? regions.join(", ") : "Global"}</td></tr>
+                    <tr><td style={{ fontWeight: 600 }}>Company HQ location</td><td>{hqLocationsText.trim() ? hqLocationsText : "No filter"}</td></tr>
                   </tbody>
                 </table>
               </div>

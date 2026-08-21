@@ -192,16 +192,69 @@ def _company_of(row):
     return _clean_cell(row.get("organization_name") or row.get("search_company"))
 
 
+# Shared by both linkedin_upload.csv and calling_upload.csv - every channel
+# file carries the SAME full set of whatever was found, matching everything
+# build_hubspot_import_file fills for the email file (name/title/seniority,
+# company + firmographics, every contact channel, location, campaign) - not
+# just its own primary field. A HeyReach automation branching on "is there an
+# email" (or a dialer script wanting a LinkedIn URL to hand the SDR) needs
+# the other channels' data present on the same row, not stripped out.
+# Row-INCLUSION still differs per file (see build_channel_files); only the
+# column set is unified and matched to the HubSpot file's breadth.
+_CHANNEL_COLUMNS = [
+    "first_name", "last_name", "job_title", "seniority", "departments",
+    "company_name", "company_domain", "organization_linkedin_url", "organization_industry",
+    "employee_count", "annual_revenue", "total_funding", "technologies",
+    "email", "linkedin_url", "phone",
+    "city", "state", "country", "address", "demographics",
+    "campaign_title",
+]
+
+
+def _channel_record(row, campaign_title: str) -> dict:
+    country = _clean_cell(row.get("country"))
+    state = _clean_cell(row.get("state"))
+    city = _clean_cell(row.get("city"))
+    return {
+        "first_name": _clean_cell(row.get("first_name")),
+        "last_name": _clean_cell(row.get("last_name")),
+        "job_title": _clean_cell(row.get("title")),
+        "seniority": _clean_cell(row.get("seniority")),
+        "departments": _clean_cell(row.get("departments")),
+        "company_name": _company_of(row),
+        "company_domain": _clean_cell(row.get("company_domain")) or strip_url_prefix(_clean_cell(row.get("Domain"))),
+        "organization_linkedin_url": _clean_cell(row.get("organization_linkedin_url")),
+        "organization_industry": _clean_cell(row.get("organization_industry")),
+        "employee_count": bucket_employees(row.get("organization_estimated_num_employees")),
+        "annual_revenue": _clean_cell(row.get("organization_annual_revenue")),
+        "total_funding": _clean_cell(row.get("organization_total_funding")),
+        "technologies": _clean_cell(row.get("technologies")),
+        "email": _clean_cell(row.get("email")),
+        "linkedin_url": _clean_cell(row.get("linkedin_url")),
+        "phone": _clean_cell(row.get("Phone Number")) or _clean_cell(row.get("mobile_phone")),
+        "city": city,
+        "state": state,
+        "country": country,
+        "address": _clean_cell(row.get("formatted_address")),
+        "demographics": demographics_for(country, state, city),
+        "campaign_title": campaign_title,
+    }
+
+
 def build_channel_files(enriched_df: pd.DataFrame, campaign_title: str) -> dict[str, pd.DataFrame]:
     """Splits the enriched contacts into three channel-specific upload files:
 
       email_upload.csv    - verified-email contacts only (HubSpot-ready shape).
-                            Guarantees no blank-email rows ever reach HubSpot.
+                            Guarantees no blank-email rows ever reach HubSpot,
+                            since HubSpot's contact upsert is keyed by email.
       linkedin_upload.csv  - contacts that have a LinkedIn URL (HeyReach import).
       calling_upload.csv   - contacts that have a phone number (dialer/SDR list).
 
     A contact can legitimately land in more than one file - that's expected,
-    each channel gets whoever it can actually reach on that channel.
+    each channel gets whoever it can actually reach on that channel. Every
+    row in linkedin/calling carries the same full column set (_CHANNEL_COLUMNS)
+    regardless of which file it's in, so e.g. calling_upload.csv still has
+    linkedin_url and email whenever they're known, not just phone.
     """
     if enriched_df is None or enriched_df.empty:
         empty = pd.DataFrame()
@@ -213,33 +266,21 @@ def build_channel_files(enriched_df: pd.DataFrame, campaign_title: str) -> dict[
 
     linkedin_rows, calling_rows = [], []
     for _, row in enriched_df.iterrows():
-        first = _clean_cell(row.get("first_name"))
-        last = _clean_cell(row.get("last_name"))
-        company = _company_of(row)
-        title = _clean_cell(row.get("title"))
-        domain = _clean_cell(row.get("company_domain")) or strip_url_prefix(_clean_cell(row.get("Domain")))
         li = _clean_cell(row.get("linkedin_url"))
         phone = _clean_cell(row.get("Phone Number")) or _clean_cell(row.get("mobile_phone"))
+        if li is None and phone is None:
+            continue
 
+        record = _channel_record(row, campaign_title)
         if li is not None:
-            linkedin_rows.append({
-                "first_name": first, "last_name": last, "company_name": company,
-                "job_title": title, "linkedin_url": li, "email": _clean_cell(row.get("email")),
-                "company_domain": domain, "campaign_title": campaign_title,
-            })
+            linkedin_rows.append(record)
         if phone is not None:
-            calling_rows.append({
-                "first_name": first, "last_name": last, "company_name": company,
-                "job_title": title, "phone": phone, "email": _clean_cell(row.get("email")),
-                "company_domain": domain, "campaign_title": campaign_title,
-            })
+            calling_rows.append(record)
 
-    linkedin_columns = ["first_name", "last_name", "company_name", "job_title", "linkedin_url", "email", "company_domain", "campaign_title"]
-    calling_columns = ["first_name", "last_name", "company_name", "job_title", "phone", "email", "company_domain", "campaign_title"]
     return {
         "email": email_df,
-        "linkedin": pd.DataFrame(linkedin_rows, columns=linkedin_columns),
-        "calling": pd.DataFrame(calling_rows, columns=calling_columns),
+        "linkedin": pd.DataFrame(linkedin_rows, columns=_CHANNEL_COLUMNS),
+        "calling": pd.DataFrame(calling_rows, columns=_CHANNEL_COLUMNS),
     }
 
 

@@ -142,5 +142,6 @@ export interface WizardTargeting {
   include_lookalikes?: boolean;
   employee_sizes: string[];
   regions: string[];
+  organization_locations?: string[];
   company_names?: string[];
 }

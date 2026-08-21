@@ -158,14 +158,18 @@ def _targeting_from_wizard(wizard_targeting: dict):
     there's nothing left to infer or re-confirm, so callers skip
     _extract_and_confirm_icp (no Claude call, no icp_confirm_form ask) and
     use this directly. Returns (persona_titles, person_locations,
-    employee_ranges, exact_titles) - the first three the same shape
-    _extract_and_confirm_icp returns; exact_titles is True unless the wizard's
-    "include similar/lookalike titles" box was checked."""
+    employee_ranges, exact_titles, organization_locations) - the first three
+    the same shape _extract_and_confirm_icp returns; exact_titles is True
+    unless the wizard's "include similar/lookalike titles" box was checked.
+    organization_locations is the separate company-HQ location filter (city/
+    state/country free text) for "HQ based" use cases - distinct from
+    person_locations, which filters by where the contact themselves sits."""
     job_titles = [t.strip() for t in (wizard_targeting.get("job_titles") or []) if str(t).strip()]
     regions = [r.strip() for r in (wizard_targeting.get("regions") or []) if str(r).strip()]
     employee_ranges = _normalize_employee_size_labels(wizard_targeting.get("employee_sizes") or [])
     exact_titles = not bool(wizard_targeting.get("include_lookalikes"))
-    return job_titles or None, regions or None, employee_ranges, exact_titles
+    org_locations = [r.strip() for r in (wizard_targeting.get("organization_locations") or []) if str(r).strip()]
+    return job_titles or None, regions or None, employee_ranges, exact_titles, org_locations or None
 
 
 def _company_names_from_wizard(wizard_targeting: dict) -> list[str]:
@@ -473,13 +477,16 @@ If uncertain, pick the most likely match. Return ONLY JSON, no markdown."""
 
 async def _add_more_prospects_loop(step: inngest.Step, run_id: str, candidates_df: pd.DataFrame,
                                     persona_titles, person_locations, employee_ranges, do_search,
-                                    exact_titles: bool = True, max_iterations: int = 5):
+                                    exact_titles: bool = True, max_iterations: int = 5,
+                                    organization_locations=None):
     """Bounded version of runner.py's unbounded `while add_more:` loop (lines
     597-715 there) - Inngest step keys must be unique per run, so a real
     while loop can't work here; capped at max_iterations rounds instead.
     do_search(names, titles, locations, employee_ranges, key_suffix) is the
     same closure the caller used for the initial search, reused here for
-    each iteration."""
+    each iteration. organization_locations (company HQ filter) carries
+    through unchanged across iterations - only the campaign-idea path can set
+    it, and re-extracting ICP from a refined idea never touches it."""
     total_found = len(candidates_df)
     for i in range(1, max_iterations + 1):
         add_more = await _ask(
@@ -508,7 +515,8 @@ async def _add_more_prospects_loop(step: inngest.Step, run_id: str, candidates_d
             if not names:
                 continue
             more_df, _more_stats = await do_search(names, persona_titles, person_locations, employee_ranges,
-                                                     key_suffix=f"_more_{i}", exact_titles=exact_titles)
+                                                     key_suffix=f"_more_{i}", exact_titles=exact_titles,
+                                                     p_org_locations=organization_locations)
             candidates_df = pd.concat([candidates_df, more_df], ignore_index=True)
         else:
             new_idea = await _ask(
@@ -528,7 +536,8 @@ async def _add_more_prospects_loop(step: inngest.Step, run_id: str, candidates_d
             employee_ranges = new_employee_ranges or employee_ranges
             same_companies = candidates_df["Company"].dropna().unique().tolist()
             new_df, _new_stats = await do_search(same_companies, persona_titles, person_locations, employee_ranges,
-                                                   key_suffix=f"_refilter_{i}", exact_titles=exact_titles)
+                                                   key_suffix=f"_refilter_{i}", exact_titles=exact_titles,
+                                                   p_org_locations=organization_locations)
             candidates_df = pd.concat([candidates_df, new_df], ignore_index=True)
             if "obfuscated_name" in candidates_df.columns:
                 candidates_df = candidates_df.drop_duplicates(subset=["obfuscated_name", "Company"], keep="first")
@@ -718,6 +727,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
     person_locations_from_idea = None
     employee_ranges_from_idea = None
     exact_titles_from_idea = True
+    organization_locations_from_idea = None
 
     if not campaign_idea_no_csv:
         # Some exports (seen on a real HubSpot pull) carry the same header twice -
@@ -767,7 +777,8 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             if wizard_targeting:
                 # User already confirmed targeting in the wizard - skip Claude
                 # extraction and the icp_confirm_form re-ask entirely.
-                persona_titles_from_idea, person_locations_from_idea, employee_ranges_from_idea, exact_titles_from_idea = \
+                (persona_titles_from_idea, person_locations_from_idea, employee_ranges_from_idea,
+                 exact_titles_from_idea, organization_locations_from_idea) = \
                     _targeting_from_wizard(wizard_targeting)
             else:
                 persona_titles_from_idea, person_locations_from_idea, employee_ranges_from_idea = \
@@ -942,6 +953,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                     person_locations = person_locations_from_idea
                     employee_ranges = employee_ranges_from_idea
                     exact_titles = exact_titles_from_idea
+                    organization_locations = organization_locations_from_idea
                     per_title_cap = 2
                 else:
                     employee_ranges = None  # discovery_form doesn't collect this (out of scope, see plan)
@@ -973,6 +985,14 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                                     "country_options": COUNTRY_OPTIONS,
                                     "default": [],
                                 },
+                                "organization_locations": {
+                                    "label": "Company HQ location (optional - city, state, or country; "
+                                    "semicolon-separated for more than one; for targeting companies "
+                                    "headquartered somewhere specific, regardless of where the contact "
+                                    "personally sits)",
+                                    "placeholder": "e.g. Austin, Texas; Bengaluru, India",
+                                    "default": "",
+                                },
                             },
                         },
                     )
@@ -988,6 +1008,12 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                         person_locations = [r.strip() for r in raw_locations.split(",") if r.strip()] or None
                     else:
                         person_locations = [str(r).strip() for r in (raw_locations or []) if str(r).strip()] or None
+                    raw_org_locations = form_answer.get("organization_locations")
+                    # Split on ";"/newline, not "," - a single HQ location is
+                    # often itself a "City, State" pair (see person_locations'
+                    # comma-split above, which is safe there since region/
+                    # country names don't normally contain internal commas).
+                    organization_locations = [r.strip() for r in re.split(r"[;\n]+", str(raw_org_locations or "")) if r.strip()] or None
 
                 effective_per_title_cap = per_title_cap if persona_titles else None
 
@@ -1000,7 +1026,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                         ok_df, resolved_company_col, "Domain", person_locations=person_locations,
                         persona_titles=persona_titles, max_per_company=config.MAX_CONTACTS_PER_COMPANY_CAP,
                         per_title_cap=effective_per_title_cap, employee_ranges=employee_ranges,
-                        exact_titles=exact_titles)
+                        exact_titles=exact_titles, organization_locations=organization_locations)
                     return _nan_safe({"records": found_df.to_dict("records"), "search_stats": search_stats})
 
                 search_result = await step.run("search_candidates", _search)
@@ -1027,13 +1053,15 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         if wizard_targeting:
             # User already confirmed targeting in the wizard - skip Claude
             # extraction and the icp_confirm_form re-ask entirely.
-            persona_titles, person_locations, employee_ranges, exact_titles = _targeting_from_wizard(wizard_targeting)
+            persona_titles, person_locations, employee_ranges, exact_titles, organization_locations = \
+                _targeting_from_wizard(wizard_targeting)
         else:
             persona_titles, person_locations, employee_ranges = await _extract_and_confirm_icp(
                 step, run_id, campaign_idea,
                 extract_key="icp_extract_no_csv", confirm_key="icp_confirm_no_csv",
             )
             exact_titles = True  # no wizard toggle on this path - exact-title matching by default
+            organization_locations = None  # no HQ-location ask on the manual ICP-extraction path
 
         await _set_step(step, "step_source_done_idea", run_id, "source", "Input & Normalization", "done",
                          f"Campaign idea captured: \"{campaign_idea[:80]}\".")
@@ -1054,7 +1082,8 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         if not company_names:
             raise ValueError("No company names provided for Apollo search.")
 
-        async def _do_search(names, p_titles, p_locations, p_employee_ranges=None, key_suffix="", exact_titles=True):
+        async def _do_search(names, p_titles, p_locations, p_employee_ranges=None, key_suffix="", exact_titles=True,
+                              p_org_locations=None):
             domains_df = pd.DataFrame([{"Company": c} for c in names])
 
             async def _resolve():
@@ -1077,14 +1106,14 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                     resolved_df, "Company", "Domain", person_locations=p_locations,
                     persona_titles=p_titles, max_per_company=config.MAX_CONTACTS_PER_COMPANY_DEFAULT,
                     per_title_cap=(2 if p_titles else None), employee_ranges=p_employee_ranges,
-                    exact_titles=exact_titles)
+                    exact_titles=exact_titles, organization_locations=p_org_locations)
                 return _nan_safe({"records": found_df.to_dict("records"), "search_stats": sstats})
 
             search_result = await step.run(f"search_candidates_idea{key_suffix}", _search)
             return pd.DataFrame(search_result["records"]), search_result["search_stats"]
 
         candidates_df, search_stats = await _do_search(company_names, persona_titles, person_locations, employee_ranges,
-                                                          exact_titles=exact_titles)
+                                                          exact_titles=exact_titles, p_org_locations=organization_locations)
         await _set_step(step, "step_domain_done_idea", run_id, "domain", "Domain Resolution", "done",
                          f"Resolved domains for {len(company_names)} compan{'y' if len(company_names) == 1 else 'ies'}.")
         await _set_step(
@@ -1096,7 +1125,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
 
         candidates_df, persona_titles, person_locations, employee_ranges = await _add_more_prospects_loop(
             step, run_id, candidates_df, persona_titles, person_locations, employee_ranges, _do_search,
-            exact_titles=exact_titles)
+            exact_titles=exact_titles, organization_locations=organization_locations)
 
         # Exclusion gate, applied to candidates - a separate small block rather
         # than sharing code with the tested exclusion block above, deliberately,

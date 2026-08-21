@@ -82,7 +82,7 @@ def persona_tier(title):
     return 99  # unmatched title - lowest priority, still eligible
 
 
-def search_people(session, domain, person_locations=None, employee_ranges=None):
+def search_people(session, domain, person_locations=None, employee_ranges=None, organization_locations=None):
     # person_seniorities matters a lot for large companies: without it, a
     # single page of title-matched results can be dominated by hundreds of
     # "HR Business Partner" hits and never surface the actual CHRO/CPO at
@@ -93,6 +93,11 @@ def search_people(session, domain, person_locations=None, employee_ranges=None):
     # person_locations filters by where the PERSON is based, not the
     # company's HQ - confirmed via testing. Useful when a target company is
     # multinational but you only want contacts physically in a given region.
+    #
+    # organization_locations is the separate, company-HQ-based filter (city,
+    # state, or country of the employer's headquarters) - for "HQ based use
+    # cases" where you want everyone at a company HQ'd in a given place,
+    # regardless of where the individual contact personally sits.
     payload = {
         'q_organization_domains_list': [domain], 'person_titles': PERSONAS,
         'person_seniorities': ['c_suite', 'vp', 'head', 'director', 'manager'],
@@ -102,6 +107,8 @@ def search_people(session, domain, person_locations=None, employee_ranges=None):
         payload['person_locations'] = person_locations
     if employee_ranges:
         payload['organization_num_employees_ranges'] = employee_ranges
+    if organization_locations:
+        payload['organization_locations'] = organization_locations
     try:
         r = session.post(
             'https://api.apollo.io/api/v1/mixed_people/api_search',

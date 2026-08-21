@@ -146,7 +146,8 @@ def _run_parallel(items, fn, max_workers, progress=None):
 
 
 def search_candidates(df: pd.DataFrame, company_col: str, domain_col: str, person_locations=None, persona_titles=None,
-                       max_per_company=None, per_title_cap=None, employee_ranges=None, exact_titles=True):
+                       max_per_company=None, per_title_cap=None, employee_ranges=None, exact_titles=True,
+                       organization_locations=None):
     """per_title_cap (1-3 typically) switches selection to
     select_candidates_per_persona: every title in persona_titles is guaranteed
     up to per_title_cap candidates per company, instead of ranking against the
@@ -158,7 +159,15 @@ def search_candidates(df: pd.DataFrame, company_col: str, domain_col: str, perso
     matches to the same title as requested (word-order-insensitive) rather
     than any title containing it as a substring. True is the default so a
     request for "Total Rewards Head" doesn't silently pull in "Total Rewards
-    Manager"; the "include similar/lookalike titles" UI option sets this False."""
+    Manager"; the "include similar/lookalike titles" UI option sets this False.
+
+    organization_locations is separate from person_locations: it filters by
+    the target company's HQ (city/state/country, free text - e.g. "Austin,
+    Texas", "California, US"), for "HQ based" use cases where you want
+    contacts at companies headquartered somewhere specific, regardless of
+    where the individual contact is personally based. No region-group
+    expansion is applied to it (unlike person_locations) since it's expected
+    to be specific city/state/country entries, not broad UI labels."""
     session = requests.Session()
     session.mount("https://", requests.adapters.HTTPAdapter(max_retries=0))
 
@@ -175,7 +184,7 @@ def search_candidates(df: pd.DataFrame, company_col: str, domain_col: str, perso
         old_personas, old_cap = _search.PERSONAS, _search.MAX_PER_COMPANY
         _search.PERSONAS, _search.MAX_PER_COMPANY = personas, cap
         try:
-            people = _search.search_people(session, domain, person_locations, employee_ranges)
+            people = _search.search_people(session, domain, person_locations, employee_ranges, organization_locations)
             if per_title_cap:
                 selected = _search.select_candidates_per_persona(people, personas, per_title_cap, exact=exact_titles)
             else:
