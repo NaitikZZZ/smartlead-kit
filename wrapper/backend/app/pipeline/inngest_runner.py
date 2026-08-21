@@ -717,6 +717,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
     persona_titles_from_idea = None
     person_locations_from_idea = None
     employee_ranges_from_idea = None
+    exact_titles_from_idea = True
 
     if not campaign_idea_no_csv:
         # Some exports (seen on a real HubSpot pull) carry the same header twice -
@@ -1137,6 +1138,58 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
     needs_existing_mapping = False
 
     if has_existing_contacts:
+        # ============ ICP Filter (gated) ============
+        # Runs before any Apollo spend below, so non-ICP rows never get paid
+        # for - a sheet that already has names/titles/emails can still carry
+        # people outside the target ICP (e.g. a raw event-attendee export).
+        icp_filter_answer = await _ask(
+            step, run_id, "icp_title_filter_needed", "yes_no",
+            f"This sheet has {len(ok_df)} named contact(s). Remove anyone whose job title doesn't "
+            "match your ICP before enriching?",
+            default="yes", context={"step": "reveal"},
+        )
+        if _truthy(icp_filter_answer):
+            if input_source == "campaign_idea" and persona_titles_from_idea:
+                icp_titles = persona_titles_from_idea
+                icp_exact = exact_titles_from_idea
+            else:
+                icp_titles_answer = await _ask(
+                    step, run_id, "icp_title_filter_titles", "text",
+                    "ICP job titles to keep (comma-separated) - anyone else gets removed as non-ICP:",
+                    default="", context={"step": "reveal"},
+                )
+                icp_titles = [t.strip() for t in str(icp_titles_answer).split(",") if t.strip()]
+                icp_exact = True
+
+            title_col_for_filter = _guess_col(ok_df, ["title", "job title"])
+            if not icp_titles:
+                await _set_stat(step, "stat_icp_filter_no_titles", run_id, "icp_title_filter",
+                                 {"skipped": True, "reason": "no ICP titles provided"})
+            elif not title_col_for_filter:
+                await _set_stat(step, "stat_icp_filter_no_title_col", run_id, "icp_title_filter",
+                                 {"skipped": True, "reason": "no job-title column found in sheet"})
+            else:
+                before_count = len(ok_df)
+
+                async def _apply_icp_filter():
+                    keep_mask = ok_df[title_col_for_filter].apply(
+                        lambda t: apollo_enrich.title_matches_any(str(t) if pd.notna(t) else "", icp_titles, exact=icp_exact)
+                    )
+                    kept_df = ok_df[keep_mask].copy()
+                    return _nan_safe({"records": kept_df.to_dict("records"), "kept": len(kept_df)})
+
+                filter_result = await step.run("apply_icp_title_filter", _apply_icp_filter)
+                ok_df = pd.DataFrame(filter_result["records"])
+                removed = before_count - filter_result["kept"]
+                await _set_stat(step, "stat_icp_filter", run_id, "icp_title_filter",
+                                 {"removed": removed, "kept": filter_result["kept"], "titles": icp_titles, "exact": icp_exact})
+                await _set_step(
+                    step, "step_icp_filter_done", run_id, "reveal", "Email Reveal & Validation", "running",
+                    f"Removed {removed} non-ICP contact(s) by job title; {filter_result['kept']} remain.",
+                )
+        else:
+            await _set_stat(step, "stat_icp_filter_declined", run_id, "icp_title_filter", {"skipped": True})
+
         await _status(step, "status_reveal_existing", run_id, stage="enriching",
                        message=f"Filling emails for {len(ok_df)} existing contact(s)")
         await _set_step(step, "step_reveal_running", run_id, "reveal", "Email Reveal & Validation", "running")
@@ -1254,6 +1307,50 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
     # Number" column the mapper would otherwise create.
     if needs_existing_mapping and not core_df.empty:
         core_df = _map_existing_contact_columns(core_df, resolved_first_col, resolved_last_col, resolved_company_col)
+
+        # ============ Fill Missing Details (existing-contact sheets only, gated) ============
+        # The discovered-candidates path already captures LinkedIn/company/
+        # seniority via enrich_candidates' full Apollo response - this gap
+        # only exists for a sheet that came in already named/emailed, where
+        # enrich_existing_contacts only ever kept the email field.
+        missing_details_count = apollo_enrich.count_missing_details(core_df)
+        if missing_details_count == 0:
+            await _set_stat(step, "stat_details_no_gaps", run_id, "existing_contact_details",
+                             {"skipped": True, "reason": "no missing details", "missing": 0})
+        else:
+            details_est = estimates.cost_block("existing_contact_details", missing_details_count)
+            details_answer = await _ask(
+                step, run_id, "fill_missing_details_needed", "yes_no",
+                f"{missing_details_count} contact(s) are missing details like LinkedIn URL, company LinkedIn, "
+                f"industry, seniority, or department. Fill them via Apollo "
+                f"(~{details_est['credits']} credits, ${details_est['usd']})?",
+                default="yes", context={"step": "reveal", "estimate": details_est, "missing": missing_details_count},
+            )
+            if _truthy(details_answer):
+                await _status(step, "status_filling_details", run_id,
+                               message=f"Filling missing details for {missing_details_count} contact(s)")
+
+                async def _fill_details():
+                    filled_df, details_stats = apollo_enrich.fill_missing_details(
+                        core_df, resolved_first_col, resolved_last_col, "Domain")
+                    return _nan_safe({"records": filled_df.to_dict("records"), "details_stats": details_stats})
+
+                details_result = await step.run("fill_missing_details", _fill_details)
+                core_df = pd.DataFrame(details_result["records"])
+                details_stats = details_result["details_stats"]
+
+                details_cost = estimates.cost_block("existing_contact_details", details_stats.get("paid_lookups", 0))
+                await _accrue_cost(step, "cost_fill_details", run_id, details_cost)
+                await _set_stat(step, "stat_details_filled", run_id, "existing_contact_details", details_stats)
+                await _set_step(
+                    step, "step_details_done", run_id, "reveal", "Email Reveal & Validation", "done",
+                    f"Filled {details_stats.get('fields_filled', 0)} missing detail field(s) "
+                    f"across {details_stats.get('paid_lookups', 0)} contact(s).",
+                    cost=details_cost,
+                )
+            else:
+                await _set_stat(step, "stat_details_declined", run_id, "existing_contact_details",
+                                 {"skipped": True, "reason": "declined by user", "missing": missing_details_count})
 
     # ============ Completeness fill (deferred - only worth asking once we know the real gap count) ============
     completeness_cols = [

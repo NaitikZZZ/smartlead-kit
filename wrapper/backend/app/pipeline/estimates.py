@@ -20,6 +20,7 @@ CREDITS = {
     "domain_resolution": 1,   # per company org-enrich / domain lookup
     "email_reveal": 1,        # per contact email unlock
     "mobile_phone": 8,        # per contact phone/mobile reveal (Apollo charges ~8)
+    "existing_contact_details": 1,  # per contact LinkedIn/company/seniority backfill (same call tier as email_reveal)
 }
 
 # Rough wall-clock seconds per unit, for the "time estimate" shown per step.
@@ -30,6 +31,7 @@ SECONDS_PER_UNIT = {
     "people_discovery": 0.8,
     "email_reveal": 0.5,
     "mobile_phone": 0.5,
+    "existing_contact_details": 0.5,
     "outputs": 0.01,
     "completeness": 4.0,  # 1 Claude + web_search call per gap row
 }

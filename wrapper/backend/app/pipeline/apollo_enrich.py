@@ -67,25 +67,36 @@ def expand_person_locations(selected: list[str] | None) -> list[str] | None:
     return out or None
 
 # Local reveal caches so a re-run never re-pays Apollo for the same person:
-#   email  -> keyed name@domain (People Match, ~1 credit)
-#   person -> keyed apollo_id  (full-field reveal, ~1 credit)
+#   email    -> keyed name@domain (People Match, ~1 credit)
+#   person   -> keyed apollo_id  (full-field reveal, ~1 credit)
+#   details  -> keyed name@domain (LinkedIn/company/seniority backfill for
+#               existing-contact sheets, ~1 credit - see fill_missing_details)
 # Phone has its own cache in the phone script (reference/phone_reveal_cache.csv).
 # Redis (Upstash, via app/redis_cache.py) is used when configured - required
 # on Vercel, where the local file paths below aren't writable/persistent
 # across invocations. Falls back to the local file otherwise. The person
 # cache runs into the tens of MB (confirmed ~22MB in practice) so it uses the
-# chunked Redis helper; the email cache stays well under 1MB.
+# chunked Redis helper; the other two stay well under 1MB.
 _EMAIL_CACHE = config.CACHE_DIR / "email_reveal_cache.json"
 _PERSON_CACHE = config.CACHE_DIR / "person_enrich_cache.json"
+_DETAILS_CACHE = config.CACHE_DIR / "existing_contact_details_cache.json"
 _EMAIL_REDIS_KEY = "cache:email_reveal"
 _PERSON_REDIS_KEY = "cache:person_enrich"
+_DETAILS_REDIS_KEY = "cache:existing_contact_details"
+
+# (redis key, chunked?) per cache file - chunked is only needed for the
+# person cache's tens-of-MB size (see redis_cache.set_json_chunked).
+_CACHE_REDIS = {
+    _EMAIL_CACHE: (_EMAIL_REDIS_KEY, False),
+    _PERSON_CACHE: (_PERSON_REDIS_KEY, True),
+    _DETAILS_CACHE: (_DETAILS_REDIS_KEY, False),
+}
 
 
 def _load_cache(path):
     if redis_cache.is_configured():
-        chunked = path is _PERSON_CACHE
+        key, chunked = _CACHE_REDIS[path]
         getter = redis_cache.get_json_chunked if chunked else redis_cache.get_json
-        key = _PERSON_REDIS_KEY if chunked else _EMAIL_REDIS_KEY
         return getter(key) or {}
     try:
         return _json.loads(path.read_text()) if path.exists() else {}
@@ -95,9 +106,8 @@ def _load_cache(path):
 
 def _save_cache(path, cache):
     if redis_cache.is_configured():
-        chunked = path is _PERSON_CACHE
+        key, chunked = _CACHE_REDIS[path]
         setter = redis_cache.set_json_chunked if chunked else redis_cache.set_json
-        key = _PERSON_REDIS_KEY if chunked else _EMAIL_REDIS_KEY
         setter(key, cache)
         return
     try:
@@ -316,6 +326,122 @@ def enrich_existing_contacts(df: pd.DataFrame, first_col: str, last_col: str, do
         "from_cache": from_cache, "skipped_no_domain": skipped, "paid_lookups": len(tasks),
         "job_changes_refreshed": len([1 for t in tasks if t[5]]), "total": len(out),
     }
+
+
+# Fields enrich_existing_contacts's own Apollo call already returns but used
+# to throw away (only "email" was ever kept) - a sheet that came in with
+# names/titles/emails/phones already filled still has real gaps here that
+# the "already had email" skip meant Apollo was never even asked about.
+DETAIL_COLUMNS = ["linkedin_url", "organization_linkedin_url", "organization_industry", "seniority", "departments"]
+
+
+def _is_blank(v) -> bool:
+    return v is None or (isinstance(v, float) and pd.isna(v)) or (isinstance(v, str) and not v.strip())
+
+
+def _row_missing_details(row) -> bool:
+    return any(_is_blank(row.get(c)) for c in DETAIL_COLUMNS)
+
+
+def _extract_details(p: dict) -> dict:
+    org = p.get("organization") or {}
+    departments = p.get("departments")
+    if isinstance(departments, list):
+        departments = "; ".join(str(d) for d in departments)
+    return {
+        "linkedin_url": p.get("linkedin_url") or "",
+        "organization_linkedin_url": org.get("linkedin_url") or "",
+        "organization_industry": org.get("industry") or "",
+        "seniority": p.get("seniority") or "",
+        "departments": departments or "",
+    }
+
+
+def count_missing_details(df: pd.DataFrame, domain_col: str = "Domain") -> int:
+    """How many rows are missing at least one of DETAIL_COLUMNS and have a
+    domain to look up against - what fill_missing_details would actually
+    spend Apollo credits on. A row already complete, or with no domain, is
+    free/skipped and not counted."""
+    n = 0
+    for _, row in df.iterrows():
+        if not _row_missing_details(row):
+            continue
+        if _is_blank(row.get(domain_col)):
+            continue
+        n += 1
+    return n
+
+
+def fill_missing_details(df: pd.DataFrame, first_col: str, last_col: str, domain_col: str = "Domain",
+                         progress=None, max_workers: int = DEFAULT_WORKERS):
+    """Backfills LinkedIn URL, company LinkedIn URL, industry, seniority, and
+    department for an already-enriched sheet's contacts, from the same
+    Apollo people/match call enrich_existing_contacts already makes for
+    email - that response carries all of this, but only email was ever kept.
+    Only queries Apollo for rows genuinely missing at least one of these
+    fields (per whatever the CSV already had); a row that's already complete
+    is skipped for free. Never overwrites a value the sheet already had -
+    only fills blanks."""
+    session = requests.Session()
+    session.mount("https://", requests.adapters.HTTPAdapter(max_retries=0, pool_maxsize=max_workers))
+    cache = _load_cache(_DETAILS_CACHE)
+
+    out = df.copy()
+    for col in DETAIL_COLUMNS:
+        if col not in out.columns:
+            out[col] = None
+
+    tasks = []
+    for i, row in out.iterrows():
+        if not _row_missing_details(row):
+            continue
+        domain = row.get(domain_col)
+        if _is_blank(domain):
+            continue
+        key = _phone.cache_key(row.get(first_col), row.get(last_col), domain)
+        if key in cache:  # reuse prior lookup -> free
+            details = cache[key]
+            for col in DETAIL_COLUMNS:
+                if _is_blank(out.at[i, col]) and details.get(col):
+                    out.at[i, col] = details[col]
+            continue
+        tasks.append((i, row.get(first_col), row.get(last_col), domain, key))
+
+    def _one(t):
+        i, first, last, domain, key = t
+        p = _contacts.enrich(session, first, last, domain)
+        return i, (_extract_details(p), key), (first or "")
+
+    result_map = _run_parallel(tasks, _one, max_workers, progress)
+    filled_fields = 0
+    for i, (details, key) in result_map.items():
+        cache[key] = details
+        for col in DETAIL_COLUMNS:
+            if _is_blank(out.at[i, col]) and details.get(col):
+                out.at[i, col] = details[col]
+                filled_fields += 1
+    if result_map:
+        _save_cache(_DETAILS_CACHE, cache)
+
+    return out, {"paid_lookups": len(tasks), "fields_filled": filled_fields, "total": len(out)}
+
+
+def title_matches_any(title: str, target_titles: list[str], exact: bool = True) -> bool:
+    """True if `title` matches any of target_titles, using the identical
+    word-set-exact or substring-lookalike rule select_candidates_per_persona
+    applies during Apollo search - exposed here so filtering an
+    ALREADY-ASSEMBLED sheet (e.g. dropping non-ICP existing contacts) uses
+    the same definition of "matches this title" rather than a second,
+    potentially inconsistent one."""
+    if not target_titles:
+        return True  # nothing to filter against
+    t = (title or "").strip().lower()
+    if not t:
+        return False
+    if exact:
+        title_words = _search._title_word_set(title)
+        return any(_search._title_word_set(target) == title_words for target in target_titles)
+    return any((target or "").strip().lower() in t for target in target_titles)
 
 
 def count_uncached_phones(df: pd.DataFrame, first_col: str, last_col: str, domain_col: str, force_idx: set | None = None) -> int:
