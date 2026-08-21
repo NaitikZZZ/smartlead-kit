@@ -48,6 +48,7 @@ export default function CampaignIdeaWizard({
   const [otherMode, setOtherMode] = useState(false);
   const [jobTitles, setJobTitles] = useState<string[]>([]);
   const [jobTitleOptions, setJobTitleOptions] = useState<string[]>([]);
+  const [includeLookalikes, setIncludeLookalikes] = useState(false);
   const [employeeSizes, setEmployeeSizes] = useState<string[]>([]);
   const [regions, setRegions] = useState<string[]>([]);
   const [companyNames, setCompanyNames] = useState<string[]>([]);
@@ -105,6 +106,7 @@ export default function CampaignIdeaWizard({
         product: effectiveProduct || undefined,
         use_case: effectiveUseCase || undefined,
         job_titles: jobTitles,
+        include_lookalikes: includeLookalikes,
         employee_sizes: employeeSizes,
         regions,
         company_names: csvFile ? undefined : companyNames,
@@ -294,6 +296,16 @@ export default function CampaignIdeaWizard({
                 placeholder="Add a job title..."
                 onAdd={(t) => setJobTitles((cur) => (cur.includes(t) ? cur : [...cur, t]))}
               />
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginTop: 12, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={includeLookalikes}
+                  onChange={(e) => setIncludeLookalikes(e.target.checked)}
+                  style={{ width: "auto" }}
+                />
+                Include similar/lookalike titles (broader match - e.g. "Total Rewards Manager" when you asked
+                for "Total Rewards Head"). Leave unchecked to match these titles exactly.
+              </label>
             </div>
           )}
 
@@ -344,7 +356,17 @@ export default function CampaignIdeaWizard({
                       <td style={{ fontWeight: 600, width: 120 }}>Use case</td>
                       <td>{selectedUseCases.length ? selectedUseCases.map((s) => s.useCase).join(", ") : (useCaseOther || "(not set - defaults apply)")}</td>
                     </tr>
-                    <tr><td style={{ fontWeight: 600 }}>Job titles</td><td>{jobTitles.length ? jobTitles.join(", ") : "Default HR/People-leader list"}</td></tr>
+                    <tr>
+                      <td style={{ fontWeight: 600 }}>Job titles</td>
+                      <td>
+                        {jobTitles.length ? jobTitles.join(", ") : "Default HR/People-leader list"}
+                        {jobTitles.length > 0 && (
+                          <span style={{ color: "var(--dark-200)" }}>
+                            {" "}({includeLookalikes ? "includes similar titles" : "exact match only"})
+                          </span>
+                        )}
+                      </td>
+                    </tr>
                     <tr><td style={{ fontWeight: 600 }}>Employee size</td><td>{employeeSizes.length ? employeeSizes.join(", ") : "No filter"}</td></tr>
                     <tr><td style={{ fontWeight: 600 }}>Region</td><td>{regions.length ? regions.join(", ") : "Global"}</td></tr>
                   </tbody>

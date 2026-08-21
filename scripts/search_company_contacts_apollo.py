@@ -20,6 +20,7 @@ Usage:
     python3 search_company_contacts_apollo.py <input_csv> <company_col> <domain_col> <output_csv>
 """
 import os
+import re
 import sys
 import time
 import requests
@@ -135,7 +136,21 @@ def select_candidates(people):
     return selected
 
 
-def select_candidates_per_persona(people, personas, per_persona_cap):
+_TITLE_STOPWORDS = {"of", "the", "and", "&", "for", "a", "an", "in"}
+
+
+def _title_word_set(title):
+    """Normalizes a title into its significant words (lowercased, punctuation
+    stripped, connector words dropped), so word-order variants of the same
+    title compare equal - 'Total Rewards Head' and 'Head of Total Rewards'
+    both reduce to {total, rewards, head} - while a genuinely different title
+    that merely shares words ('Total Rewards Manager', 'VP Total Rewards')
+    does not, since 'manager'/'vp' change the set."""
+    words = re.findall(r"[a-z0-9]+", (title or "").lower())
+    return frozenset(w for w in words if w not in _TITLE_STOPWORDS)
+
+
+def select_candidates_per_persona(people, personas, per_persona_cap, exact=False):
     """Guarantee up to `per_persona_cap` candidates for EACH persona/title in
     `personas`, instead of ranking everyone against the hardcoded PERSONA_TIERS
     keyword list (which only recognizes the built-in HR titles). Within a
@@ -143,16 +158,30 @@ def select_candidates_per_persona(people, personas, per_persona_cap):
     more than one requested persona is only counted once, under whichever
     persona it matches first in list order. Candidates matching none of the
     listed personas are dropped - the point is guaranteed per-title coverage,
-    not a general top-N fill."""
+    not a general top-N fill.
+
+    exact=True restricts matches to the same title (allowing word-order
+    variants, via _title_word_set) rather than any title that merely contains
+    the requested phrase as a substring - e.g. a search for "Total Rewards
+    Head" no longer also pulls in "Total Rewards Manager" or "VP Total
+    Rewards". exact=False (the substring behavior) is the "include similar/
+    lookalike titles" option."""
     selected, seen_ids = [], set()
     for tier, persona in enumerate(personas):
         needle = (persona or '').strip().lower()
         if not needle:
             continue
-        matches = [
-            p for p in people
-            if needle in (p.get('title') or '').lower() and p.get('id') not in seen_ids
-        ]
+        if exact:
+            needle_words = _title_word_set(persona)
+            matches = [
+                p for p in people
+                if _title_word_set(p.get('title')) == needle_words and p.get('id') not in seen_ids
+            ]
+        else:
+            matches = [
+                p for p in people
+                if needle in (p.get('title') or '').lower() and p.get('id') not in seen_ids
+            ]
         matches.sort(key=lambda p: p.get('has_email') is not True)
         for p in matches[:per_persona_cap]:
             p['_tier'] = tier  # index of the persona it matched, for the output's persona_tier column

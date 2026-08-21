@@ -18,6 +18,7 @@ export default function StepCard({
   const fields = question.context?.fields as Record<string, any> | undefined;
   const [formTitles, setFormTitles] = useState<string>(fields?.persona_titles?.default ?? "");
   const [formCap, setFormCap] = useState<number>(fields?.per_title_cap?.default ?? 2);
+  const [formIncludeLookalikes, setFormIncludeLookalikes] = useState<boolean>(fields?.include_lookalikes?.default ?? false);
   const [formRegions, setFormRegions] = useState<string[]>(fields?.person_locations?.default ?? []);
   const [icpTitles, setIcpTitles] = useState<string[]>(fields?.job_titles?.default ?? []);
   const [icpRegions, setIcpRegions] = useState<string[]>(fields?.regions?.default ?? []);
@@ -337,6 +338,18 @@ export default function StepCard({
             />
           </div>
 
+          {fields.include_lookalikes && (
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={formIncludeLookalikes}
+                onChange={(e) => setFormIncludeLookalikes(e.target.checked)}
+                style={{ width: "auto" }}
+              />
+              {fields.include_lookalikes.label}
+            </label>
+          )}
+
           <div>
             <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
               {fields.person_locations?.label}
@@ -358,6 +371,7 @@ export default function StepCard({
                 submit({
                   persona_titles: formTitles,
                   per_title_cap: formCap,
+                  include_lookalikes: formIncludeLookalikes,
                   person_locations: formRegions,
                 })
               }

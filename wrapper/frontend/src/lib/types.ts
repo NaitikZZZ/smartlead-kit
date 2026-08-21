@@ -139,6 +139,7 @@ export interface WizardTargeting {
   product?: string;
   use_case?: string;
   job_titles: string[];
+  include_lookalikes?: boolean;
   employee_sizes: string[];
   regions: string[];
   company_names?: string[];
