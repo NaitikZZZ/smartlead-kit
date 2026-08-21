@@ -196,22 +196,13 @@ def geo_of(account):
         account.get('organization_city') or account.get('city') or ''
 
 
-def resolve(session, cache, company_name, employee_raw):
-    # Full name first - most accurate. Only fall back to a '/' split for
-    # genuine dual-listings like "Channel 4 / Superstruct Entertainment".
-    # Never split on '&' - it's commonly part of a real single company name
-    # (e.g. "Dock & Bay", "Armstrong & Partners") and truncating it produced
-    # a wrong-company match in testing (Dock & Bay -> "Dock" -> dock.tech).
+def build_query_candidates(company_name):
+    """Same query-variant construction resolve() and the free Clearbit
+    precheck (estimate_needs_apollo) both use, so the estimate checks
+    Clearbit with the exact same candidates the real resolve will - full
+    name first, a '/' split for genuine dual-listings like "Channel 4 /
+    Superstruct Entertainment", then the legal-suffix-stripped form."""
     full_name = str(company_name).strip()
-    key = norm(full_name)
-    if key in cache:
-        c = cache[key]
-        return {'domain': c['domain'], 'linkedin': c['linkedin'], 'country': c.get('country', ''), 'city': c.get('city', ''), 'source': 'Cache', 'candidates': []}
-    slash_key = norm(full_name.split('/')[0].strip())
-    if slash_key != key and slash_key in cache:
-        c = cache[slash_key]
-        return {'domain': c['domain'], 'linkedin': c['linkedin'], 'country': c.get('country', ''), 'city': c.get('city', ''), 'source': 'Cache', 'candidates': []}
-
     query_candidates = [full_name]
     if '/' in full_name:
         query_candidates.append(full_name.split('/')[0].strip())
@@ -222,6 +213,42 @@ def resolve(session, cache, company_name, employee_raw):
         # right there. Retrying with the suffix stripped recovers these
         # instead of flagging every non-English legal-entity name Unresolved.
         query_candidates.append(stripped)
+    return query_candidates
+
+
+def estimate_needs_apollo(session, cache, company_name):
+    """Free pre-check (Clearbit only, no Apollo) for whether this company
+    would actually cost an Apollo credit in resolve() below - i.e. it's not
+    already cached AND Clearbit can't confidently resolve it either. Exists
+    so the pre-run cost estimate shown to the user reflects what will really
+    get charged, instead of assuming every uncached company needs Apollo and
+    ignoring that Clearbit resolves a large share of them for free. Repeats
+    the same free Clearbit call resolve() will make rather than caching the
+    verdict here, to avoid a second, possibly-stale place tracking it."""
+    key = norm(str(company_name).strip())
+    if key in cache:
+        return False
+    query_candidates = build_query_candidates(company_name)
+    cb_best, cb_source, _ = clearbit_resolve(session, query_candidates, norm(query_candidates[-1]))
+    return not (cb_best and cb_source != 'Clearbit-exact-top-ranked')
+
+
+def resolve(session, cache, company_name, employee_raw):
+    # Full name first - most accurate. Never split on '&' - it's commonly
+    # part of a real single company name (e.g. "Dock & Bay", "Armstrong &
+    # Partners") and truncating it produced a wrong-company match in testing
+    # (Dock & Bay -> "Dock" -> dock.tech).
+    full_name = str(company_name).strip()
+    key = norm(full_name)
+    if key in cache:
+        c = cache[key]
+        return {'domain': c['domain'], 'linkedin': c['linkedin'], 'country': c.get('country', ''), 'city': c.get('city', ''), 'source': 'Cache', 'candidates': []}
+    slash_key = norm(full_name.split('/')[0].strip())
+    if slash_key != key and slash_key in cache:
+        c = cache[slash_key]
+        return {'domain': c['domain'], 'linkedin': c['linkedin'], 'country': c.get('country', ''), 'city': c.get('city', ''), 'source': 'Cache', 'candidates': []}
+
+    query_candidates = build_query_candidates(full_name)
 
     # Clearbit first - it's free, so try it before spending an Apollo credit.
     # Only trust it outright when confident (a single exact match, or a lone

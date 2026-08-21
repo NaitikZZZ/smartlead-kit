@@ -22,8 +22,11 @@ DEFAULT_WORKERS = 6
 
 
 def count_uncached(df: pd.DataFrame, company_col: str) -> int:
-    """How many companies in df are NOT already in the domain cache (i.e. would
-    actually cost an Apollo lookup). Cached ones are free."""
+    """How many companies in df are NOT already in the domain cache. Kept for
+    callers that just want a cheap, no-network ceiling; count_needs_apollo
+    below is the accurate pre-run cost estimate (it also free-checks
+    Clearbit, which resolves a large share of these for free before Apollo
+    is ever touched)."""
     cache = _rcd.load_cache()
     n = 0
     for _, row in df.iterrows():
@@ -31,6 +34,25 @@ def count_uncached(df: pd.DataFrame, company_col: str) -> int:
         if key and key not in cache:
             n += 1
     return n
+
+
+def count_needs_apollo(df: pd.DataFrame, company_col: str, max_workers: int = DEFAULT_WORKERS) -> int:
+    """Accurate pre-run estimate of how many companies would actually cost an
+    Apollo credit: not in the domain cache AND Clearbit (checked live, for
+    free, in parallel) can't confidently resolve them either. This is what
+    the "resolve domains?" cost estimate should show - count_uncached alone
+    overstates it, since Clearbit resolves a large share of uncached
+    companies for free before Apollo is ever called."""
+    cache = _rcd.load_cache()
+    names = [str(row.get(company_col, "")).strip() for _, row in df.iterrows()]
+    names = [n for n in names if n]
+    if not names:
+        return 0
+    session = _requests.Session()
+    session.mount("https://", _requests.adapters.HTTPAdapter(max_retries=0, pool_maxsize=max_workers))
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(names))) as ex:
+        results = list(ex.map(lambda n: _rcd.estimate_needs_apollo(session, cache, n), names))
+    return sum(1 for r in results if r)
 
 
 def resolve_domains_for_df(df: pd.DataFrame, company_col: str, employee_col: str | None,

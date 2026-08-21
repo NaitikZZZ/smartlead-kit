@@ -796,13 +796,23 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                              {"skipped": True, "already_present": already_present,
                               "reason": "every row already has a domain"})
         else:
-            uncached = domain_resolution.count_uncached(df[missing_mask], resolved_company_col)
+            # count_needs_apollo checks Clearbit live (free) for every
+            # uncached company first, so this estimate reflects what will
+            # actually cost a credit - not just "uncached", which would
+            # overstate it since Clearbit resolves a lot of these for free
+            # before Apollo is ever touched.
+            async def _count_needs_apollo():
+                return domain_resolution.count_needs_apollo(df[missing_mask], resolved_company_col)
+
+            uncached = await step.run("count_domains_needing_apollo", _count_needs_apollo)
             est = estimates.cost_block("domain_resolution", uncached)
+            free_via_clearbit_or_cache = missing_count - uncached
 
             dom_answer = await _ask(
                 step, run_id, "domain_resolution_needed", "yes_no",
-                f"{missing_count} of {len(df)} rows need a domain. {uncached} need a paid Apollo lookup "
-                f"(~{est['credits']} credits, ${est['usd']}); {missing_count - uncached} are cached (free). Resolve them?",
+                f"{missing_count} of {len(df)} rows need a domain. Clearbit (free) and the domain cache "
+                f"already cover {free_via_clearbit_or_cache} of those; {uncached} need a paid Apollo lookup "
+                f"(~{est['credits']} credits, ${est['usd']}). Resolve them?",
                 default="yes", context={"step": "domain", "estimate": est, "missing": missing_count, "uncached": uncached},
             )
 
