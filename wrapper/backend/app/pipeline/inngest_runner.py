@@ -1057,10 +1057,16 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                 raise ValueError(f"Could not resolve domains for companies: {', '.join(names)}")
 
             async def _search():
+                # per_title_cap=2 when specific titles were requested mirrors the
+                # CSV/HubSpot-Project path's behavior, so exact_titles actually has
+                # an effect here too (search_candidates only applies it under
+                # select_candidates_per_persona) - previously this path always fell
+                # through to the generic HR-tier ranking regardless of exact_titles.
                 found_df, sstats = apollo_enrich.search_candidates(
                     resolved_df, "Company", "Domain", person_locations=p_locations,
                     persona_titles=p_titles, max_per_company=config.MAX_CONTACTS_PER_COMPANY_DEFAULT,
-                    employee_ranges=p_employee_ranges, exact_titles=exact_titles)
+                    per_title_cap=(2 if p_titles else None), employee_ranges=p_employee_ranges,
+                    exact_titles=exact_titles)
                 return _nan_safe({"records": found_df.to_dict("records"), "search_stats": sstats})
 
             search_result = await step.run(f"search_candidates_idea{key_suffix}", _search)
