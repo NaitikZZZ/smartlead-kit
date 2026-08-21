@@ -82,13 +82,36 @@ def persona_tier(title):
     return 99  # unmatched title - lowest priority, still eligible
 
 
-def search_people(session, domain, person_locations=None, employee_ranges=None, organization_locations=None):
+# person_seniorities ("Management Level" in Apollo's own UI) - documented,
+# confirmed enum (docs.apollo.io/reference/people-api-search).
+DEFAULT_SENIORITIES = ['c_suite', 'vp', 'head', 'director', 'manager']
+ALL_SENIORITIES = ['owner', 'founder', 'c_suite', 'partner', 'vp', 'head',
+                    'director', 'manager', 'senior', 'entry', 'intern']
+
+# person_functions ("Departments & Job Function" in Apollo's own UI) - NOT in
+# Apollo's public API docs, but confirmed real and working by live testing
+# against mixed_people/api_search: a garbage value returns 0 results while
+# each of these returns distinctly relevant titles (e.g. "human_resources"
+# surfaces recruiters/talent partners, "legal" surfaces a Chief Legal
+# Officer). Other plausible-looking slugs tried and confirmed NOT valid
+# (silently return 0, same as a nonsense string): design, media,
+# communications, customer_service, recruiting, real_estate, trades.
+ALL_FUNCTIONS = ['sales', 'marketing', 'engineering', 'product_management',
+                  'finance', 'accounting', 'operations', 'human_resources',
+                  'information_technology', 'legal', 'consulting',
+                  'administrative', 'education', 'entrepreneurship',
+                  'support', 'data_science']
+
+
+def search_people(session, domain, person_locations=None, employee_ranges=None, organization_locations=None,
+                   person_seniorities=None, person_functions=None):
     # person_seniorities matters a lot for large companies: without it, a
     # single page of title-matched results can be dominated by hundreds of
     # "HR Business Partner" hits and never surface the actual CHRO/CPO at
     # all (confirmed on Cognizant - adding this filter surfaced their real
     # Chief People Officer immediately, where the unfiltered search buried
-    # her under lower-level titles).
+    # her under lower-level titles). Defaults to DEFAULT_SENIORITIES
+    # (unchanged prior behavior) when the caller doesn't specify one.
     #
     # person_locations filters by where the PERSON is based, not the
     # company's HQ - confirmed via testing. Useful when a target company is
@@ -98,9 +121,12 @@ def search_people(session, domain, person_locations=None, employee_ranges=None, 
     # state, or country of the employer's headquarters) - for "HQ based use
     # cases" where you want everyone at a company HQ'd in a given place,
     # regardless of where the individual contact personally sits.
+    #
+    # person_functions is the "Departments & Job Function" filter - see
+    # ALL_FUNCTIONS above for how its value list was verified.
     payload = {
         'q_organization_domains_list': [domain], 'person_titles': PERSONAS,
-        'person_seniorities': ['c_suite', 'vp', 'head', 'director', 'manager'],
+        'person_seniorities': person_seniorities or DEFAULT_SENIORITIES,
         'page': 1, 'per_page': 50,
     }
     if person_locations:
@@ -109,6 +135,8 @@ def search_people(session, domain, person_locations=None, employee_ranges=None, 
         payload['organization_num_employees_ranges'] = employee_ranges
     if organization_locations:
         payload['organization_locations'] = organization_locations
+    if person_functions:
+        payload['person_functions'] = person_functions
     try:
         r = session.post(
             'https://api.apollo.io/api/v1/mixed_people/api_search',

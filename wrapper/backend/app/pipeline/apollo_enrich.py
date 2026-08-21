@@ -17,6 +17,7 @@ import search_company_contacts_apollo as _search  # noqa: E402
 import enrich_full_fields_apollo as _enrich  # noqa: E402
 import enrich_phone_apollo as _phone  # noqa: E402
 import enrich_contacts_apollo as _contacts  # noqa: E402
+import icp_titles as _icp_titles  # noqa: E402
 
 import json as _json
 
@@ -65,6 +66,62 @@ def expand_person_locations(selected: list[str] | None) -> list[str] | None:
             seen.add(loc)
             out.append(loc)
     return out or None
+
+# Re-exported so callers (inngest_runner's discovery_form) don't need their
+# own sys.path hookup into scripts/search_company_contacts_apollo.py just to
+# read these two enums.
+DEFAULT_SENIORITIES = _search.DEFAULT_SENIORITIES
+ALL_SENIORITIES = _search.ALL_SENIORITIES
+ALL_FUNCTIONS = _search.ALL_FUNCTIONS
+
+SENIORITY_LABELS = {
+    "owner": "Owner", "founder": "Founder", "c_suite": "C-Suite", "partner": "Partner",
+    "vp": "VP", "head": "Head", "director": "Director", "manager": "Manager",
+    "senior": "Senior", "entry": "Entry", "intern": "Intern",
+}
+FUNCTION_LABELS = {
+    "sales": "Sales", "marketing": "Marketing", "engineering": "Engineering",
+    "product_management": "Product Management", "finance": "Finance", "accounting": "Accounting",
+    "operations": "Operations", "human_resources": "Human Resources",
+    "information_technology": "Information Technology", "legal": "Legal",
+    "consulting": "Consulting", "administrative": "Administrative", "education": "Education",
+    "entrepreneurship": "Entrepreneurship", "support": "Support", "data_science": "Data Science",
+}
+SENIORITY_OPTIONS = [{"value": v, "label": SENIORITY_LABELS[v]} for v in ALL_SENIORITIES]
+FUNCTION_OPTIONS = [{"value": v, "label": FUNCTION_LABELS[v]} for v in ALL_FUNCTIONS]
+
+
+def icp_cluster_options() -> list[dict]:
+    """Cluster picker options for the discovery form - one entry per
+    scripts/icp_titles.py family (52 canonical Xoxoday title clusters derived
+    from the ABM Campaign Planner), grouped by product in the UI."""
+    return [
+        {"key": f["key"], "label": f["label"], "products": f["products"], "role": f["role"]}
+        for f in _icp_titles.FAMILIES
+    ]
+
+
+def titles_for_clusters(cluster_keys: list[str] | None) -> list[str] | None:
+    """Expand selected cluster keys into their Apollo-ready title variants
+    (deduped, order-preserving). icp_titles.py's variants are deliberately
+    broad substrings (e.g. "hr business partner" is meant to also match
+    "Senior HR Business Partner, EMEA") - callers should search/select with
+    exact_titles=False when driven by cluster variants, not a literal title
+    the user typed themselves."""
+    if not cluster_keys:
+        return None
+    titles: list[str] = []
+    seen = set()
+    for key in cluster_keys:
+        family = _icp_titles.BY_KEY.get(key)
+        if not family:
+            continue
+        for v in family["variants"]:
+            if v not in seen:
+                seen.add(v)
+                titles.append(v)
+    return titles or None
+
 
 # Local reveal caches so a re-run never re-pays Apollo for the same person:
 #   email    -> keyed name@domain (People Match, ~1 credit)
@@ -147,7 +204,8 @@ def _run_parallel(items, fn, max_workers, progress=None):
 
 def search_candidates(df: pd.DataFrame, company_col: str, domain_col: str, person_locations=None, persona_titles=None,
                        max_per_company=None, per_title_cap=None, employee_ranges=None, exact_titles=True,
-                       organization_locations=None):
+                       organization_locations=None, person_seniorities=None, person_functions=None,
+                       exclude_titles=None):
     """per_title_cap (1-3 typically) switches selection to
     select_candidates_per_persona: every title in persona_titles is guaranteed
     up to per_title_cap candidates per company, instead of ranking against the
@@ -167,7 +225,21 @@ def search_candidates(df: pd.DataFrame, company_col: str, domain_col: str, perso
     contacts at companies headquartered somewhere specific, regardless of
     where the individual contact is personally based. No region-group
     expansion is applied to it (unlike person_locations) since it's expected
-    to be specific city/state/country entries, not broad UI labels."""
+    to be specific city/state/country entries, not broad UI labels.
+
+    person_seniorities ("Management Level") and person_functions
+    ("Departments & Job Function") are real Apollo mixed_people/api_search
+    filters (see search_company_contacts_apollo.py's ALL_SENIORITIES /
+    ALL_FUNCTIONS for how each was verified) - both None keeps the prior
+    hardcoded-seniority, no-function-filter behavior.
+
+    exclude_titles is NOT an Apollo API parameter - Apollo's search has no
+    native title-exclusion filter (confirmed against their docs). This is a
+    post-filter applied to whatever Apollo returns, dropping any candidate
+    whose title contains an excluded phrase (lookalike/substring match, same
+    rule title_matches_any(exact=False) uses) before selection - so an
+    excluded candidate is never selected or counted, regardless of
+    per_title_cap mode."""
     session = requests.Session()
     session.mount("https://", requests.adapters.HTTPAdapter(max_retries=0))
 
@@ -184,7 +256,10 @@ def search_candidates(df: pd.DataFrame, company_col: str, domain_col: str, perso
         old_personas, old_cap = _search.PERSONAS, _search.MAX_PER_COMPANY
         _search.PERSONAS, _search.MAX_PER_COMPANY = personas, cap
         try:
-            people = _search.search_people(session, domain, person_locations, employee_ranges, organization_locations)
+            people = _search.search_people(session, domain, person_locations, employee_ranges, organization_locations,
+                                            person_seniorities, person_functions)
+            if exclude_titles:
+                people = [p for p in people if not title_matches_any(p.get("title"), exclude_titles, exact=False)]
             if per_title_cap:
                 selected = _search.select_candidates_per_persona(people, personas, per_title_cap, exact=exact_titles)
             else:

@@ -954,6 +954,12 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                     employee_ranges = employee_ranges_from_idea
                     exact_titles = exact_titles_from_idea
                     organization_locations = organization_locations_from_idea
+                    # No management-level/department/exclude-titles ask on the
+                    # wizard path yet - keep prior behavior (hardcoded default
+                    # seniorities, no function filter, no exclusions).
+                    person_seniorities = None
+                    person_functions = None
+                    exclude_titles = None
                     per_title_cap = 2
                 else:
                     employee_ranges = None  # discovery_form doesn't collect this (out of scope, see plan)
@@ -993,16 +999,47 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                                     "placeholder": "e.g. Austin, Texas; Bengaluru, India",
                                     "default": "",
                                 },
+                                "icp_clusters": {
+                                    "label": "ICP cluster (optional - pick canonical Xoxoday persona "
+                                    "clusters to target; each expands into real Apollo-ready job title "
+                                    "variants, merged with anything typed above)",
+                                    "options": apollo_enrich.icp_cluster_options(),
+                                    "default": [],
+                                },
+                                "management_level": {
+                                    "label": "Management Level",
+                                    "options": apollo_enrich.SENIORITY_OPTIONS,
+                                    "default": apollo_enrich.DEFAULT_SENIORITIES,
+                                },
+                                "departments": {
+                                    "label": "Departments & Job Function (optional)",
+                                    "options": apollo_enrich.FUNCTION_OPTIONS,
+                                    "default": [],
+                                },
+                                "exclude_titles": {
+                                    "label": "Job titles to exclude (optional, comma-separated - Apollo "
+                                    "has no native exclude filter, so this drops matching candidates "
+                                    "from the results after search)",
+                                    "placeholder": "e.g. intern, assistant",
+                                    "default": "",
+                                },
                             },
                         },
                     )
                     form_answer = form_answer or {}
-                    persona_titles = [t.strip() for t in str(form_answer.get("persona_titles", "")).split(",") if t.strip()] or None
+                    manual_titles = [t.strip() for t in str(form_answer.get("persona_titles", "")).split(",") if t.strip()]
+                    cluster_keys = form_answer.get("icp_clusters") or []
+                    cluster_titles = apollo_enrich.titles_for_clusters(cluster_keys) or []
+                    persona_titles = list(dict.fromkeys(manual_titles + cluster_titles)) or None
                     try:
                         per_title_cap = max(1, min(int(form_answer.get("per_title_cap") or 2), 3))
                     except (TypeError, ValueError):
                         per_title_cap = 2
-                    exact_titles = not _truthy(form_answer.get("include_lookalikes"))
+                    # ICP clusters expand to deliberately broad substrings (see
+                    # icp_titles.py) - exact word-set matching would miss most
+                    # real titles against them, so picking a cluster forces
+                    # lookalike mode regardless of the checkbox.
+                    exact_titles = not _truthy(form_answer.get("include_lookalikes")) and not cluster_keys
                     raw_locations = form_answer.get("person_locations")
                     if isinstance(raw_locations, str):
                         person_locations = [r.strip() for r in raw_locations.split(",") if r.strip()] or None
@@ -1014,6 +1051,9 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                     # comma-split above, which is safe there since region/
                     # country names don't normally contain internal commas).
                     organization_locations = [r.strip() for r in re.split(r"[;\n]+", str(raw_org_locations or "")) if r.strip()] or None
+                    person_seniorities = [str(s).strip() for s in (form_answer.get("management_level") or []) if str(s).strip()] or None
+                    person_functions = [str(s).strip() for s in (form_answer.get("departments") or []) if str(s).strip()] or None
+                    exclude_titles = [t.strip() for t in str(form_answer.get("exclude_titles", "")).split(",") if t.strip()] or None
 
                 effective_per_title_cap = per_title_cap if persona_titles else None
 
@@ -1026,7 +1066,9 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                         ok_df, resolved_company_col, "Domain", person_locations=person_locations,
                         persona_titles=persona_titles, max_per_company=config.MAX_CONTACTS_PER_COMPANY_CAP,
                         per_title_cap=effective_per_title_cap, employee_ranges=employee_ranges,
-                        exact_titles=exact_titles, organization_locations=organization_locations)
+                        exact_titles=exact_titles, organization_locations=organization_locations,
+                        person_seniorities=person_seniorities, person_functions=person_functions,
+                        exclude_titles=exclude_titles)
                     return _nan_safe({"records": found_df.to_dict("records"), "search_stats": search_stats})
 
                 search_result = await step.run("search_candidates", _search)

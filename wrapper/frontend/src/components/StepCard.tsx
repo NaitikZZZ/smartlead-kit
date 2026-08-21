@@ -3,6 +3,7 @@ import type { PendingQuestion } from "../lib/types";
 import { answerQuestion } from "../lib/api";
 import LocationMultiSelect from "./LocationMultiSelect";
 import AddCustomChip from "./AddCustomChip";
+import ClusterMultiSelect from "./ClusterMultiSelect";
 
 const KIND_LABEL: Record<string, string> = { project: "Project", partner: "Partner", event: "Event" };
 
@@ -21,6 +22,10 @@ export default function StepCard({
   const [formIncludeLookalikes, setFormIncludeLookalikes] = useState<boolean>(fields?.include_lookalikes?.default ?? false);
   const [formRegions, setFormRegions] = useState<string[]>(fields?.person_locations?.default ?? []);
   const [formOrgLocations, setFormOrgLocations] = useState<string>(fields?.organization_locations?.default ?? "");
+  const [formClusters, setFormClusters] = useState<string[]>(fields?.icp_clusters?.default ?? []);
+  const [formManagementLevel, setFormManagementLevel] = useState<string[]>(fields?.management_level?.default ?? []);
+  const [formDepartments, setFormDepartments] = useState<string[]>(fields?.departments?.default ?? []);
+  const [formExcludeTitles, setFormExcludeTitles] = useState<string>(fields?.exclude_titles?.default ?? "");
   const [icpTitles, setIcpTitles] = useState<string[]>(fields?.job_titles?.default ?? []);
   const [icpRegions, setIcpRegions] = useState<string[]>(fields?.regions?.default ?? []);
   const [icpEmployeeSizes, setIcpEmployeeSizes] = useState<string[]>(fields?.employee_sizes?.default ?? []);
@@ -378,6 +383,84 @@ export default function StepCard({
             </div>
           )}
 
+          {fields.icp_clusters && (
+            <div>
+              <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                {fields.icp_clusters.label}
+              </label>
+              <ClusterMultiSelect
+                options={fields.icp_clusters.options || []}
+                selected={formClusters}
+                onChange={setFormClusters}
+                disabled={submitting}
+              />
+            </div>
+          )}
+
+          {fields.management_level && (
+            <div>
+              <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                {fields.management_level.label}
+              </label>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {(fields.management_level.options as { value: string; label: string }[]).map((opt) => (
+                  <label key={opt.value} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={formManagementLevel.includes(opt.value)}
+                      onChange={() =>
+                        setFormManagementLevel((cur) =>
+                          cur.includes(opt.value) ? cur.filter((v) => v !== opt.value) : [...cur, opt.value]
+                        )
+                      }
+                      style={{ width: "auto" }}
+                    />
+                    {opt.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {fields.departments && (
+            <div>
+              <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                {fields.departments.label}
+              </label>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {(fields.departments.options as { value: string; label: string }[]).map((opt) => (
+                  <label key={opt.value} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={formDepartments.includes(opt.value)}
+                      onChange={() =>
+                        setFormDepartments((cur) =>
+                          cur.includes(opt.value) ? cur.filter((v) => v !== opt.value) : [...cur, opt.value]
+                        )
+                      }
+                      style={{ width: "auto" }}
+                    />
+                    {opt.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {fields.exclude_titles && (
+            <div>
+              <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                {fields.exclude_titles.label}
+              </label>
+              <input
+                type="text"
+                value={formExcludeTitles}
+                onChange={(e) => setFormExcludeTitles(e.target.value)}
+                placeholder={fields.exclude_titles?.placeholder || ""}
+              />
+            </div>
+          )}
+
           <div>
             <button
               className="btn-primary"
@@ -389,6 +472,10 @@ export default function StepCard({
                   include_lookalikes: formIncludeLookalikes,
                   person_locations: formRegions,
                   organization_locations: formOrgLocations,
+                  icp_clusters: formClusters,
+                  management_level: formManagementLevel,
+                  departments: formDepartments,
+                  exclude_titles: formExcludeTitles,
                 })
               }
             >
