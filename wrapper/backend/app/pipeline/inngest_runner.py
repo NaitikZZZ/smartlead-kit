@@ -1323,7 +1323,14 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         # seniority via enrich_candidates' full Apollo response - this gap
         # only exists for a sheet that came in already named/emailed, where
         # enrich_existing_contacts only ever kept the email field.
-        missing_details_count = apollo_enrich.count_missing_details(core_df)
+        #
+        # count_missing_details free-checks Apollo's bulk_match-by-email tier
+        # live before counting a row against the paid estimate (network call,
+        # so it's wrapped in step.run() like any other non-deterministic work).
+        async def _count_missing_details():
+            return apollo_enrich.count_missing_details(core_df)
+
+        missing_details_count = await step.run("count_missing_details", _count_missing_details)
         if missing_details_count == 0:
             await _set_stat(step, "stat_details_no_gaps", run_id, "existing_contact_details",
                              {"skipped": True, "reason": "no missing details", "missing": 0})
@@ -1332,8 +1339,8 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             details_answer = await _ask(
                 step, run_id, "fill_missing_details_needed", "yes_no",
                 f"{missing_details_count} contact(s) are missing details like LinkedIn URL, company LinkedIn, "
-                f"industry, seniority, or department. Fill them via Apollo "
-                f"(~{details_est['credits']} credits, ${details_est['usd']})?",
+                f"industry, seniority, or department (after checking Apollo's free bulk-match-by-email tier "
+                f"first). Fill them via Apollo (~{details_est['credits']} credits, ${details_est['usd']})?",
                 default="yes", context={"step": "reveal", "estimate": details_est, "missing": missing_details_count},
             )
             if _truthy(details_answer):
@@ -1354,8 +1361,9 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                 await _set_stat(step, "stat_details_filled", run_id, "existing_contact_details", details_stats)
                 await _set_step(
                     step, "step_details_done", run_id, "reveal", "Email Reveal & Validation", "done",
-                    f"Filled {details_stats.get('fields_filled', 0)} missing detail field(s) "
-                    f"across {details_stats.get('paid_lookups', 0)} contact(s).",
+                    f"Filled {details_stats.get('fields_filled', 0)} missing detail field(s) across "
+                    f"{details_stats.get('free_lookups', 0)} free lookup(s) + {details_stats.get('paid_lookups', 0)} "
+                    "paid lookup(s).",
                     cost=details_cost,
                 )
             else:

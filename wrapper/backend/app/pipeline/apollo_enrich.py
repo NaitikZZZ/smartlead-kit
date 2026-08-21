@@ -357,31 +357,69 @@ def _extract_details(p: dict) -> dict:
     }
 
 
-def count_missing_details(df: pd.DataFrame, domain_col: str = "Domain") -> int:
-    """How many rows are missing at least one of DETAIL_COLUMNS and have a
-    domain to look up against - what fill_missing_details would actually
-    spend Apollo credits on. A row already complete, or with no domain, is
-    free/skipped and not counted."""
+def _bulk_match_resolves_row(row, details: dict) -> bool:
+    """True if `details` (from a free bulk_match hit) would leave no
+    DETAIL_COLUMNS gap in `row` - used by both count_missing_details and
+    fill_missing_details to decide whether the free tier alone was enough,
+    or the paid people/match fallback is still needed for this row."""
+    return all(not _is_blank(row.get(c)) or details.get(c) for c in DETAIL_COLUMNS)
+
+
+def count_missing_details(df: pd.DataFrame, domain_col: str = "Domain", email_col: str = "email",
+                          max_workers: int = DEFAULT_WORKERS) -> int:
+    """Accurate pre-run estimate of what fill_missing_details' PAID tier
+    would spend: rows still missing a DETAIL_COLUMNS field after a live,
+    free bulk_match-by-email precheck (mirrors
+    domain_resolution.count_needs_apollo's philosophy - check the free
+    option live before counting something as a credit), that also have a
+    domain to fall back to the paid people/match tier with."""
+    rows_missing = [(i, row) for i, row in df.iterrows() if _row_missing_details(row)]
+    if not rows_missing:
+        return 0
+
+    session = requests.Session()
+    session.mount("https://", requests.adapters.HTTPAdapter(max_retries=0, pool_maxsize=max_workers))
+
+    emails_by_idx = {
+        i: str(row.get(email_col)).strip().lower()
+        for i, row in rows_missing if not _is_blank(row.get(email_col))
+    }
+    resolved_idx = set()
+    if emails_by_idx:
+        bulk_results = _contacts.bulk_match_by_email(session, list(set(emails_by_idx.values())))
+        for i, email in emails_by_idx.items():
+            match = bulk_results.get(email)
+            if match and _bulk_match_resolves_row(df.loc[i], _extract_details(match)):
+                resolved_idx.add(i)
+
     n = 0
-    for _, row in df.iterrows():
-        if not _row_missing_details(row):
-            continue
-        if _is_blank(row.get(domain_col)):
+    for i, row in rows_missing:
+        if i in resolved_idx or _is_blank(row.get(domain_col)):
             continue
         n += 1
     return n
 
 
 def fill_missing_details(df: pd.DataFrame, first_col: str, last_col: str, domain_col: str = "Domain",
-                         progress=None, max_workers: int = DEFAULT_WORKERS):
+                         email_col: str = "email", progress=None, max_workers: int = DEFAULT_WORKERS):
     """Backfills LinkedIn URL, company LinkedIn URL, industry, seniority, and
-    department for an already-enriched sheet's contacts, from the same
-    Apollo people/match call enrich_existing_contacts already makes for
-    email - that response carries all of this, but only email was ever kept.
-    Only queries Apollo for rows genuinely missing at least one of these
-    fields (per whatever the CSV already had); a row that's already complete
-    is skipped for free. Never overwrites a value the sheet already had -
-    only fills blanks."""
+    department for an already-enriched sheet's contacts, in two tiers,
+    cheapest first:
+
+      1. Apollo's bulk_match, queried BY EMAIL for any row that already has
+         one. Per Apollo's own docs and this kit's established usage (see
+         scripts/01_apollo_bulk_lookup.py, "Zero credit cost"), enriching a
+         contact by an email you already possess doesn't cost a credit -
+         unlike asking Apollo to find/reveal an email from a name+domain
+         guess, which always does (confirmed: even leaving reveal flags
+         unset, people/match still charges once it matches a person with
+         email/demographics).
+      2. Apollo's people/match by name+domain (~1 credit) - the original,
+         costed path - only for rows tier 1 couldn't fully resolve (no
+         email to query with, or bulk_match found nothing/incomplete).
+
+    Only touches rows genuinely missing at least one DETAIL_COLUMNS field;
+    never overwrites a value the sheet already had."""
     session = requests.Session()
     session.mount("https://", requests.adapters.HTTPAdapter(max_retries=0, pool_maxsize=max_workers))
     cache = _load_cache(_DETAILS_CACHE)
@@ -391,6 +429,32 @@ def fill_missing_details(df: pd.DataFrame, first_col: str, last_col: str, domain
         if col not in out.columns:
             out[col] = None
 
+    def _apply(i, details) -> int:
+        n = 0
+        for col in DETAIL_COLUMNS:
+            if _is_blank(out.at[i, col]) and details.get(col):
+                out.at[i, col] = details[col]
+                n += 1
+        return n
+
+    fields_filled = 0
+
+    # Tier 1: free bulk_match by email.
+    email_candidates = [
+        (i, str(row.get(email_col)).strip().lower())
+        for i, row in out.iterrows()
+        if _row_missing_details(row) and not _is_blank(row.get(email_col))
+    ]
+    free_lookups = len(email_candidates)
+    if email_candidates:
+        bulk_results = _contacts.bulk_match_by_email(session, [e for _, e in email_candidates])
+        for i, email in email_candidates:
+            match = bulk_results.get(email)
+            if match:
+                fields_filled += _apply(i, _extract_details(match))
+
+    # Tier 2: paid people/match by name+domain, only for rows still missing
+    # something (tier 1 skipped or fell short) that have a domain to query.
     tasks = []
     for i, row in out.iterrows():
         if not _row_missing_details(row):
@@ -399,11 +463,8 @@ def fill_missing_details(df: pd.DataFrame, first_col: str, last_col: str, domain
         if _is_blank(domain):
             continue
         key = _phone.cache_key(row.get(first_col), row.get(last_col), domain)
-        if key in cache:  # reuse prior lookup -> free
-            details = cache[key]
-            for col in DETAIL_COLUMNS:
-                if _is_blank(out.at[i, col]) and details.get(col):
-                    out.at[i, col] = details[col]
+        if key in cache:  # reuse prior paid lookup -> free
+            fields_filled += _apply(i, cache[key])
             continue
         tasks.append((i, row.get(first_col), row.get(last_col), domain, key))
 
@@ -413,17 +474,16 @@ def fill_missing_details(df: pd.DataFrame, first_col: str, last_col: str, domain
         return i, (_extract_details(p), key), (first or "")
 
     result_map = _run_parallel(tasks, _one, max_workers, progress)
-    filled_fields = 0
     for i, (details, key) in result_map.items():
         cache[key] = details
-        for col in DETAIL_COLUMNS:
-            if _is_blank(out.at[i, col]) and details.get(col):
-                out.at[i, col] = details[col]
-                filled_fields += 1
+        fields_filled += _apply(i, details)
     if result_map:
         _save_cache(_DETAILS_CACHE, cache)
 
-    return out, {"paid_lookups": len(tasks), "fields_filled": filled_fields, "total": len(out)}
+    return out, {
+        "free_lookups": free_lookups, "paid_lookups": len(tasks),
+        "fields_filled": fields_filled, "total": len(out),
+    }
 
 
 def title_matches_any(title: str, target_titles: list[str], exact: bool = True) -> bool:

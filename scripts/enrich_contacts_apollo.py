@@ -89,6 +89,38 @@ def enrich(session, first, last, domain, apollo_id=None):
         return {}
 
 
+_BULK_MATCH_BATCH_SIZE = 10  # matches scripts/01_apollo_bulk_lookup.py's established rate
+
+
+def bulk_match_by_email(session, emails):
+    """Free-tier enrichment via /people/bulk_match, keyed by an email you
+    ALREADY have - not a name+domain guess Apollo has to find. Confirmed via
+    Apollo's own docs and this kit's established usage (see
+    scripts/01_apollo_bulk_lookup.py, "Zero credit cost"): enriching a
+    contact by an email you already possess doesn't consume a credit, unlike
+    people/match's name+domain path, which charges 1 credit whenever it
+    finds/reveals an email (see enrich()'s docstring context). Returns
+    {email_lower: match_dict_or_None}; failures degrade to None per email
+    rather than raising, since this is always a best-effort free tier."""
+    results = {}
+    for i in range(0, len(emails), _BULK_MATCH_BATCH_SIZE):
+        batch = emails[i:i + _BULK_MATCH_BATCH_SIZE]
+        try:
+            r = session.post(
+                'https://api.apollo.io/api/v1/people/bulk_match',
+                headers={'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': APOLLO_KEY},
+                json={'details': [{'email': e} for e in batch], 'reveal_personal_emails': False},
+                timeout=(10, 30),
+            )
+            matches = r.json().get('matches', []) if r.ok else [None] * len(batch)
+        except Exception:
+            matches = [None] * len(batch)
+        for email, match in zip(batch, matches):
+            results[email] = match
+        time.sleep(0.3)
+    return results
+
+
 def domain_match_check(email, target_domain):
     """Returns (accepted_email, note). Never trusts an email whose domain
     disagrees with the company domain we queried against - unless it's a
