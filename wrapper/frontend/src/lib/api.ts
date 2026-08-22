@@ -40,6 +40,27 @@ export interface UploadedCsv {
   pathname: string;
 }
 
+/** A bare fetch() rejects (rather than resolving with a non-ok response) on
+ * a connection-level failure - DNS, dropped wifi, a proxy/VPN hiccup - and
+ * the browser's own rejection message is the unhelpful, identical-looking
+ * "Failed to fetch" in every browser, with no indication of which of the
+ * two network hops (our backend vs. Vercel Blob's own storage endpoint)
+ * failed or why. Retrying once after a short delay is worth it here since
+ * these are typically transient; only a real (non-network) error propagates
+ * immediately. */
+async function fetchWithRetry(url: string, init: RequestInit, label: string, retries = 1): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetch(url, init);
+    } catch (e) {
+      if (attempt >= retries) {
+        throw new Error(`Network error ${label} - check your connection and try again.`);
+      }
+      await new Promise((r) => setTimeout(r, 800));
+    }
+  }
+}
+
 /** Uploads a CSV straight from the browser to Vercel Blob, bypassing our own
  * backend. Vercel caps a serverless function's request body at 4.5MB (hard,
  * not configurable), so POSTing a real Apollo export to /api/runs 413s at the
@@ -47,11 +68,11 @@ export interface UploadedCsv {
  * pathname, then PUTs the bytes directly. Returns what startRun() needs to
  * point the pipeline at the uploaded file. */
 export async function uploadCsvDirect(file: File): Promise<UploadedCsv> {
-  const tokenRes = await fetch(`${API_BASE}/api/runs/upload-token`, {
+  const tokenRes = await fetchWithRetry(`${API_BASE}/api/runs/upload-token`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ filename: file.name, content_type: file.type || "text/csv" }),
-  });
+  }, "requesting an upload token");
   if (!tokenRes.ok) {
     const body = await tokenRes.json().catch(() => ({}));
     throw new Error(body.detail || `Could not start upload (${tokenRes.status})`);
@@ -61,7 +82,7 @@ export async function uploadCsvDirect(file: File): Promise<UploadedCsv> {
   // Header set is exact and was established empirically - see
   // vercel_blob.create_client_token's docstring. x-vercel-blob-access is
   // required (the store is private); omitting it fails the PUT.
-  const putRes = await fetch(t.upload_url, {
+  const putRes = await fetchWithRetry(t.upload_url, {
     method: "PUT",
     headers: {
       authorization: `Bearer ${t.token}`,
@@ -71,7 +92,7 @@ export async function uploadCsvDirect(file: File): Promise<UploadedCsv> {
       "x-content-type": t.content_type,
     },
     body: file,
-  });
+  }, "uploading the file to storage");
   if (!putRes.ok) {
     const body = await putRes.json().catch(() => ({}));
     throw new Error(body?.error?.message || `Upload failed (${putRes.status})`);

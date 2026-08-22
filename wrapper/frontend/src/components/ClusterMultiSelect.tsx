@@ -29,6 +29,15 @@ export default function ClusterMultiSelect({
     onChange(selected.includes(key) ? selected.filter((x) => x !== key) : [...selected, key]);
   }
 
+  function selectAll(keys: string[]) {
+    onChange(Array.from(new Set([...selected, ...keys])));
+  }
+
+  function clearAll(keys: string[]) {
+    const drop = new Set(keys);
+    onChange(selected.filter((x) => !drop.has(x)));
+  }
+
   const byProduct: Record<string, ClusterOption[]> = {};
   for (const opt of options) {
     for (const p of opt.products) {
@@ -55,20 +64,50 @@ export default function ClusterMultiSelect({
           className="card"
           style={{ position: "absolute", zIndex: 20, top: "calc(100% + 4px)", left: 0, right: 0, maxHeight: 360, overflowY: "auto", padding: 12 }}
         >
-          {Object.entries(byProduct).map(([product, opts]) => (
-            <div key={product} style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--dark-200)", marginBottom: 6, textTransform: "uppercase" }}>
-                {product}
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginBottom: 8, fontSize: 12 }}>
+            <button
+              type="button"
+              onClick={() => selectAll(options.map((o) => o.key))}
+              style={{ background: "none", border: "none", color: "var(--accent, #2563eb)", cursor: "pointer", padding: 0 }}
+            >
+              Select all
+            </button>
+            <button
+              type="button"
+              onClick={() => clearAll(options.map((o) => o.key))}
+              style={{ background: "none", border: "none", color: "var(--accent, #2563eb)", cursor: "pointer", padding: 0 }}
+            >
+              Clear all
+            </button>
+          </div>
+
+          {Object.entries(byProduct).map(([product, opts]) => {
+            const groupKeys = opts.map((o) => o.key);
+            const allSelected = groupKeys.every((k) => selected.includes(k));
+            return (
+              <div key={product} style={{ marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--dark-200)", textTransform: "uppercase" }}>
+                    {product}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => (allSelected ? clearAll(groupKeys) : selectAll(groupKeys))}
+                    style={{ background: "none", border: "none", color: "var(--accent, #2563eb)", cursor: "pointer", padding: 0, fontSize: 11 }}
+                  >
+                    {allSelected ? "Clear all" : "Select all"}
+                  </button>
+                </div>
+                {opts.map((opt) => (
+                  <label key={opt.key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13, cursor: "pointer" }}>
+                    <input type="checkbox" checked={selected.includes(opt.key)} onChange={() => toggle(opt.key)} style={{ width: "auto" }} />
+                    {opt.label}
+                    <span style={{ fontSize: 11, color: "var(--dark-200)" }}>({opt.role})</span>
+                  </label>
+                ))}
               </div>
-              {opts.map((opt) => (
-                <label key={opt.key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13, cursor: "pointer" }}>
-                  <input type="checkbox" checked={selected.includes(opt.key)} onChange={() => toggle(opt.key)} style={{ width: "auto" }} />
-                  {opt.label}
-                  <span style={{ fontSize: 11, color: "var(--dark-200)" }}>({opt.role})</span>
-                </label>
-              ))}
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
