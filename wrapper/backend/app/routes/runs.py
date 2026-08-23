@@ -2,6 +2,7 @@ import json
 import math
 import mimetypes
 import os
+import re
 import time
 import traceback
 import uuid
@@ -237,6 +238,24 @@ def answer_question(run_id: str, body: AnswerRequest):
     return _to_status(run_id, engine)
 
 
+_FILENAME_UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def _download_filename(run_id: str, filename: str) -> str:
+    """Prefixes the downloaded filename with the run's campaign title (e.g.
+    "P0_ABM_..._email_upload.csv" instead of a bare "email_upload.csv"), so
+    a user with several runs' files downloaded has an easy way to tell which
+    campaign each one belongs to. Falls back to the bare filename when no
+    campaign title is on record (e.g. a run that never reached the naming
+    step, or the legacy hubspot_project engine, which doesn't track this)."""
+    job = run_status.get(run_id)
+    title = (job.get("stats") or {}).get("campaign_title") if job else None
+    if not title:
+        return filename
+    safe_title = _FILENAME_UNSAFE.sub("_", str(title)).strip("._ ")
+    return f"{safe_title}_{filename}" if safe_title else filename
+
+
 @router.get("/{run_id}/files/{filename}")
 def download_file(run_id: str, filename: str):
     run_dir = config.RUNS_DIR / run_id
@@ -244,9 +263,10 @@ def download_file(run_id: str, filename: str):
         raise HTTPException(404, "File not found")
     content = outputs.read_file(run_dir, filename)
     media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    download_name = _download_filename(run_id, filename)
     return Response(
         content=content, media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
     )
 
 

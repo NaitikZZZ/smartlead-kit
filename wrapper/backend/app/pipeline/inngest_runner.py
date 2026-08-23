@@ -1500,6 +1500,11 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         default=suggested_title, context={"step": "outputs"},
     )
     campaign_title = str(campaign_title).strip() or suggested_title
+    # Stored so the file-download route can prefix downloaded filenames with
+    # it (e.g. "P0_ABM_..._email_upload.csv" instead of a bare
+    # "email_upload.csv") - otherwise a user with several runs open has no
+    # way to tell which campaign a downloaded file belongs to.
+    await _set_stat(step, "stat_campaign_title", run_id, "campaign_title", campaign_title)
 
     await _status(step, "status_assembling_outputs", run_id, stage="assembling_outputs", message="Writing output files")
     await _set_step(step, "step_outputs_running", run_id, "outputs", "Output Files & Name", "running")
