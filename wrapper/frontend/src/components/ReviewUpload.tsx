@@ -31,10 +31,13 @@ function parseCsv(text: string, maxRows: number): string[][] {
   return rows;
 }
 
+const EXCLUDED_PAGE_SIZE = 50;
+
 export default function ReviewUpload({ run, onImported }: { run: RunStatus; onImported: () => void }) {
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<string[][] | null>(null);
+  const [excludedPage, setExcludedPage] = useState(0);
 
   const counts = (run.stats?.channel_counts ?? {}) as Record<string, number>;
   const imported = run.stage === "done";
@@ -137,19 +140,47 @@ export default function ReviewUpload({ run, onImported }: { run: RunStatus; onIm
             )}{" "}
             - these were removed and not uploaded.
           </p>
-          <table className="kv-table">
-            <thead><tr><th>Company</th><th>Domain</th><th>Why excluded</th></tr></thead>
-            <tbody>
-              {excludedRows.slice(0, 50).map((r, i) => (
-                <tr key={i}><td>{r.company}</td><td>{r.domain}</td><td>{r.reason}</td></tr>
-              ))}
-            </tbody>
-          </table>
+          {(() => {
+            const pageCount = Math.max(1, Math.ceil(excludedRows.length / EXCLUDED_PAGE_SIZE));
+            const page = Math.min(excludedPage, pageCount - 1);
+            const start = page * EXCLUDED_PAGE_SIZE;
+            const pageRows = excludedRows.slice(start, start + EXCLUDED_PAGE_SIZE);
+            return (
+              <>
+                <table className="kv-table">
+                  <thead><tr><th>Company</th><th>Domain</th><th>Why excluded</th></tr></thead>
+                  <tbody>
+                    {pageRows.map((r, i) => (
+                      <tr key={start + i}><td>{r.company}</td><td>{r.domain}</td><td>{r.reason}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+                {pageCount > 1 && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10 }}>
+                    <button
+                      className="btn-secondary"
+                      disabled={page === 0}
+                      onClick={() => setExcludedPage((p) => Math.max(0, p - 1))}
+                    >
+                      ← Prev
+                    </button>
+                    <span style={{ fontSize: 12, color: "var(--dark-200)" }}>
+                      Page {page + 1} of {pageCount} (rows {start + 1}-{start + pageRows.length} of {excludedRows.length})
+                    </span>
+                    <button
+                      className="btn-secondary"
+                      disabled={page >= pageCount - 1}
+                      onClick={() => setExcludedPage((p) => Math.min(pageCount - 1, p + 1))}
+                    >
+                      Next →
+                    </button>
+                  </div>
+                )}
+              </>
+            );
+          })()}
           {excl.excluded > excludedRows.length && (
             <p style={{ fontSize: 12, marginTop: 8 }}>+{excl.excluded - excludedRows.length} more excluded (full list in the run summary).</p>
-          )}
-          {excludedRows.length > 50 && (
-            <p style={{ fontSize: 12, marginTop: 8 }}>Showing first 50 of {excludedRows.length}.</p>
           )}
         </div>
       )}
