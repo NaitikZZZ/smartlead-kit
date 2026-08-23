@@ -121,6 +121,117 @@ def demographics_for(country, state, city) -> str | None:
     return DEMOGRAPHICS_FALLBACK
 
 
+# Contact property "country" is ALSO a locked enumeration on the live Xoxoday
+# portal (confirmed via a read-only properties lookup, 247 allowed values) -
+# same failure mode as demographics above: sending anything not in this exact
+# set 400s the WHOLE batch, not just the one bad row (confirmed live: a
+# single "North Macedonia" - a real, current country name Apollo returns -
+# failed an entire run's HubSpot upload, silently dropping every contact in
+# it, not just the Macedonian one). The list itself is old (pre-2019 ISO
+# short names in several places - "Macedonia (FYROM)" instead of "North
+# Macedonia", "Czech Republic" not "Czechia", "Swaziland" not "Eswatini"),
+# so this mismatch class isn't a one-off - it recurs for any country that's
+# been renamed or has a common alternate name since HubSpot's list was built.
+HUBSPOT_COUNTRY_OPTIONS = {
+    "Afghanistan", "Åland Islands", "Albania", "Algeria", "American Samoa", "Andorra", "Angola",
+    "Anguilla", "Antarctica", "Antigua and Barbuda", "Argentina", "Armenia", "Aruba",
+    "Asia/Pacific Region", "Australia", "Austria", "Azerbaijan", "Bahamas", "Bahrain", "Bangladesh",
+    "Barbados", "Belarus", "Belgium", "Belize", "Benin", "Bermuda", "Bhutan", "Bolivia",
+    "Bosnia and Herzegovina", "Botswana", "Bouvet Island", "Brazil", "British Indian Ocean Territory",
+    "British Virgin Islands", "Brunei", "Bulgaria", "Burkina Faso", "Burundi", "Cambodia", "Cameroon",
+    "Canada", "Cape Verde", "Caribbean Netherlands", "Cayman Islands", "Central African Republic",
+    "Chad", "Chile", "China", "Christmas Island", "Cocos (Keeling) Islands", "Colombia", "Comoros",
+    "Congo", "Cook Islands", "Costa Rica", "Cote d'Ivoire", "Croatia", "Cuba", "Curaçao", "Cyprus",
+    "Czech Republic", "Democratic Republic of the Congo", "Denmark", "Djibouti", "Dominica",
+    "Dominican Republic", "East Timor", "Ecuador", "Egypt", "El Salvador", "Equatorial Guinea",
+    "Eritrea", "Estonia", "Ethiopia", "Europe", "Falkland Islands", "Faroe Islands", "Fiji", "Finland",
+    "France", "French Guiana", "French Polynesia", "French Southern and Antarctic Lands", "Gabon",
+    "Gambia", "Georgia", "Germany", "Ghana", "Gibraltar", "Greece", "Greenland", "Grenada",
+    "Guadeloupe", "Guam", "Guatemala", "Guernsey", "Guinea", "Guinea-Bissau", "Guyana", "Haiti",
+    "Heard Island and McDonald Islands", "Honduras", "Hong Kong", "Hungary", "Iceland", "India",
+    "Indonesia", "Iran", "Iraq", "Ireland", "Isle of Man", "Israel", "Italy", "Jamaica", "Japan",
+    "Jersey", "Jordan", "Kazakhstan", "Kenya", "Kiribati", "Kosovo", "Kuwait", "Kyrgyzstan", "Laos",
+    "Latvia", "Lebanon", "Lesotho", "Liberia", "Libya", "Liechtenstein", "Lithuania", "Luxembourg",
+    "Macau", "Macedonia (FYROM)", "Madagascar", "Malawi", "Malaysia", "Maldives", "Mali", "Malta",
+    "Marshall Islands", "Martinique", "Mauritania", "Mauritius", "Mayotte", "Mexico", "Micronesia",
+    "Moldova", "Monaco", "Mongolia", "Montenegro", "Montserrat", "Morocco", "Mozambique",
+    "Myanmar (Burma)", "Namibia", "Nauru", "Nepal", "Netherlands", "Netherlands Antilles",
+    "New Caledonia", "New Zealand", "Nicaragua", "Niger", "Nigeria", "Niue", "Norfolk Island",
+    "North Korea", "Northern Mariana Islands", "Norway", "Oman", "Pakistan", "Palau", "Palestine",
+    "Panama", "Papua New Guinea", "Paraguay", "Peru", "Philippines", "Pitcairn Islands", "Poland",
+    "Portugal", "Puerto Rico", "Qatar", "Réunion", "Romania", "Russia", "Rwanda",
+    "Saint Barthélemy", "Saint Helena", "Saint Kitts and Nevis", "Saint Lucia", "Saint Martin",
+    "Saint Pierre and Miquelon", "Saint Vincent and the Grenadines", "Samoa", "San Marino",
+    "Sao Tome and Principe", "Saudi Arabia", "Senegal", "Serbia", "Seychelles", "Sierra Leone",
+    "Singapore", "Sint Maarten", "Slovakia", "Slovenia", "Solomon Islands", "Somalia", "South Africa",
+    "South Georgia and the South Sandwich Islands", "South Korea", "South Sudan", "Spain",
+    "Sri Lanka", "Sudan", "Suriname", "Svalbard and Jan Mayen", "Swaziland", "Sweden", "Switzerland",
+    "Syria", "Taiwan", "Tajikistan", "Tanzania", "Thailand", "Togo", "Tokelau", "Tonga",
+    "Trinidad and Tobago", "Tunisia", "Turkey", "Turkmenistan", "Turks and Caicos Islands", "Tuvalu",
+    "U.S. Virgin Islands", "Uganda", "Ukraine", "United Arab Emirates", "United Kingdom",
+    "United States", "United States Minor Outlying Islands", "Uruguay", "Uzbekistan", "Vanuatu",
+    "Vatican City", "Venezuela", "Vietnam", "Wallis and Futuna", "Western Sahara", "Yemen", "Zambia",
+    "Zimbabwe", "MENAT", "APAC", "AFRICA", "NAM", "LATAM",
+}
+_HUBSPOT_COUNTRY_LOOKUP = {v.lower(): v for v in HUBSPOT_COUNTRY_OPTIONS}
+# Known renames/aliases where the modern/common name (what Apollo and most
+# real-world data sources use) differs from HubSpot's older picklist label.
+# Not exhaustive by design - anything not covered here or matched
+# case-insensitively above just falls through normalize_hubspot_country's
+# "drop rather than risk breaking the batch" rule below.
+_HUBSPOT_COUNTRY_ALIASES = {
+    "north macedonia": "Macedonia (FYROM)",
+    "czechia": "Czech Republic",
+    "eswatini": "Swaziland",
+    "cabo verde": "Cape Verde",
+    "timor-leste": "East Timor",
+    "ivory coast": "Cote d'Ivoire",
+    "myanmar": "Myanmar (Burma)",
+    "burma": "Myanmar (Burma)",
+    "micronesia, federated states of": "Micronesia",
+    "federated states of micronesia": "Micronesia",
+    "the bahamas": "Bahamas",
+    "the gambia": "Gambia",
+    "democratic republic of congo": "Democratic Republic of the Congo",
+    "republic of the congo": "Congo",
+    "republic of korea": "South Korea",
+    "korea, republic of": "South Korea",
+    "democratic people's republic of korea": "North Korea",
+    "korea, democratic people's republic of": "North Korea",
+    "russian federation": "Russia",
+    "syrian arab republic": "Syria",
+    "iran, islamic republic of": "Iran",
+    "lao people's democratic republic": "Laos",
+    "brunei darussalam": "Brunei",
+    "holy see": "Vatican City",
+    "vatican": "Vatican City",
+    "united states of america": "United States",
+    "usa": "United States",
+    "u.s.": "United States",
+    "u.s.a.": "United States",
+    "great britain": "United Kingdom",
+    "uae": "United Arab Emirates",
+}
+
+
+def normalize_hubspot_country(raw) -> str | None:
+    """Maps a free-text country name to HubSpot's exact locked picklist
+    value, or None if it can't be confidently matched. Returning None (drop
+    the field) rather than the raw string is deliberate: a bad enum value
+    400s the entire batch upsert, not just the one contact, so a country we
+    don't recognize is far better left blank than sent raw."""
+    v = _clean_cell(raw)
+    if v is None:
+        return None
+    v = str(v).strip()
+    key = v.lower()
+    if key in _HUBSPOT_COUNTRY_LOOKUP:
+        return _HUBSPOT_COUNTRY_LOOKUP[key]
+    if key in _HUBSPOT_COUNTRY_ALIASES:
+        return _HUBSPOT_COUNTRY_ALIASES[key]
+    return None
+
+
 def build_hubspot_import_file(enriched_df: pd.DataFrame, campaign_title: str) -> pd.DataFrame:
     """Mirrors the mapping validated against the live Xoxoday HubSpot portal
     this session - only fields with a confirmed HubSpot property. The raw
@@ -138,7 +249,7 @@ def build_hubspot_import_file(enriched_df: pd.DataFrame, campaign_title: str) ->
 
     rows = []
     for _, row in verified.iterrows():
-        country, state, city = clean(row.get("country")), clean(row.get("state")), clean(row.get("city"))
+        country_raw, state, city = clean(row.get("country")), clean(row.get("state")), clean(row.get("city"))
         domain = clean(row.get("company_domain")) or strip_url_prefix(clean(row.get("Domain")))
         rows.append({
             "firstname": clean(row.get("first_name")),
@@ -156,11 +267,15 @@ def build_hubspot_import_file(enriched_df: pd.DataFrame, campaign_title: str) ->
             "total_funding": clean(row.get("organization_total_funding")),
             "technologies": clean(row.get("technologies")),
             "seniority_level": SENIORITY_MAP.get(row.get("seniority")),
-            "country": country,
+            # normalize_hubspot_country can legitimately return None for a
+            # country not on HubSpot's locked list - demographics_for still
+            # uses the raw string below, since its own lookup table is
+            # separate from HubSpot's country picklist.
+            "country": normalize_hubspot_country(country_raw),
             "state": state,
             "address": clean(row.get("formatted_address")),
             "city": city,
-            "demographics": demographics_for(country, state, city),
+            "demographics": demographics_for(country_raw, state, city),
             "department___job_function__apollo_": clean(row.get("departments")),
             "campaign_title": campaign_title,
         })
