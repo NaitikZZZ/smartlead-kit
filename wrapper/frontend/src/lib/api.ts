@@ -100,6 +100,39 @@ export async function uploadCsvDirect(file: File): Promise<UploadedCsv> {
   return { runId: t.run_id, pathname: t.pathname };
 }
 
+// Stays safely under Vercel's hard 4.5MB serverless function body cap once
+// the other multipart form fields (project id, targeting JSON, etc.) are
+// added on top of the raw file bytes.
+const DIRECT_UPLOAD_FALLBACK_MAX_BYTES = 4 * 1024 * 1024;
+
+export interface ResolvedCsvUpload {
+  csvFile?: File;
+  csvBlobPathname?: string;
+  runId?: string;
+}
+
+/** Tries the direct-to-Blob upload first (works for a file of any size, but
+ * PUTs to vercel.com - a third-party domain relative to the app's own
+ * origin, which some corporate proxies/VPNs/antivirus SSL-inspection setups
+ * block even though the app's own domain works fine; confirmed this isn't a
+ * bug in the upload code itself - a fresh token + PUT from a real browser on
+ * this app's own origin succeeds cleanly). If the direct upload fails and
+ * the file is small enough, falls back to sending it inline through
+ * startRun()'s own multipart body instead - same-origin, so it sidesteps
+ * whatever blocked the direct path, at the cost of only working under
+ * Vercel's ~4.5MB function body limit. */
+export async function resolveCsvUpload(file: File): Promise<ResolvedCsvUpload> {
+  try {
+    const uploaded = await uploadCsvDirect(file);
+    return { csvBlobPathname: uploaded.pathname, runId: uploaded.runId };
+  } catch (e) {
+    if (file.size <= DIRECT_UPLOAD_FALLBACK_MAX_BYTES) {
+      return { csvFile: file };
+    }
+    throw e;
+  }
+}
+
 export interface StartRunParams {
   inputSource: "csv" | "hubspot_project" | "campaign_idea";
   csvFile?: File;

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { AppConfig, IcpOptions } from "../lib/types";
-import { startRun, uploadCsvDirect, previewProject, type ProjectPreview } from "../lib/api";
+import { startRun, resolveCsvUpload, previewProject, type ProjectPreview } from "../lib/api";
 import Tooltip from "./Tooltip";
 import CampaignIdeaWizard from "./CampaignIdeaWizard";
 
@@ -110,12 +110,15 @@ export default function SourceForm({
         }
       }
       // Upload straight to Blob first (bypasses Vercel's 4.5MB function body
-      // limit), then start the run referencing the uploaded file.
-      const uploaded = csvFile ? await uploadCsvDirect(csvFile) : undefined;
+      // limit), then start the run referencing the uploaded file. Falls back
+      // to sending the file inline if the direct upload fails and it's small
+      // enough - see resolveCsvUpload.
+      const resolved = csvFile ? await resolveCsvUpload(csvFile) : undefined;
       const run = await startRun({
         inputSource: source,
-        csvBlobPathname: uploaded?.pathname,
-        runId: uploaded?.runId,
+        csvFile: resolved?.csvFile,
+        csvBlobPathname: resolved?.csvBlobPathname,
+        runId: resolved?.runId,
         hubspotProjectId: projectId || undefined,
         companyCol: companyCol || undefined,
         domainCol: domainCol || undefined,

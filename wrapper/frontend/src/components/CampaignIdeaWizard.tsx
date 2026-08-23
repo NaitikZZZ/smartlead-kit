@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { IcpOptions, WizardTargeting } from "../lib/types";
-import { startRun, uploadCsvDirect, getIcpMapping } from "../lib/api";
+import { startRun, resolveCsvUpload, getIcpMapping } from "../lib/api";
 import { FileField } from "./SourceForm";
 import LocationMultiSelect from "./LocationMultiSelect";
 import AddCustomChip from "./AddCustomChip";
@@ -25,10 +25,10 @@ export default function CampaignIdeaWizard({
     setAiSubmitting(true);
     setAiError(null);
     try {
-      const uploaded = aiCsvFile ? await uploadCsvDirect(aiCsvFile) : undefined;
+      const resolved = aiCsvFile ? await resolveCsvUpload(aiCsvFile) : undefined;
       const run = await startRun({
         inputSource: "campaign_idea", campaignIdea: aiIdea.trim(),
-        csvBlobPathname: uploaded?.pathname, runId: uploaded?.runId,
+        csvFile: resolved?.csvFile, csvBlobPathname: resolved?.csvBlobPathname, runId: resolved?.runId,
       });
       onStarted(run.run_id);
     } catch (e: any) {
@@ -118,13 +118,14 @@ export default function CampaignIdeaWizard({
         company_names: csvFile ? undefined : companyNames,
       };
       const campaignIdea = idea.trim() || effectiveUseCase || "Campaign idea (targeting set via wizard)";
-      const uploaded = csvFile ? await uploadCsvDirect(csvFile) : undefined;
+      const resolved = csvFile ? await resolveCsvUpload(csvFile) : undefined;
       const run = await startRun({
         inputSource: "campaign_idea",
         campaignIdea,
         wizardTargeting,
-        csvBlobPathname: uploaded?.pathname,
-        runId: uploaded?.runId,
+        csvFile: resolved?.csvFile,
+        csvBlobPathname: resolved?.csvBlobPathname,
+        runId: resolved?.runId,
       });
       onStarted(run.run_id);
     } catch (e: any) {
