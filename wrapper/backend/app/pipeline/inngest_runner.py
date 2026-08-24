@@ -59,6 +59,7 @@ have, not load-bearing, and can be added without touching anything else.
 """
 from __future__ import annotations
 
+import asyncio
 import datetime
 import io
 import json
@@ -878,7 +879,14 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             exclusion_domain_col = "Domain" if "Domain" in df.columns else (domain_col or _guess_col(df, ["Domain", "Website"]))
 
             async def _run_exclusion():
-                result_df, excl_stats = hubspot_exclusion.run_exclusion_check(df, exclusion_domain_col)
+                # Blocking (Redis fetch of the ~23MB DNU snapshot + O(120k) index
+                # build) - off the event loop so it can't stall the whole backend
+                # or blow past the function's duration limit while other Inngest
+                # invocations pile up behind it. Same class of issue as the
+                # _nan_safe docstring above.
+                result_df, excl_stats = await asyncio.to_thread(
+                    hubspot_exclusion.run_exclusion_check, df, exclusion_domain_col
+                )
                 return _nan_safe({"records": result_df.to_dict("records"), "exclusion_stats": excl_stats})
 
             excl_result = await step.run("run_exclusion_check", _run_exclusion)
