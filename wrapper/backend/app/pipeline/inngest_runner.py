@@ -1282,15 +1282,24 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                        message=f"Filling emails for {len(ok_df)} existing contact(s)")
         await _set_step(step, "step_reveal_running", run_id, "reveal", "Email Reveal & Validation", "running")
 
-        async def _reveal_existing():
-            filled_df, fill_stats = apollo_enrich.enrich_existing_contacts(
-                ok_df, resolved_first_col, resolved_last_col, "Domain", email_col_existing,
-                force_idx=job_change_idx)
-            return _nan_safe({"records": filled_df.to_dict("records"), "fill_stats": fill_stats})
-
-        reveal_result = await step.run("reveal_existing_contacts", _reveal_existing)
-        core_df = pd.DataFrame(reveal_result["records"])
-        fill_stats = reveal_result["fill_stats"]
+        # Deliberately NOT wrapped in step.run(): same "output_too_large" cap
+        # documented on _read_csv_blob above - returning the full DataFrame
+        # (871+ rows, every enriched column) as a memoized step output blows
+        # Inngest's response-size limit, which silently wedges the run at
+        # "running" forever (the kill happens on Inngest's side, never as a
+        # catchable Python exception). Unlike run_exclusion_check, this isn't
+        # a pure recompute - enrich_existing_contacts spends real Apollo
+        # credits per uncached row, and its cache only saves once the whole
+        # batch finishes. So a replay after a kill re-pays for the batch
+        # instead of resuming - a real cost, but no worse than today, where a
+        # killed run loses that work anyway with nothing persisted. The
+        # asyncio.to_thread offload keeps the blocking, thread-pooled Apollo
+        # HTTP calls off the event loop.
+        core_df, fill_stats = await asyncio.to_thread(
+            apollo_enrich.enrich_existing_contacts,
+            ok_df, resolved_first_col, resolved_last_col, "Domain", email_col_existing,
+            force_idx=job_change_idx,
+        )
 
         paid = fill_stats.get("paid_lookups", 0)
         cost = estimates.cost_block("email_reveal", paid)
