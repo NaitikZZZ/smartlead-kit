@@ -878,20 +878,19 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
 
             exclusion_domain_col = "Domain" if "Domain" in df.columns else (domain_col or _guess_col(df, ["Domain", "Website"]))
 
-            async def _run_exclusion():
-                # Blocking (Redis fetch of the ~23MB DNU snapshot + O(120k) index
-                # build) - off the event loop so it can't stall the whole backend
-                # or blow past the function's duration limit while other Inngest
-                # invocations pile up behind it. Same class of issue as the
-                # _nan_safe docstring above.
-                result_df, excl_stats = await asyncio.to_thread(
-                    hubspot_exclusion.run_exclusion_check, df, exclusion_domain_col
-                )
-                return _nan_safe({"records": result_df.to_dict("records"), "exclusion_stats": excl_stats})
-
-            excl_result = await step.run("run_exclusion_check", _run_exclusion)
-            df = pd.DataFrame(excl_result["records"])
-            exclusion_stats = excl_result["exclusion_stats"]
+            # Deliberately NOT wrapped in step.run(): same "output_too_large" cap
+            # documented on _read_csv_blob above - returning the full DataFrame
+            # (871+ rows, every original + normalized column) as a memoized step
+            # output blows Inngest's response-size limit, which silently wedges
+            # the run at "running" forever (the kill happens on Inngest's side,
+            # never as a catchable Python exception). Safe to skip memoization:
+            # this is a pure function of (df, DNU cache), so a replay just
+            # recomputes the same result - the asyncio.to_thread offload below
+            # still keeps the blocking Redis fetch + index build off the event
+            # loop, it just isn't captured as a separate Inngest step anymore.
+            df, exclusion_stats = await asyncio.to_thread(
+                hubspot_exclusion.run_exclusion_check, df, exclusion_domain_col
+            )
             exclusion_stats["dnu_list_url"] = config.exclusion_list_url()
 
             excl_name_col = resolved_company_col if resolved_company_col in df.columns else company_col
