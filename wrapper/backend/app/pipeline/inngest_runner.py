@@ -1528,19 +1528,23 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
     # ============ Fallback: Fill missing emails/phones from raw file (respecting exclusions) ============
     core_df = _fill_missing_from_raw(core_df, accounts_processed)
 
-    async def _write_outputs():
-        stats_snapshot = run_status.get(run_id).get("stats", {})
-        file_refs, hubspot_ready_df = outputs.write_outputs(run_dir, accounts_processed, core_df, campaign_title, stats_snapshot)
-        return _nan_safe({
-            "file_refs": file_refs,
-            "hubspot_ready_records": hubspot_ready_df.to_dict("records"),
-            "channel_counts": stats_snapshot.get("channel_counts", {}),
-        })
-
-    write_result = await step.run("write_outputs", _write_outputs)
-    file_paths = write_result["file_refs"]
-    hubspot_ready_df = pd.DataFrame(write_result["hubspot_ready_records"])
-    channel_counts = write_result["channel_counts"]
+    # Deliberately NOT wrapped in step.run(): same "output_too_large" cap
+    # documented on _read_csv_blob above - returning hubspot_ready_records
+    # (871+ rows, full HubSpot column set) as a memoized step output blows
+    # Inngest's response-size limit, wedging the run at "running" forever
+    # with no catchable error. write_outputs() also does 6 sequential
+    # blocking calls (disk writes + Vercel Blob HTTP PUTs, each up to 60s)
+    # with no thread offload, which alone can peg the event loop long
+    # enough to hit the same silent death. Safe to skip memoization:
+    # write_outputs() is an idempotent write to deterministic Blob keys
+    # (runs/{run_id}/{filename}), so a replay just re-writes the same
+    # files for free. The asyncio.to_thread offload keeps the blocking
+    # I/O off the event loop.
+    stats_snapshot = run_status.get(run_id).get("stats", {})
+    file_paths, hubspot_ready_df = await asyncio.to_thread(
+        outputs.write_outputs, run_dir, accounts_processed, core_df, campaign_title, stats_snapshot
+    )
+    channel_counts = stats_snapshot.get("channel_counts", {})
 
     await _set_stat(step, "stat_hubspot_ready_count", run_id, "hubspot_ready_count", len(hubspot_ready_df))
     await _set_stat(step, "stat_channel_counts", run_id, "channel_counts", channel_counts)
