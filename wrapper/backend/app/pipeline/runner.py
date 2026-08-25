@@ -981,8 +981,8 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         # Apollo export, a Sales-Nav export, or an auto-scraped named list, even
         # when emails aren't present yet.
         email_col_existing = _guess_col(ok_df, ["email", "email address"])
-        resolved_first_col = "Cleaned First Name" if "Cleaned First Name" in ok_df.columns else _guess_col(ok_df, ["first name", "firstname"])
-        resolved_last_col = "Cleaned Last Name" if "Cleaned Last Name" in ok_df.columns else _guess_col(ok_df, ["last name", "lastname"])
+        resolved_first_col = "Cleaned First Name" if "Cleaned First Name" in ok_df.columns else _guess_col(ok_df, ["first name", "firstname", "first_name"])
+        resolved_last_col = "Cleaned Last Name" if "Cleaned Last Name" in ok_df.columns else _guess_col(ok_df, ["last name", "lastname", "last_name"])
         has_existing_contacts = (
             bool(resolved_first_col) and bool(resolved_last_col)
             and int(ok_df[resolved_first_col].notna().sum()) > 0
