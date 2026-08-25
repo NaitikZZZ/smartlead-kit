@@ -46,7 +46,7 @@ def _valid_email(v) -> bool:
     return bool(s) and s.lower() != "nan" and "@" in s
 
 
-_INVALID_EMAIL_RE = re.compile(r"Email address\s+(\S+?)\s+is invalid", re.I)
+_INVALID_EMAIL_RE = re.compile(r"Email address\s+(.+?)\s+is invalid", re.I)
 
 
 def _invalid_emails_from_error(body: str) -> set[str]:
