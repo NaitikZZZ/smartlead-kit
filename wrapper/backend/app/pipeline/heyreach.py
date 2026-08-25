@@ -10,6 +10,7 @@ LinkedIn file becomes a HeyReach list, ready to attach to a campaign in HeyReach
 """
 from __future__ import annotations
 
+import pandas as pd
 import requests
 
 from .. import config
@@ -40,6 +41,17 @@ def _headers():
             "Content-Type": "application/json"}
 
 
+def _s(v) -> str:
+    """Coerce a row field to a stripped string. A source CSV column that's
+    blank for every row in a batch gets inferred by pandas as float64, so its
+    "empty" cells come back as NaN (a float), not None - and NaN is truthy in
+    Python, so the previous `(v or "").strip()` pattern raised AttributeError
+    on it. Treat NaN the same as None/blank."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ""
+    return str(v).strip()
+
+
 def _lead(row: dict) -> dict | None:
     """profileUrl is the only hard requirement (HeyReach identifies a lead by
     LinkedIn profile). email is pushed as emailAddress whenever we have one -
@@ -50,29 +62,29 @@ def _lead(row: dict) -> dict | None:
     HeyReach pushes: firstName/lastName/profileUrl/emailAddress/companyName/
     position - no other standard fields exist) goes into customUserFields,
     HeyReach's supported arbitrary-custom-field mechanism."""
-    url = (row.get("linkedin_url") or "").strip()
+    url = _s(row.get("linkedin_url"))
     if not url:
         return None
     lead = {
-        "firstName": (row.get("first_name") or "").strip() or None,
-        "lastName": (row.get("last_name") or "").strip() or None,
+        "firstName": _s(row.get("first_name")) or None,
+        "lastName": _s(row.get("last_name")) or None,
         "profileUrl": url,
     }
-    company = (row.get("company_name") or "").strip()
+    company = _s(row.get("company_name"))
     if company:
         lead["companyName"] = company
-    position = (row.get("job_title") or "").strip()
+    position = _s(row.get("job_title"))
     if position:
         lead["position"] = position
-    email = (row.get("email") or "").strip()
+    email = _s(row.get("email"))
     if email:
         lead["emailAddress"] = email
 
     custom_fields = []
-    domain = (row.get("company_domain") or "").strip()
+    domain = _s(row.get("company_domain"))
     if domain:
         custom_fields.append({"name": "company_domain", "value": domain})
-    campaign = (row.get("campaign_title") or "").strip()
+    campaign = _s(row.get("campaign_title"))
     if campaign:
         custom_fields.append({"name": "campaign_title", "value": campaign})
     if custom_fields:
