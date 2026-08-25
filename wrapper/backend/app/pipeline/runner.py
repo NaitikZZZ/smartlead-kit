@@ -243,7 +243,7 @@ def _fill_missing_from_raw(enriched_df: pd.DataFrame, raw_df: pd.DataFrame) -> p
     out = enriched_df.copy()
 
     # Find email and phone columns in both dataframes
-    raw_email_col = next((c for c in raw_df.columns if c.lower() in ["email", "email address"]), None)
+    raw_email_col = _guess_col(raw_df, _EMAIL_COL_CANDIDATES)
     raw_phone_col = next((c for c in raw_df.columns if c.lower() in ["phone", "phone number", "mobile", "mobile number"]), None)
 
     # Only fill if enrichment didn't find the value
@@ -318,6 +318,14 @@ def _guess_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
             if cand.lower() in header:
                 return original
     return None
+
+
+# Ordered most- to least-preferred: a sheet with both a "Final Work Email"
+# and a plain "Email"/"Work Email" column should use the more-verified one.
+# _guess_col checks candidates in this order for an exact column-name match
+# before ever falling back to substring matching, so this ordering is what
+# actually decides which column wins when a sheet has several.
+_EMAIL_COL_CANDIDATES = ["final work email", "work email", "email address", "email"]
 
 
 def _map_existing_contact_columns(df: pd.DataFrame, first_col: str, last_col: str, company_col: str) -> pd.DataFrame:
@@ -980,7 +988,7 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         # (existing-contact path) rather than discovering new people - true for an
         # Apollo export, a Sales-Nav export, or an auto-scraped named list, even
         # when emails aren't present yet.
-        email_col_existing = _guess_col(ok_df, ["email", "email address"])
+        email_col_existing = _guess_col(ok_df, _EMAIL_COL_CANDIDATES)
         resolved_first_col = "Cleaned First Name" if "Cleaned First Name" in ok_df.columns else _guess_col(ok_df, ["first name", "firstname", "first_name"])
         resolved_last_col = "Cleaned Last Name" if "Cleaned Last Name" in ok_df.columns else _guess_col(ok_df, ["last name", "lastname", "last_name"])
         has_existing_contacts = (

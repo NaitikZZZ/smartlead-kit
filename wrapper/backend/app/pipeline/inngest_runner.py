@@ -92,6 +92,14 @@ def _guess_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
     return None
 
 
+# Ordered most- to least-preferred: a sheet with both a "Final Work Email"
+# and a plain "Email"/"Work Email" column should use the more-verified one.
+# _guess_col checks candidates in this order for an exact column-name match
+# before ever falling back to substring matching, so this ordering is what
+# actually decides which column wins when a sheet has several.
+_EMAIL_COL_CANDIDATES = ["final work email", "work email", "email address", "email"]
+
+
 def _blank_domain_mask(df: pd.DataFrame) -> pd.Series:
     if "Domain" not in df.columns:
         return pd.Series([True] * len(df), index=df.index)
@@ -248,7 +256,7 @@ def _fill_missing_from_raw(enriched_df: pd.DataFrame, raw_df: pd.DataFrame) -> p
     """
     out = enriched_df.copy()
 
-    raw_email_col = next((c for c in raw_df.columns if c.lower() in ["email", "email address"]), None)
+    raw_email_col = _guess_col(raw_df, _EMAIL_COL_CANDIDATES)
     raw_phone_col = next((c for c in raw_df.columns if c.lower() in ["phone", "phone number", "mobile", "mobile number"]), None)
 
     if raw_email_col and raw_email_col in raw_df.columns:
@@ -928,7 +936,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         if job_change_idx:
             await _set_stat(step, "stat_job_changes", run_id, "job_changes", len(job_change_idx))
 
-        email_col_existing = _guess_col(ok_df, ["email", "email address"])
+        email_col_existing = _guess_col(ok_df, _EMAIL_COL_CANDIDATES)
         resolved_first_col = "Cleaned First Name" if "Cleaned First Name" in ok_df.columns else _guess_col(ok_df, ["first name", "firstname", "first_name"])
         resolved_last_col = "Cleaned Last Name" if "Cleaned Last Name" in ok_df.columns else _guess_col(ok_df, ["last name", "lastname", "last_name"])
         has_existing_contacts = (
