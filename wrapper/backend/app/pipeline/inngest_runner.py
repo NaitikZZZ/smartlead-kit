@@ -841,14 +841,14 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                                message=f"Resolving {missing_count} missing company domain(s) via Apollo")
                 await _set_step(step, "step_domain_running", run_id, "domain", "Domain Resolution", "running")
 
-                async def _resolve():
-                    resolved_subset, domain_stats = domain_resolution.resolve_domains_for_df(
-                        df[missing_mask].copy(), resolved_company_col, employee_col)
-                    return _nan_safe({"records": resolved_subset.to_dict("records"), "domain_stats": domain_stats})
-
-                result = await step.run("resolve_domains", _resolve)
-                resolved_subset = pd.DataFrame(result["records"])
-                domain_stats = result["domain_stats"]
+                # Deliberately NOT wrapped in step.run() - same output_too_large /
+                # event-loop-blocking pattern as reveal_phones above: this runs on
+                # the full missing-domain subset (thousands of rows) via a
+                # blocking, thread-pooled Apollo call.
+                resolved_subset, domain_stats = await asyncio.to_thread(
+                    domain_resolution.resolve_domains_for_df,
+                    df[missing_mask].copy(), resolved_company_col, employee_col,
+                )
 
                 df.loc[missing_mask, "Domain"] = resolved_subset["Domain"].values
                 df.loc[missing_mask, "Resolved Country"] = resolved_subset["Resolved Country"].values
@@ -1076,19 +1076,19 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                                message=f"Searching Apollo at {len(ok_df)} accounts")
                 await _set_step(step, "step_discovery_running", run_id, "discovery", "People Discovery", "running")
 
-                async def _search():
-                    found_df, search_stats = apollo_enrich.search_candidates(
-                        ok_df, resolved_company_col, "Domain", person_locations=person_locations,
-                        persona_titles=persona_titles, max_per_company=config.MAX_CONTACTS_PER_COMPANY_CAP,
-                        per_title_cap=effective_per_title_cap, employee_ranges=employee_ranges,
-                        exact_titles=exact_titles, organization_locations=organization_locations,
-                        person_seniorities=person_seniorities, person_functions=person_functions,
-                        exclude_titles=exclude_titles)
-                    return _nan_safe({"records": found_df.to_dict("records"), "search_stats": search_stats})
-
-                search_result = await step.run("search_candidates", _search)
-                candidates_df = pd.DataFrame(search_result["records"])
-                search_stats = search_result["search_stats"]
+                # Deliberately NOT wrapped in step.run() - same pattern as
+                # reveal_phones above: search_candidates is a blocking,
+                # thread-pooled Apollo call over the full account list and can
+                # return thousands of candidate rows.
+                candidates_df, search_stats = await asyncio.to_thread(
+                    apollo_enrich.search_candidates,
+                    ok_df, resolved_company_col, "Domain", person_locations=person_locations,
+                    persona_titles=persona_titles, max_per_company=config.MAX_CONTACTS_PER_COMPANY_CAP,
+                    per_title_cap=effective_per_title_cap, employee_ranges=employee_ranges,
+                    exact_titles=exact_titles, organization_locations=organization_locations,
+                    person_seniorities=person_seniorities, person_functions=person_functions,
+                    exclude_titles=exclude_titles,
+                )
 
                 cap_note = f" (up to {per_title_cap} per title per company)" if effective_per_title_cap else ""
                 await _set_step(
@@ -1267,21 +1267,21 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             else:
                 before_count = len(ok_df)
 
-                async def _apply_icp_filter():
-                    keep_mask = ok_df[title_col_for_filter].apply(
-                        lambda t: apollo_enrich.title_matches_any(str(t) if pd.notna(t) else "", icp_titles, exact=icp_exact)
-                    )
-                    kept_df = ok_df[keep_mask].copy()
-                    return _nan_safe({"records": kept_df.to_dict("records"), "kept": len(kept_df)})
-
-                filter_result = await step.run("apply_icp_title_filter", _apply_icp_filter)
-                ok_df = pd.DataFrame(filter_result["records"])
-                removed = before_count - filter_result["kept"]
+                # Deliberately NOT wrapped in step.run() - same output_too_large
+                # cap as reveal_phones above, and unlike that step this is a
+                # pure, free, in-memory pandas filter with no I/O to make
+                # replay-safe in the first place, so a step boundary buys nothing.
+                keep_mask = ok_df[title_col_for_filter].apply(
+                    lambda t: apollo_enrich.title_matches_any(str(t) if pd.notna(t) else "", icp_titles, exact=icp_exact)
+                )
+                kept_count = int(keep_mask.sum())
+                ok_df = ok_df[keep_mask].copy()
+                removed = before_count - kept_count
                 await _set_stat(step, "stat_icp_filter", run_id, "icp_title_filter",
-                                 {"removed": removed, "kept": filter_result["kept"], "titles": icp_titles, "exact": icp_exact})
+                                 {"removed": removed, "kept": kept_count, "titles": icp_titles, "exact": icp_exact})
                 await _set_step(
                     step, "step_icp_filter_done", run_id, "reveal", "Email Reveal & Validation", "running",
-                    f"Removed {removed} non-ICP contact(s) by job title; {filter_result['kept']} remain.",
+                    f"Removed {removed} non-ICP contact(s) by job title; {kept_count} remain.",
                 )
         else:
             await _set_stat(step, "stat_icp_filter_declined", run_id, "icp_title_filter", {"skipped": True})
@@ -1331,15 +1331,12 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                        message=f"Revealing details for {len(candidates_df)} candidate(s)")
         await _set_step(step, "step_reveal_running", run_id, "reveal", "Email Reveal & Validation", "running")
 
-        async def _reveal_candidates():
-            core, _full, enrich_stats = apollo_enrich.enrich_candidates(candidates_df)
-            core = core.copy()
-            core["company_domain"] = core["search_domain"].apply(outputs.strip_url_prefix)
-            return _nan_safe({"records": core.to_dict("records"), "enrich_stats": enrich_stats})
-
-        reveal_result = await step.run("reveal_candidates", _reveal_candidates)
-        core_df = pd.DataFrame(reveal_result["records"])
-        enrich_stats = reveal_result["enrich_stats"]
+        # Deliberately NOT wrapped in step.run() - same pattern as reveal_phones
+        # above: enrich_candidates is a blocking, thread-pooled Apollo call and
+        # this is the discovery-path twin of reveal_existing_contacts.
+        core_df, _full, enrich_stats = await asyncio.to_thread(apollo_enrich.enrich_candidates, candidates_df)
+        core_df = core_df.copy()
+        core_df["company_domain"] = core_df["search_domain"].apply(outputs.strip_url_prefix)
 
         paid = enrich_stats.get("paid_lookups", enrich_stats.get("contacts_enriched", 0))
         cost = estimates.cost_block("email_reveal", paid)
@@ -1384,14 +1381,18 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             await _status(step, "status_phone_running", run_id, message="Revealing phone numbers")
             await _set_step(step, "step_phone_running", run_id, "phone", "Mobile Phone", "running")
 
-            async def _reveal_phones():
-                phoned_df, phone_stats = apollo_enrich.enrich_phones(
-                    core_df, f_col0, l_col0, d_col0, force_idx=phone_force)
-                return _nan_safe({"records": phoned_df.to_dict("records"), "phone_stats": phone_stats})
-
-            phone_result = await step.run("reveal_phones", _reveal_phones)
-            core_df = pd.DataFrame(phone_result["records"])
-            phone_stats = phone_result["phone_stats"]
+            # Deliberately NOT wrapped in step.run(): same "output_too_large" cap
+            # documented on _read_csv_blob above - returning the full DataFrame
+            # (thousands of rows on a large sheet) as a memoized step output
+            # blows Inngest's response-size limit, which silently wedges the run
+            # at "running" forever with no catchable error. enrich_phones is
+            # also a blocking, thread-pooled Apollo call, same as
+            # enrich_existing_contacts before it - offload with asyncio.to_thread
+            # to keep it off the event loop.
+            core_df, phone_stats = await asyncio.to_thread(
+                apollo_enrich.enrich_phones,
+                core_df, f_col0, l_col0, d_col0, force_idx=phone_force,
+            )
 
             cost = estimates.cost_block("mobile_phone", phone_stats.get("phones_found", 0))
             await _accrue_cost(step, "cost_phone", run_id, cost)
@@ -1442,14 +1443,13 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                 await _status(step, "status_filling_details", run_id,
                                message=f"Filling missing details for {missing_details_count} contact(s)")
 
-                async def _fill_details():
-                    filled_df, details_stats = apollo_enrich.fill_missing_details(
-                        core_df, resolved_first_col, resolved_last_col, "Domain")
-                    return _nan_safe({"records": filled_df.to_dict("records"), "details_stats": details_stats})
-
-                details_result = await step.run("fill_missing_details", _fill_details)
-                core_df = pd.DataFrame(details_result["records"])
-                details_stats = details_result["details_stats"]
+                # Deliberately NOT wrapped in step.run() - same pattern as
+                # reveal_phones above: blocking, thread-pooled Apollo call over
+                # the full contact list.
+                core_df, details_stats = await asyncio.to_thread(
+                    apollo_enrich.fill_missing_details,
+                    core_df, resolved_first_col, resolved_last_col, "Domain",
+                )
 
                 details_cost = estimates.cost_block("existing_contact_details", details_stats.get("paid_lookups", 0))
                 await _accrue_cost(step, "cost_fill_details", run_id, details_cost)
@@ -1501,13 +1501,13 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             await _status(step, "status_completeness_running", run_id,
                            message=f"Filling {gap_count} completeness gap(s) via web search")
 
-            async def _fill_completeness():
-                filled_df, completeness_stats = web_completeness.fill_completeness_gaps(accounts_processed, resolved_company_col)
-                return _nan_safe({"records": filled_df.to_dict("records"), "completeness_stats": completeness_stats})
-
-            fill_result = await step.run("fill_completeness_gaps", _fill_completeness)
-            accounts_processed = pd.DataFrame(fill_result["records"])
-            await _set_stat(step, "stat_completeness_filled", run_id, "completeness", fill_result["completeness_stats"])
+            # Deliberately NOT wrapped in step.run() - same pattern as
+            # reveal_phones above: fill_completeness_gaps makes sequential
+            # blocking Anthropic web-search calls, one per account with a gap.
+            accounts_processed, completeness_stats = await asyncio.to_thread(
+                web_completeness.fill_completeness_gaps, accounts_processed, resolved_company_col,
+            )
+            await _set_stat(step, "stat_completeness_filled", run_id, "completeness", completeness_stats)
         else:
             await _set_stat(step, "stat_completeness_declined", run_id, "completeness",
                              {"skipped": True, "reason": "declined by user", "gaps": gap_count})
