@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import "./theme.css";
-import { getConfig, getIcpOptions, getRun, fileUrl } from "./lib/api";
+import { getConfig, getIcpOptions, getRun, retryRun, fileUrl } from "./lib/api";
 import type { AppConfig, IcpOptions, RunStatus } from "./lib/types";
 import SourceForm from "./components/SourceForm";
 import StepSidebar from "./components/StepSidebar";
@@ -21,6 +21,8 @@ export default function App() {
   const [icpOptions, setIcpOptions] = useState<IcpOptions | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
   const [run, setRun] = useState<RunStatus | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -28,27 +30,47 @@ export default function App() {
     getIcpOptions().then(setIcpOptions).catch(() => setIcpOptions(null));
   }, []);
 
-  useEffect(() => {
-    if (!runId) return;
-    let cancelled = false;
-    async function poll() {
+  // Pulled out of the effect (rather than inlined) so retryRun's handler can
+  // restart polling directly - runId doesn't change on a retry (same run_id
+  // reused), so re-running the effect isn't an option there.
+  const poll = useCallback((id: string) => {
+    if (pollRef.current) window.clearTimeout(pollRef.current);
+    async function tick() {
       try {
-        const status = await getRun(runId!);
-        if (cancelled) return;
+        const status = await getRun(id);
         setRun(status);
-        if (!POLL_STOP.has(status.stage)) pollRef.current = window.setTimeout(poll, 1200);
+        if (!POLL_STOP.has(status.stage)) pollRef.current = window.setTimeout(tick, 1200);
       } catch {
-        pollRef.current = window.setTimeout(poll, 3000);
+        pollRef.current = window.setTimeout(tick, 3000);
       }
     }
-    poll();
+    tick();
+  }, []);
+
+  useEffect(() => {
+    if (!runId) return;
+    poll(runId);
     return () => {
-      cancelled = true;
       if (pollRef.current) window.clearTimeout(pollRef.current);
     };
-  }, [runId]);
+  }, [runId, poll]);
 
   const refresh = () => runId && getRun(runId).then(setRun);
+
+  async function handleRetry() {
+    if (!runId) return;
+    setRetrying(true);
+    setRetryError(null);
+    try {
+      const status = await retryRun(runId);
+      setRun(status);
+      poll(runId);
+    } catch (e: any) {
+      setRetryError(e.message || "Failed to retry the run");
+    } finally {
+      setRetrying(false);
+    }
+  }
 
   return (
     <div className="app-shell">
@@ -92,9 +114,15 @@ export default function App() {
           <div className="card" style={{ padding: 24, borderColor: "var(--red-300)" }}>
             <h3 style={{ color: "var(--red-300)" }}>Run failed</h3>
             <p style={{ marginTop: 8 }}>{run.error}</p>
-            <button className="btn-secondary" style={{ marginTop: 16 }} onClick={() => { setRunId(null); setRun(null); }}>
-              Start a new run
-            </button>
+            {retryError && <p style={{ marginTop: 8, color: "var(--red-300)" }}>{retryError}</p>}
+            <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
+              <button className="btn-primary" disabled={retrying} onClick={handleRetry}>
+                {retrying ? "Retrying..." : "Retry"}
+              </button>
+              <button className="btn-secondary" onClick={() => { setRunId(null); setRun(null); }}>
+                Start a new run
+              </button>
+            </div>
           </div>
         )}
 

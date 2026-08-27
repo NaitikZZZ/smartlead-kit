@@ -78,8 +78,20 @@ def get_json_chunked(base_key: str):
     return json.loads("".join(r or "" for r in results))
 
 
-def set_json_chunked(base_key: str, value) -> None:
+def set_json_chunked(base_key: str, value, ex: int | None = None) -> None:
     s = json.dumps(value)
     chunks = [s[i:i + _CHUNK_SIZE] for i in range(0, len(s), _CHUNK_SIZE)] or [""]
-    _pipeline([["SET", f"{base_key}:{i}", chunk] for i, chunk in enumerate(chunks)])
-    set_json(f"{base_key}:meta", {"chunks": len(chunks)})
+    ex_args = ["EX", str(ex)] if ex else []
+    _pipeline([["SET", f"{base_key}:{i}", chunk, *ex_args] for i, chunk in enumerate(chunks)])
+    _pipeline([["SET", f"{base_key}:meta", json.dumps({"chunks": len(chunks)}), *ex_args]])
+
+
+def delete_chunked(base_key: str) -> None:
+    """Removes a value written by set_json_chunked - used once a chunked
+    upload has been reassembled, so its pieces don't sit in Redis until
+    ex expires them."""
+    meta = get_json(f"{base_key}:meta")
+    if meta is None:
+        return
+    keys = [f"{base_key}:{i}" for i in range(meta["chunks"])] + [f"{base_key}:meta"]
+    _pipeline([["DEL", k] for k in keys])

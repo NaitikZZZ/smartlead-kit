@@ -2,6 +2,7 @@
 -> reveal phone), reusing their exact tested logic rather than reimplementing
 it. Apollo-only per current scope - Lusha is intentionally not wired in here."""
 from __future__ import annotations
+import re
 import sys
 import time
 import threading
@@ -262,6 +263,12 @@ def search_candidates(df: pd.DataFrame, company_col: str, domain_col: str, perso
                 people = [p for p in people if not title_matches_any(p.get("title"), exclude_titles, exact=False)]
             if per_title_cap:
                 selected = _search.select_candidates_per_persona(people, personas, per_title_cap, exact=exact_titles)
+                # select_candidates_per_persona guarantees per-title coverage with
+                # no overall ceiling - without this, a broad cluster expanding into
+                # many titles could return far more than `cap` per company. Persona
+                # order is priority order, so truncating here keeps the
+                # highest-priority personas' picks over lower ones.
+                selected = selected[:cap]
             else:
                 selected = _search.select_candidates(people)
         finally:
@@ -586,6 +593,44 @@ def title_matches_any(title: str, target_titles: list[str], exact: bool = True) 
         title_words = _search._title_word_set(title)
         return any(_search._title_word_set(target) == title_words for target in target_titles)
     return any((target or "").strip().lower() in t for target in target_titles)
+
+
+# Job-title keywords that read as individual-contributor / entry level, but
+# ONLY when not paired with a senior qualifier - "Sales Executive" and a bare
+# "Associate" are junior, "Chief Executive Officer", "Executive Director" and
+# "Executive Vice President" are not. Word-boundary matched, case-insensitive.
+JUNIOR_TITLE_KEYWORDS = ("associate", "executive")
+SENIOR_TITLE_QUALIFIERS = (
+    "chief", "vice president", "vp", "svp", "evp", "president", "director",
+    "head", "founder", "owner", "partner", "manager", "ceo", "cfo", "coo",
+    "cto", "cmo", "chro", "cpo", "cio",
+)
+# Apollo's own seniority enum (ALL_SENIORITIES above) is ranked
+# owner > founder > c_suite > partner > vp > head > director > manager >
+# senior > entry > intern - these three are the only values below "manager".
+_JUNIOR_SENIORITY_VALUES = {"senior", "entry", "intern"}
+
+
+def is_below_manager(title, seniority=None) -> bool:
+    """True if a contact reads as below managerial level - powers the opt-in
+    'exclude junior titles' pipeline step for sheets that already carry named
+    contacts (raw uploads/HubSpot exports), where Apollo's own
+    person_seniorities search filter never ran. Two signals: Apollo's
+    seniority enum when present (senior/entry/intern = junior), and a
+    word-boundary title-keyword check otherwise - a senior qualifier
+    (chief/vp/director/head/manager/...) anywhere in the title always wins,
+    so "Executive Director" and "Chief Executive Officer" are kept while
+    "Sales Executive" and a bare "Associate" are not."""
+    s = "" if seniority is None or (isinstance(seniority, float) and pd.isna(seniority)) else str(seniority).strip().lower()
+    if s in _JUNIOR_SENIORITY_VALUES:
+        return True
+    t = "" if title is None or (isinstance(title, float) and pd.isna(title)) else str(title).strip().lower()
+    combined = " ".join(x for x in (t, s) if x)
+    if not combined:
+        return False
+    if any(re.search(rf"\b{re.escape(q)}\b", combined) for q in SENIOR_TITLE_QUALIFIERS):
+        return False
+    return any(re.search(rf"\b{re.escape(kw)}\b", combined) for kw in JUNIOR_TITLE_KEYWORDS)
 
 
 def count_uncached_phones(df: pd.DataFrame, first_col: str, last_col: str, domain_col: str, force_idx: set | None = None) -> int:

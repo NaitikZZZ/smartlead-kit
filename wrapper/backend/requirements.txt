@@ -5,6 +5,7 @@ requests==2.32.3
 python-dotenv==1.0.1
 python-multipart==0.0.9
 openpyxl==3.1.5
+phonenumbers==9.0.37
 pydantic==2.9.2
 anthropic==0.40.0
 inngest==0.4.22

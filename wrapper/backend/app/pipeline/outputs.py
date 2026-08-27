@@ -10,6 +10,7 @@ import math
 from pathlib import Path
 
 import pandas as pd
+import phonenumbers
 
 try:
     from datetime import datetime, UTC
@@ -80,6 +81,33 @@ def strip_url_prefix(domain):
     if not domain or (isinstance(domain, float) and math.isnan(domain)):
         return domain
     return re.sub(r"^https?://(www\.)?", "", str(domain)).rstrip("/")
+
+
+def split_phone_number(raw) -> tuple[str | None, str | None]:
+    """Splits a phone number into (country_code, national_number) for the
+    WhatsApp/Interakt import, which wants them as separate columns rather
+    than one merged field. Handles E.164 (Apollo's sanitized_number format,
+    e.g. "+14155552671") directly; a number without a leading "+" is
+    retried as-is since most phone data already carries the country code as
+    a bare-digit prefix (e.g. "919876543210"). Falls back to (None,
+    digits-only raw) when it can't be parsed as a valid number - no data
+    loss, just no split."""
+    v = _clean_cell(raw)
+    if v is None:
+        return None, None
+    digits = re.sub(r"\D", "", str(v))
+    if not digits:
+        return None, None
+    candidate = str(v).strip()
+    if not candidate.startswith("+"):
+        candidate = "+" + digits
+    try:
+        parsed = phonenumbers.parse(candidate, None)
+        if phonenumbers.is_valid_number(parsed):
+            return str(parsed.country_code), phonenumbers.national_significant_number(parsed)
+    except phonenumbers.NumberParseException:
+        pass
+    return None, digits
 
 
 # Contact property "demographics" (label "Demographics (Geography)") is a
@@ -356,14 +384,41 @@ def _channel_record(row, campaign_title: str) -> dict:
     }
 
 
+# whatsapp_upload.csv carries country_code and phone_number as separate
+# columns (Interakt's bulk-contact-import template wants them split, not one
+# merged field) alongside the same name/company/campaign context as the other
+# channel files.
+_WHATSAPP_COLUMNS = [
+    "first_name", "last_name", "country_code", "phone_number", "email",
+    "company_name", "job_title", "campaign_title",
+]
+
+
+def _whatsapp_record(row, campaign_title: str) -> dict:
+    phone = _clean_cell(row.get("Phone Number")) or _clean_cell(row.get("mobile_phone"))
+    country_code, phone_number = split_phone_number(phone)
+    return {
+        "first_name": _clean_cell(row.get("first_name")),
+        "last_name": _clean_cell(row.get("last_name")),
+        "country_code": country_code,
+        "phone_number": phone_number,
+        "email": _clean_cell(row.get("email")),
+        "company_name": _company_of(row),
+        "job_title": _clean_cell(row.get("title")),
+        "campaign_title": campaign_title,
+    }
+
+
 def build_channel_files(enriched_df: pd.DataFrame, campaign_title: str) -> dict[str, pd.DataFrame]:
-    """Splits the enriched contacts into three channel-specific upload files:
+    """Splits the enriched contacts into four channel-specific upload files:
 
       email_upload.csv    - verified-email contacts only (HubSpot-ready shape).
                             Guarantees no blank-email rows ever reach HubSpot,
                             since HubSpot's contact upsert is keyed by email.
       linkedin_upload.csv  - contacts that have a LinkedIn URL (HeyReach import).
       calling_upload.csv   - contacts that have a phone number (dialer/SDR list).
+      whatsapp_upload.csv   - contacts that have a phone number (Interakt import),
+                            with country_code and phone_number as separate columns.
 
     A contact can legitimately land in more than one file - that's expected,
     each channel gets whoever it can actually reach on that channel. Every
@@ -373,29 +428,30 @@ def build_channel_files(enriched_df: pd.DataFrame, campaign_title: str) -> dict[
     """
     if enriched_df is None or enriched_df.empty:
         empty = pd.DataFrame()
-        return {"email": empty, "linkedin": empty, "calling": empty}
+        return {"email": empty, "linkedin": empty, "calling": empty, "whatsapp": empty}
 
     # Email file reuses the validated HubSpot mapping (verified email only).
     email_df = build_hubspot_import_file(enriched_df, campaign_title)
     email_df = email_df[email_df["email"].apply(lambda v: bool(_clean_cell(v)))].copy()
 
-    linkedin_rows, calling_rows = [], []
+    linkedin_rows, calling_rows, whatsapp_rows = [], [], []
     for _, row in enriched_df.iterrows():
         li = _clean_cell(row.get("linkedin_url"))
         phone = _clean_cell(row.get("Phone Number")) or _clean_cell(row.get("mobile_phone"))
         if li is None and phone is None:
             continue
 
-        record = _channel_record(row, campaign_title)
         if li is not None:
-            linkedin_rows.append(record)
+            linkedin_rows.append(_channel_record(row, campaign_title))
         if phone is not None:
-            calling_rows.append(record)
+            calling_rows.append(_channel_record(row, campaign_title))
+            whatsapp_rows.append(_whatsapp_record(row, campaign_title))
 
     return {
         "email": email_df,
         "linkedin": pd.DataFrame(linkedin_rows, columns=_CHANNEL_COLUMNS),
         "calling": pd.DataFrame(calling_rows, columns=_CHANNEL_COLUMNS),
+        "whatsapp": pd.DataFrame(whatsapp_rows, columns=_WHATSAPP_COLUMNS),
     }
 
 
@@ -449,6 +505,12 @@ def build_summary_markdown(campaign_title: str, stats: dict, accounts_processed:
                 lines.append(f"\n_(+{excluded - len(excluded_rows)} more excluded, not listed)_")
     lines.append("")
 
+    seniority_filter = stats.get("seniority_filter")
+    if seniority_filter and not seniority_filter.get("skipped"):
+        lines.append("## Seniority filter")
+        lines.append(f"- Excluded {seniority_filter.get('excluded', 0)} below-managerial contact(s); {seniority_filter.get('remaining', 0)} remain")
+        lines.append("")
+
     search = stats.get("apollo_search", {})
     enrich = stats.get("apollo_enrich", {})
     phone = stats.get("apollo_phone", {})
@@ -490,6 +552,7 @@ def build_summary_markdown(campaign_title: str, stats: dict, accounts_processed:
         lines.append(f"- Email (HubSpot-ready, verified email only): {channels.get('email', 0)}")
         lines.append(f"- LinkedIn (HeyReach import): {channels.get('linkedin', 0)}")
         lines.append(f"- Calling (dialer list): {channels.get('calling', 0)}")
+        lines.append(f"- WhatsApp (Interakt import): {channels.get('whatsapp', 0)}")
         lines.append("")
 
     lines.append("## HubSpot")
@@ -505,6 +568,11 @@ def build_summary_markdown(campaign_title: str, stats: dict, accounts_processed:
             lines.append(f"- HeyReach list `{hr.get('list_name')}` (id {hr.get('list_id')}): {hr.get('pushed', 0)} LinkedIn lead(s) pushed")
         elif hr.get("status") not in (None, "skipped"):
             lines.append(f"- HeyReach: {hr.get('message', hr.get('status'))}")
+        ia = import_result.get("interakt") or {}
+        if ia.get("status") == "pushed":
+            lines.append(f"- Interakt: {ia.get('pushed', 0)} WhatsApp contact(s) pushed" + (f", {ia['failed']} failed" if ia.get("failed") else ""))
+        elif ia.get("status") not in (None, "skipped"):
+            lines.append(f"- Interakt: {ia.get('message', ia.get('status'))}")
     else:
         lines.append("- Not yet imported")
     lines.append("")
@@ -520,16 +588,18 @@ def write_outputs(run_dir: Path, accounts_processed: pd.DataFrame, enriched: pd.
         "02_enriched_contacts.csv": write_file(run_dir, "02_enriched_contacts.csv", enriched.to_csv(index=False), "text/csv"),
     }
 
-    # Three channel-specific deliverables. The email file IS the HubSpot import.
+    # Four channel-specific deliverables. The email file IS the HubSpot import.
     channels = build_channel_files(enriched, campaign_title)
     refs["email_upload.csv"] = write_file(run_dir, "email_upload.csv", channels["email"].to_csv(index=False), "text/csv")
     refs["linkedin_upload.csv"] = write_file(run_dir, "linkedin_upload.csv", channels["linkedin"].to_csv(index=False), "text/csv")
     refs["calling_upload.csv"] = write_file(run_dir, "calling_upload.csv", channels["calling"].to_csv(index=False), "text/csv")
+    refs["whatsapp_upload.csv"] = write_file(run_dir, "whatsapp_upload.csv", channels["whatsapp"].to_csv(index=False), "text/csv")
 
     stats["channel_counts"] = {
         "email": int(len(channels["email"])),
         "linkedin": int(len(channels["linkedin"])),
         "calling": int(len(channels["calling"])),
+        "whatsapp": int(len(channels["whatsapp"])),
     }
     refs["SUMMARY.md"] = write_file(run_dir, "SUMMARY.md", build_summary_markdown(campaign_title, stats, accounts_processed), "text/markdown")
 
