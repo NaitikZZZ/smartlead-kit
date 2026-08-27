@@ -895,13 +895,6 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
                     df[missing_mask].copy(), resolved_company_col, employee_col, progress=_dom_progress)
                 df.loc[missing_mask, "Domain"] = resolved_subset["Domain"].values
 
-                still = _blank_domain_mask(df)
-                if still.any():
-                    _update(run_id, message="Some domains still missing - web-research pass")
-                    filled_subset, second = web_completeness.fill_completeness_gaps(df[still].copy(), resolved_company_col)
-                    df.loc[still, filled_subset.columns] = filled_subset
-                    stats["completeness"]["second_pass"] = second
-
                 resolved_now = missing_count - int(_blank_domain_mask(df).sum())
                 cost = estimates.cost_block("domain_resolution", missing_count)
                 _accrue_cost(stats, cost)
@@ -933,6 +926,35 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
                 stats["domain_resolution"] = {"skipped": True, "already_present": already_present}
                 _step(stats, "domain", "Domain Resolution", "skipped",
                       f"Skipped by user - {missing_count} row(s) left without a domain.")
+            _update(run_id, stats=dict(stats))
+
+        # ============ Domain gap fill (before Exclusion Check) ============
+        # Domain is Exclusion Check's primary DNU match key (email/company
+        # domain, checked before the fuzzy name-only fallback) and People
+        # Discovery's primary Apollo search key - a blank domain degrades both.
+        # Unlike Industry/Employee (which later Apollo people-search steps can
+        # fill in as a byproduct), nothing downstream ever populates Domain, so
+        # there's no benefit to deferring this one to the end-of-run
+        # completeness ask - by then Exclusion Check and People Discovery have
+        # already run on incomplete data for these rows.
+        still_missing_domain = _blank_domain_mask(df)
+        still_missing_count = int(still_missing_domain.sum())
+        if still_missing_count and config.ANTHROPIC_API_KEY:
+            domain_fill_answer = ask(
+                run_id, "domain_gap_fill_needed", "yes_no",
+                f"{still_missing_count} account(s) still have no domain after resolution. Fill via a "
+                f"web-search lookup (1 Claude call per gap, ~{estimates.humanize_seconds(estimates.estimate_seconds('completeness', still_missing_count))}) "
+                "before Exclusion Check and People Discovery run on them?",
+                default="yes", context={"step": "domain", "gaps": still_missing_count},
+            )
+            if _truthy(domain_fill_answer):
+                _update(run_id, message=f"Filling {still_missing_count} domain gap(s) via web search")
+                filled_subset, domain_fill_stats = web_completeness.fill_completeness_gaps(
+                    df[still_missing_domain].copy(), resolved_company_col)
+                df.loc[still_missing_domain, filled_subset.columns] = filled_subset
+                stats["domain_completeness"] = domain_fill_stats
+            else:
+                stats["domain_completeness"] = {"skipped": True, "reason": "declined by user", "gaps": still_missing_count}
             _update(run_id, stats=dict(stats))
 
         # ============ Step 3: Exclusion Check (gated) ============
@@ -1169,9 +1191,13 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
             core_df = _map_existing_contact_columns(core_df, resolved_first_col, resolved_last_col, resolved_company_col)
 
         # ============ Completeness fill (deferred - only worth asking once we know the real gap count) ============
+        # Domain is deliberately excluded here - it's handled right after Domain
+        # Resolution, before Exclusion Check, since nothing between there and here
+        # ever populates it (see the domain gap-fill block above). Industry/
+        # Employee stay deferred since later Apollo people-search steps can still
+        # fill those in as a byproduct.
         completeness_cols = [
             c for c in (
-                web_completeness._find_col(accounts_processed.columns, web_completeness.DOMAIN_CANDIDATES),
                 web_completeness._find_col(accounts_processed.columns, web_completeness.INDUSTRY_CANDIDATES),
                 web_completeness._find_col(accounts_processed.columns, web_completeness.EMPLOYEE_CANDIDATES),
             ) if c
@@ -1187,7 +1213,7 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         if not config.ANTHROPIC_API_KEY:
             stats["completeness"] = {"skipped": True, "reason": "ANTHROPIC_API_KEY not configured", "gaps": gap_count}
         elif not completeness_cols or gap_count == 0:
-            stats["completeness"] = {"skipped": True, "reason": "no gaps found" if completeness_cols else "no Domain/Industry/Employee column present", "gaps": gap_count}
+            stats["completeness"] = {"skipped": True, "reason": "no gaps found" if completeness_cols else "no Industry/Employee column present", "gaps": gap_count}
         else:
             fill_answer = ask(
                 run_id, "completeness_fill_needed", "yes_no",

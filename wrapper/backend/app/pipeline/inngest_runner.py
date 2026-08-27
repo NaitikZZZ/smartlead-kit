@@ -871,6 +871,37 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                 await _set_stat(step, "stat_domain_declined", run_id, "domain_resolution",
                                  {"skipped": True, "already_present": already_present})
 
+        # ============ Domain gap fill (before Exclusion Check) ============
+        # Domain is Exclusion Check's primary DNU match key (email/company
+        # domain, checked before the fuzzy name-only fallback) and People
+        # Discovery's primary Apollo search key - a blank domain degrades both.
+        # Unlike Industry/Employee (which later Apollo people-search steps can
+        # fill in as a byproduct), nothing downstream ever populates Domain, so
+        # there's no benefit to deferring this one to the end-of-run
+        # completeness ask - by then Exclusion Check and People Discovery have
+        # already run on incomplete data for these rows.
+        still_missing_domain = _blank_domain_mask(df)
+        still_missing_count = int(still_missing_domain.sum())
+        if still_missing_count and config.ANTHROPIC_API_KEY:
+            domain_fill_answer = await _ask(
+                step, run_id, "domain_gap_fill_needed", "yes_no",
+                f"{still_missing_count} account(s) still have no domain after resolution. Fill via a "
+                f"web-search lookup (1 Claude call per gap, ~{estimates.humanize_seconds(estimates.estimate_seconds('completeness', still_missing_count))}) "
+                "before Exclusion Check and People Discovery run on them?",
+                default="yes", context={"step": "domain", "gaps": still_missing_count},
+            )
+            if _truthy(domain_fill_answer):
+                await _status(step, "status_domain_gap_fill_running", run_id,
+                               message=f"Filling {still_missing_count} domain gap(s) via web search")
+                filled_subset, domain_fill_stats = await asyncio.to_thread(
+                    web_completeness.fill_completeness_gaps, df[still_missing_domain].copy(), resolved_company_col,
+                )
+                df.loc[still_missing_domain, filled_subset.columns] = filled_subset
+                await _set_stat(step, "stat_domain_gap_filled", run_id, "domain_completeness", domain_fill_stats)
+            else:
+                await _set_stat(step, "stat_domain_gap_declined", run_id, "domain_completeness",
+                                 {"skipped": True, "reason": "declined by user", "gaps": still_missing_count})
+
         # ============ Exclusion Check (gated) ============
         exclusion_answer = await _ask(
             step, run_id, "exclusion_needed", "yes_no",
@@ -1466,9 +1497,13 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                                  {"skipped": True, "reason": "declined by user", "missing": missing_details_count})
 
     # ============ Completeness fill (deferred - only worth asking once we know the real gap count) ============
+    # Domain is deliberately excluded here - it's handled right after Domain
+    # Resolution, before Exclusion Check, since nothing between there and here
+    # ever populates it (see the domain gap-fill block above). Industry/
+    # Employee stay deferred since later Apollo people-search steps can still
+    # fill those in as a byproduct.
     completeness_cols = [
         c for c in (
-            web_completeness._find_col(accounts_processed.columns, web_completeness.DOMAIN_CANDIDATES),
             web_completeness._find_col(accounts_processed.columns, web_completeness.INDUSTRY_CANDIDATES),
             web_completeness._find_col(accounts_processed.columns, web_completeness.EMPLOYEE_CANDIDATES),
         ) if c
@@ -1487,7 +1522,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
     elif not completeness_cols or gap_count == 0:
         await _set_stat(
             step, "stat_completeness_no_gaps", run_id, "completeness",
-            {"skipped": True, "reason": "no gaps found" if completeness_cols else "no Domain/Industry/Employee column present",
+            {"skipped": True, "reason": "no gaps found" if completeness_cols else "no Industry/Employee column present",
              "gaps": gap_count})
     else:
         fill_answer = await _ask(

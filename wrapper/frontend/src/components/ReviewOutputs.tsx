@@ -14,6 +14,8 @@ export default function ReviewOutputs({ run, onImported }: { run: RunStatus; onI
   const phone = run.stats?.apollo_phone;
   const search = run.stats?.apollo_search;
   const completeness = run.stats?.completeness;
+  const domainCompleteness = run.stats?.domain_completeness;
+  const totalCompletenessFilled = (completeness?.filled ?? 0) + (domainCompleteness?.filled ?? 0);
   const readyCount = run.stats?.hubspot_ready_count;
   const alreadyImported = run.stage === "done" && run.stats?.hubspot_import;
 
@@ -44,8 +46,8 @@ export default function ReviewOutputs({ run, onImported }: { run: RunStatus; onI
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginTop: 12 }}>
           <StatCard label="With phone" value={phone?.phones_found} sub={phone?.skipped ? "-" : `of ${phone?.total ?? "-"}`} />
           <StatCard label="HubSpot-ready" value={readyCount} sub="verified email only" />
-          {completeness && !completeness.skipped && (
-            <StatCard label="Completeness fills" value={completeness.filled} sub="via web search" />
+          {((completeness && !completeness.skipped) || (domainCompleteness && !domainCompleteness.skipped)) && (
+            <StatCard label="Completeness fills" value={totalCompletenessFilled} sub="via web search" />
           )}
         </div>
 
