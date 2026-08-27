@@ -988,7 +988,11 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                 step, run_id, "people_discovery_needed", "yes_no",
                 f"No contacts in the sheet. Find decision-makers at the {len(ok_df)} account(s)? "
                 "Search is free; revealing emails/phones later costs credits.",
-                default="yes", context={"step": "discovery"},
+                default="yes", context={
+                    "step": "discovery",
+                    "excluded_accounts": exclusion_stats.get("excluded_rows", []),
+                    "excluded_count": exclusion_stats.get("excluded", 0),
+                },
             )
 
             if _truthy(disc_answer):
