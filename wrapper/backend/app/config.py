@@ -24,6 +24,7 @@ APOLLO_API_KEY = os.environ.get("APOLLO_API_KEY", "")
 HUBSPOT_READ_TOKEN = os.environ.get("HUBSPOT_PRIVATE_APP_TOKEN", "")
 HUBSPOT_WRITE_TOKEN = os.environ.get("HUBSPOT_WRITE_TOKEN", "")
 HEYREACH_API_KEY = os.environ.get("HEYREACH_API_KEY", "")
+INTERAKT_API_KEY = os.environ.get("INTERAKT_API_KEY", "")
 
 # Upstash Redis (REST API) - replaces the local file-based caches below so
 # they survive across serverless invocations (Vercel's filesystem is

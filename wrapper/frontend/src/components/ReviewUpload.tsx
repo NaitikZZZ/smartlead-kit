@@ -8,6 +8,7 @@ const CHANNELS = [
   { key: "email", file: "email_upload.csv", label: "Email (HubSpot)", note: "Verified emails only. Uploaded to HubSpot + a static list." },
   { key: "linkedin", file: "linkedin_upload.csv", label: "LinkedIn (HeyReach)", note: "Pushed to a new HeyReach list (named after the campaign) on upload." },
   { key: "calling", file: "calling_upload.csv", label: "Calling (dialer)", note: "Contacts with a phone number, for the SDR dialer." },
+  { key: "whatsapp", file: "whatsapp_upload.csv", label: "WhatsApp (Interakt)", note: "Contacts with a phone number, country code and number in separate columns for Interakt import." },
 ];
 
 // Minimal CSV parse (handles quoted fields) for a small on-screen preview.
@@ -238,6 +239,20 @@ export default function ReviewUpload({ run, onImported }: { run: RunStatus; onIm
               ) : (
                 <>
                   <span className="tag-warning">HeyReach</span> {importResult.heyreach.message || importResult.heyreach.status}
+                </>
+              )}
+            </p>
+          )}
+          {importResult.interakt && importResult.interakt.status !== "skipped" && (
+            <p style={{ fontSize: 13, marginTop: 6 }}>
+              {importResult.interakt.status === "pushed" ? (
+                <>
+                  <span className="tag-success">Interakt</span> {importResult.interakt.pushed} WhatsApp contact(s) pushed
+                  {importResult.interakt.failed ? `, ${importResult.interakt.failed} failed` : ""}.
+                </>
+              ) : (
+                <>
+                  <span className="tag-warning">Interakt</span> {importResult.interakt.message || importResult.interakt.status}
                 </>
               )}
             </p>

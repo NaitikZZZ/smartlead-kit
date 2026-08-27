@@ -18,7 +18,8 @@ export default function StepCard({
 
   const fields = question.context?.fields as Record<string, any> | undefined;
   const [formTitles, setFormTitles] = useState<string>(fields?.persona_titles?.default ?? "");
-  const [formCap, setFormCap] = useState<number>(fields?.per_title_cap?.default ?? 2);
+  const [formCap, setFormCap] = useState<number>(fields?.per_title_cap?.default ?? 1);
+  const [formCompanyCap, setFormCompanyCap] = useState<number>(fields?.company_cap?.default ?? 1);
   const [formIncludeLookalikes, setFormIncludeLookalikes] = useState<boolean>(fields?.include_lookalikes?.default ?? false);
   const [formRegions, setFormRegions] = useState<string[]>(fields?.person_locations?.default ?? []);
   const [formOrgLocations, setFormOrgLocations] = useState<string>(fields?.organization_locations?.default ?? "");
@@ -334,15 +335,34 @@ export default function StepCard({
             <input
               type="number"
               min={fields.per_title_cap?.min ?? 1}
-              max={fields.per_title_cap?.max ?? 3}
+              max={fields.per_title_cap?.max ?? 50}
               value={formCap}
               onChange={(e) => {
                 const v = parseInt(e.target.value, 10);
-                setFormCap(Number.isNaN(v) ? (fields.per_title_cap?.default ?? 2) : v);
+                setFormCap(Number.isNaN(v) ? (fields.per_title_cap?.default ?? 1) : v);
               }}
               style={{ width: 100 }}
             />
           </div>
+
+          {fields.company_cap && (
+            <div>
+              <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                {fields.company_cap.label}
+              </label>
+              <input
+                type="number"
+                min={fields.company_cap?.min ?? 1}
+                max={fields.company_cap?.max ?? 10}
+                value={formCompanyCap}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  setFormCompanyCap(Number.isNaN(v) ? (fields.company_cap?.default ?? 1) : v);
+                }}
+                style={{ width: 100 }}
+              />
+            </div>
+          )}
 
           {fields.include_lookalikes && (
             <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
@@ -469,6 +489,7 @@ export default function StepCard({
                 submit({
                   persona_titles: formTitles,
                   per_title_cap: formCap,
+                  company_cap: formCompanyCap,
                   include_lookalikes: formIncludeLookalikes,
                   person_locations: formRegions,
                   organization_locations: formOrgLocations,

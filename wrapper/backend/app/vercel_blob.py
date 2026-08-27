@@ -63,7 +63,12 @@ def _headers(extra: dict | None = None) -> dict:
 def put(pathname: str, data: bytes | str, content_type: str | None = None) -> dict:
     """Uploads (or overwrites) a private blob at the given pathname. Returns
     the API response dict - notably `url`, which is what get()/downstream
-    code should store to fetch it back later."""
+    code should store to fetch it back later.
+
+    Retries up to 3 times with exponential backoff (1s, 2s) on a 5xx
+    response or connection/timeout error - confirmed live 2026-08-25 that
+    Vercel Blob's own API occasionally 503s transiently. Safe to retry: this
+    is already an idempotent overwrite (x-allow-overwrite above)."""
     if isinstance(data, str):
         data = data.encode("utf-8")
     headers = _headers({
@@ -73,9 +78,20 @@ def put(pathname: str, data: bytes | str, content_type: str | None = None) -> di
     })
     if content_type:
         headers["x-content-type"] = content_type
-    r = requests.put(_API_URL, params={"pathname": pathname}, headers=headers, data=data, timeout=60)
-    r.raise_for_status()
-    return r.json()
+
+    for attempt in range(3):
+        try:
+            r = requests.put(_API_URL, params={"pathname": pathname}, headers=headers, data=data, timeout=60)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            if attempt == 2:
+                raise
+            time.sleep(2 ** attempt)
+            continue
+        if r.status_code >= 500 and attempt < 2:
+            time.sleep(2 ** attempt)
+            continue
+        r.raise_for_status()
+        return r.json()
 
 
 def get(url: str) -> bytes:

@@ -27,7 +27,7 @@ from ..models import RunStage
 from . import (
     input_sources, normalize, domain_resolution, apollo_enrich,
     outputs, github_pr, web_completeness, naming, association_resolve,
-    hubspot_lists, hubspot_import, estimates, hubspot_exclusion, heyreach, web_scrape,
+    hubspot_lists, hubspot_import, estimates, hubspot_exclusion, heyreach, interakt, web_scrape,
     icp_mapper, copy_agent,
 )
 
@@ -895,13 +895,6 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
                     df[missing_mask].copy(), resolved_company_col, employee_col, progress=_dom_progress)
                 df.loc[missing_mask, "Domain"] = resolved_subset["Domain"].values
 
-                still = _blank_domain_mask(df)
-                if still.any():
-                    _update(run_id, message="Some domains still missing - web-research pass")
-                    filled_subset, second = web_completeness.fill_completeness_gaps(df[still].copy(), resolved_company_col)
-                    df.loc[still, filled_subset.columns] = filled_subset
-                    stats["completeness"]["second_pass"] = second
-
                 resolved_now = missing_count - int(_blank_domain_mask(df).sum())
                 cost = estimates.cost_block("domain_resolution", missing_count)
                 _accrue_cost(stats, cost)
@@ -933,6 +926,35 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
                 stats["domain_resolution"] = {"skipped": True, "already_present": already_present}
                 _step(stats, "domain", "Domain Resolution", "skipped",
                       f"Skipped by user - {missing_count} row(s) left without a domain.")
+            _update(run_id, stats=dict(stats))
+
+        # ============ Domain gap fill (before Exclusion Check) ============
+        # Domain is Exclusion Check's primary DNU match key (email/company
+        # domain, checked before the fuzzy name-only fallback) and People
+        # Discovery's primary Apollo search key - a blank domain degrades both.
+        # Unlike Industry/Employee (which later Apollo people-search steps can
+        # fill in as a byproduct), nothing downstream ever populates Domain, so
+        # there's no benefit to deferring this one to the end-of-run
+        # completeness ask - by then Exclusion Check and People Discovery have
+        # already run on incomplete data for these rows.
+        still_missing_domain = _blank_domain_mask(df)
+        still_missing_count = int(still_missing_domain.sum())
+        if still_missing_count and config.ANTHROPIC_API_KEY:
+            domain_fill_answer = ask(
+                run_id, "domain_gap_fill_needed", "yes_no",
+                f"{still_missing_count} account(s) still have no domain after resolution. Fill via a "
+                f"web-search lookup (1 Claude call per gap, ~{estimates.humanize_seconds(estimates.estimate_seconds('completeness', still_missing_count))}) "
+                "before Exclusion Check and People Discovery run on them?",
+                default="yes", context={"step": "domain", "gaps": still_missing_count},
+            )
+            if _truthy(domain_fill_answer):
+                _update(run_id, message=f"Filling {still_missing_count} domain gap(s) via web search")
+                filled_subset, domain_fill_stats = web_completeness.fill_completeness_gaps(
+                    df[still_missing_domain].copy(), resolved_company_col)
+                df.loc[still_missing_domain, filled_subset.columns] = filled_subset
+                stats["domain_completeness"] = domain_fill_stats
+            else:
+                stats["domain_completeness"] = {"skipped": True, "reason": "declined by user", "gaps": still_missing_count}
             _update(run_id, stats=dict(stats))
 
         # ============ Step 3: Exclusion Check (gated) ============
@@ -1035,8 +1057,13 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
                                 "default": "",
                             },
                             "per_title_cap": {
-                                "label": "People per company, per job title",
-                                "default": 2, "min": 1, "max": 3,
+                                "label": "People per cluster / job title",
+                                "default": 1, "min": 1, "max": 50,
+                            },
+                            "company_cap": {
+                                "label": "Total people per company (across all clusters/titles)",
+                                "default": 1, "min": 1,
+                                "max": config.MAX_CONTACTS_PER_COMPANY_CAP,
                             },
                             "person_locations": {
                                 "label": "Region / country (optional - blank = Global, pick as many as you like)",
@@ -1050,9 +1077,14 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
                 form_answer = form_answer or {}
                 persona_titles = [t.strip() for t in str(form_answer.get("persona_titles", "")).split(",") if t.strip()] or None
                 try:
-                    per_title_cap = max(1, min(int(form_answer.get("per_title_cap") or 2), 3))
+                    per_title_cap = max(1, min(int(form_answer.get("per_title_cap") or 1), 50))
                 except (TypeError, ValueError):
-                    per_title_cap = 2
+                    per_title_cap = 1
+                try:
+                    company_cap = max(1, min(int(form_answer.get("company_cap") or 1),
+                                              config.MAX_CONTACTS_PER_COMPANY_CAP))
+                except (TypeError, ValueError):
+                    company_cap = 1
                 raw_locations = form_answer.get("person_locations")
                 if isinstance(raw_locations, str):
                     person_locations = [r.strip() for r in raw_locations.split(",") if r.strip()] or None
@@ -1069,9 +1101,9 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
                 _step(stats, "discovery", "People Discovery", "running")
                 candidates_df, search_stats = apollo_enrich.search_candidates(
                     ok_df, resolved_company_col, "Domain", person_locations=person_locations, persona_titles=persona_titles,
-                    max_per_company=config.MAX_CONTACTS_PER_COMPANY_CAP, per_title_cap=effective_per_title_cap)
+                    max_per_company=company_cap, per_title_cap=effective_per_title_cap)
                 stats["apollo_search"] = search_stats
-                cap_note = f" (up to {per_title_cap} per title per company)" if effective_per_title_cap else ""
+                cap_note = f" (up to {per_title_cap} per title, {company_cap} per company)" if effective_per_title_cap else ""
                 _step(stats, "discovery", "People Discovery", "done",
                       f"Searched {search_stats['companies_searched']} account(s), found {search_stats['candidates_found']} candidate(s){cap_note}. Search is free.",
                       seconds=estimates.estimate_seconds("people_discovery", len(ok_df)))
@@ -1088,6 +1120,81 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
 
         # ============ Step 5: Email Reveal & Validation ============
         if has_existing_contacts:
+            # ============ ICP Filter (gated) ============
+            # Runs before any Apollo spend below, so non-ICP rows never get paid
+            # for - a sheet that already has names/titles/emails can still carry
+            # people outside the target ICP (e.g. a raw event-attendee export).
+            icp_filter_answer = ask(
+                run_id, "icp_title_filter_needed", "yes_no",
+                f"This sheet has {len(ok_df)} named contact(s). Remove anyone whose job title doesn't "
+                "match your ICP before enriching?",
+                default="yes", context={"step": "reveal"},
+            )
+            if _truthy(icp_filter_answer):
+                icp_titles_answer = ask(
+                    run_id, "icp_title_filter_titles", "text",
+                    "ICP job titles to keep (comma-separated) - anyone else gets removed as non-ICP:",
+                    default="", context={"step": "reveal"},
+                )
+                icp_titles = [t.strip() for t in str(icp_titles_answer).split(",") if t.strip()]
+                icp_exact = True
+
+                title_col_for_filter = _guess_col(ok_df, ["title", "job title"])
+                if not icp_titles:
+                    stats["icp_title_filter"] = {"skipped": True, "reason": "no ICP titles provided"}
+                elif not title_col_for_filter:
+                    stats["icp_title_filter"] = {"skipped": True, "reason": "no job-title column found in sheet"}
+                else:
+                    before_count = len(ok_df)
+                    keep_mask = ok_df[title_col_for_filter].apply(
+                        lambda t: apollo_enrich.title_matches_any(str(t) if pd.notna(t) else "", icp_titles, exact=icp_exact)
+                    )
+                    ok_df = ok_df[keep_mask].copy()
+                    removed = before_count - len(ok_df)
+                    stats["icp_title_filter"] = {"removed": removed, "kept": len(ok_df), "titles": icp_titles, "exact": icp_exact}
+                    _step(stats, "icp_filter", "ICP Filter", "done",
+                          f"Removed {removed} non-ICP contact(s) by job title; {len(ok_df)} remain.")
+            else:
+                stats["icp_title_filter"] = {"skipped": True}
+            _update(run_id, stats=dict(stats))
+
+            # ============ Seniority Filter (gated) ============
+            # Runs before any Apollo spend below - a sheet that already has
+            # names/titles can carry contacts below the managerial level this
+            # kit targets (e.g. "Associate", "Sales Executive"). Opt-in and
+            # off by default so it never silently changes who gets reached
+            # out to unless asked for.
+            title_col_for_seniority = _guess_col(ok_df, ["title", "job title"])
+            seniority_col_for_filter = _guess_col(ok_df, ["seniority"])
+            if title_col_for_seniority or seniority_col_for_filter:
+                junior_mask = ok_df.apply(
+                    lambda r: apollo_enrich.is_below_manager(
+                        r.get(title_col_for_seniority) if title_col_for_seniority else None,
+                        r.get(seniority_col_for_filter) if seniority_col_for_filter else None,
+                    ), axis=1,
+                )
+                junior_count = int(junior_mask.sum())
+                if junior_count:
+                    seniority_answer = ask(
+                        run_id, "seniority_filter_needed", "yes_no",
+                        f"{junior_count} of {len(ok_df)} contact(s) read as below managerial level "
+                        "(Associate, Executive, entry-level titles). Exclude them before enriching?",
+                        default="no", context={"step": "reveal", "below_manager": junior_count},
+                    )
+                    if _truthy(seniority_answer):
+                        ok_df = ok_df[~junior_mask].copy()
+                        stats["seniority_filter"] = {"excluded": junior_count, "remaining": len(ok_df)}
+                        _step(stats, "seniority_filter", "Seniority Filter", "done",
+                              f"Excluded {junior_count} below-managerial contact(s); {len(ok_df)} remain.")
+                    else:
+                        stats["seniority_filter"] = {"skipped": True, "declined": True, "below_manager": junior_count}
+                        _step(stats, "seniority_filter", "Seniority Filter", "skipped", "Skipped by user.")
+                else:
+                    stats["seniority_filter"] = {"skipped": True, "reason": "no below-managerial contacts found"}
+            else:
+                stats["seniority_filter"] = {"skipped": True, "reason": "no title/seniority column found"}
+            _update(run_id, stats=dict(stats))
+
             _update(run_id, stage=RunStage.enriching, message=f"Filling emails for {len(ok_df)} existing contact(s)")
             _step(stats, "reveal", "Email Reveal & Validation", "running")
             core_df, fill_stats = apollo_enrich.enrich_existing_contacts(
@@ -1169,9 +1276,13 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
             core_df = _map_existing_contact_columns(core_df, resolved_first_col, resolved_last_col, resolved_company_col)
 
         # ============ Completeness fill (deferred - only worth asking once we know the real gap count) ============
+        # Domain is deliberately excluded here - it's handled right after Domain
+        # Resolution, before Exclusion Check, since nothing between there and here
+        # ever populates it (see the domain gap-fill block above). Industry/
+        # Employee stay deferred since later Apollo people-search steps can still
+        # fill those in as a byproduct.
         completeness_cols = [
             c for c in (
-                web_completeness._find_col(accounts_processed.columns, web_completeness.DOMAIN_CANDIDATES),
                 web_completeness._find_col(accounts_processed.columns, web_completeness.INDUSTRY_CANDIDATES),
                 web_completeness._find_col(accounts_processed.columns, web_completeness.EMPLOYEE_CANDIDATES),
             ) if c
@@ -1187,7 +1298,7 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         if not config.ANTHROPIC_API_KEY:
             stats["completeness"] = {"skipped": True, "reason": "ANTHROPIC_API_KEY not configured", "gaps": gap_count}
         elif not completeness_cols or gap_count == 0:
-            stats["completeness"] = {"skipped": True, "reason": "no gaps found" if completeness_cols else "no Domain/Industry/Employee column present", "gaps": gap_count}
+            stats["completeness"] = {"skipped": True, "reason": "no gaps found" if completeness_cols else "no Industry/Employee column present", "gaps": gap_count}
         else:
             fill_answer = ask(
                 run_id, "completeness_fill_needed", "yes_no",
@@ -1349,6 +1460,19 @@ def run_confirmed_import(run_id: str, run_dir: Path):
             li_df = li_df.where(pd.notna(li_df), None)
             heyreach_result = heyreach.push_leads(li_df.to_dict(orient="records"), campaign_title)
     result["heyreach"] = heyreach_result
+
+    # Push the WhatsApp file to Interakt (best-effort - never sinks the HubSpot
+    # import that already succeeded).
+    interakt_result = {"status": "skipped"}
+    if outputs.file_exists(run_dir, "whatsapp_upload.csv"):
+        try:
+            wa_df = pd.read_csv(io.BytesIO(outputs.read_file(run_dir, "whatsapp_upload.csv")))
+        except pd.errors.EmptyDataError:
+            wa_df = pd.DataFrame()
+        if not wa_df.empty:
+            wa_df = wa_df.where(pd.notna(wa_df), None)
+            interakt_result = interakt.push_users(wa_df.to_dict(orient="records"), campaign_title)
+    result["interakt"] = interakt_result
 
     running_stats = dict(job["stats"])
     _step(running_stats, "copy_agent", "Copy Agent", "running")
