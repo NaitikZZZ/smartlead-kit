@@ -66,6 +66,34 @@ export default function StepCard({
         </p>
       )}
 
+      {((question.context?.excluded_accounts as any[]) || []).length > 0 && (
+        <div className="card" style={{ padding: 12, marginBottom: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--dark-200)", marginBottom: 8, textTransform: "uppercase" }}>
+            {question.context?.excluded_count ?? (question.context?.excluded_accounts as any[]).length} account(s) excluded
+          </div>
+          <div style={{ maxHeight: 220, overflowY: "auto" }}>
+            <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left", padding: "4px 8px 4px 0" }}>Company</th>
+                  <th style={{ textAlign: "left", padding: "4px 8px" }}>Domain</th>
+                  <th style={{ textAlign: "left", padding: "4px 0" }}>Why excluded</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(question.context?.excluded_accounts as { company: string; domain: string; reason: string }[]).map((r, i) => (
+                  <tr key={i}>
+                    <td style={{ padding: "4px 8px 4px 0" }}>{r.company}</td>
+                    <td style={{ padding: "4px 8px" }}>{r.domain}</td>
+                    <td style={{ padding: "4px 0", color: "var(--dark-200)" }}>{r.reason}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {est && (
         <div className="est-box">
           Estimated Apollo cost for this step: <strong>{est.credits} credits</strong> ≈{" "}
