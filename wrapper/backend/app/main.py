@@ -36,6 +36,7 @@ def get_config():
         "apollo_configured": bool(config.APOLLO_API_KEY),
         "hubspot_read_configured": bool(config.HUBSPOT_READ_TOKEN),
         "hubspot_write_configured": bool(config.HUBSPOT_WRITE_TOKEN),
+        "interakt_configured": bool(config.INTERAKT_API_KEY),
         "exclusion_list_name": "ABM EXCLSIONS - DNU",
         "exclusion_list_id": config.HUBSPOT_EXCLUSION_LIST_ID,
         "exclusion_list_url": exclusion_list_url,
