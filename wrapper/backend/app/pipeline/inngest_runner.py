@@ -99,6 +99,11 @@ def _guess_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
 # actually decides which column wins when a sheet has several.
 _EMAIL_COL_CANDIDATES = ["final work email", "work email", "email address", "email"]
 
+# "linkedinurl" first so an exact-match hit (e.g. a HeyReach export's
+# "linkedinUrl") wins before substring fallback ever risks matching
+# "company_linkedinUrl" instead - see the linkedin_url passthrough below.
+_LINKEDIN_COL_CANDIDATES = ["linkedinurl", "linkedin url", "person linkedin url", "linkedin profile url", "linkedin"]
+
 
 def _blank_domain_mask(df: pd.DataFrame) -> pd.Series:
     if "Domain" not in df.columns:
@@ -810,6 +815,17 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             df["Domain"] = None
         df["Domain"] = df["Domain"].apply(lambda v: outputs.strip_url_prefix(v) if pd.notna(v) else v)
 
+        # A sheet that already carries LinkedIn URLs under a differently-named
+        # column (e.g. a HeyReach export's "linkedinUrl") must not lose them -
+        # outputs.build_channel_files only ever reads the exact "linkedin_url"
+        # column, and Apollo enrichment only fills it in when blank (and needs
+        # a domain to do so), so without this passthrough a sheet with real,
+        # ready-to-use LinkedIn URLs produced 0 rows in every channel output
+        # whenever domain resolution was skipped.
+        existing_linkedin_col = "linkedin_url" if "linkedin_url" in df.columns else _guess_col(df, _LINKEDIN_COL_CANDIDATES)
+        if existing_linkedin_col and existing_linkedin_col != "linkedin_url":
+            df["linkedin_url"] = df[existing_linkedin_col]
+
         missing_mask = _blank_domain_mask(df)
         missing_count = int(missing_mask.sum())
         already_present = len(df) - missing_count
@@ -975,17 +991,21 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         email_col_existing = _guess_col(ok_df, _EMAIL_COL_CANDIDATES)
         resolved_first_col = "Cleaned First Name" if "Cleaned First Name" in ok_df.columns else _guess_col(ok_df, ["first name", "firstname", "first_name"])
         resolved_last_col = "Cleaned Last Name" if "Cleaned Last Name" in ok_df.columns else _guess_col(ok_df, ["last name", "lastname", "last_name"])
+        named_count = int(ok_df[resolved_first_col].notna().sum()) if resolved_first_col else 0
+        # Majority, not "any row" - a single stray named row (leftover/partial
+        # data) in an otherwise company-only ABM list must not skip discovery
+        # for every other account. See has_existing_contacts's doc comment in
+        # runner.py for the intended "already a person-level export" case.
         has_existing_contacts = (
             bool(resolved_first_col) and bool(resolved_last_col)
-            and int(ok_df[resolved_first_col].notna().sum()) > 0
+            and len(ok_df) > 0 and named_count >= len(ok_df) * 0.5
         )
 
         candidates_df = pd.DataFrame()
 
         if has_existing_contacts:
-            named = int(ok_df[email_col_existing].notna().sum()) if email_col_existing else 0
             await _set_step(step, "step_discovery_auto_skipped", run_id, "discovery", "People Discovery", "skipped",
-                             f"Sheet already has {named} named contact(s) - discovery not needed.")
+                             f"Sheet already has {named_count} named contact(s) - discovery not needed.")
             await _set_stat(step, "stat_discovery_auto_skipped", run_id, "apollo_search",
                              {"skipped": True, "reason": "sheet already had named contacts"})
         else:
