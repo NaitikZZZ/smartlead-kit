@@ -42,7 +42,7 @@ _LOCK = threading.Lock()
 # abbreviations/group names itself.
 REGION_OPTIONS = [
     "US", "UK", "India", "Europe", "APAC", "Canada", "Australia",
-    "GCC", "KSA", "Africa", "Philippines", "Indonesia", "SEA", "Global",
+    "GCC", "Saudi Arabia", "Africa", "Philippines", "Indonesia", "SEA", "Global",
 ]
 
 # Individual countries offered alongside the broad groups above, so a run can

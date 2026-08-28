@@ -37,7 +37,7 @@ REGION_GROUPS: dict[str, list[str]] = {
                "Ireland", "Sweden", "Switzerland", "Belgium", "Poland"],
     "APAC": ["Australia", "Singapore", "Japan", "India", "Hong Kong", "New Zealand", "South Korea"],
     "GCC": ["Saudi Arabia", "United Arab Emirates", "Qatar", "Kuwait", "Bahrain", "Oman"],
-    "KSA": ["Saudi Arabia"],
+    "Saudi Arabia": ["Saudi Arabia"],
     "Africa": ["South Africa", "Nigeria", "Kenya", "Egypt", "Ghana", "Morocco"],
     "SEA": ["Singapore", "Malaysia", "Indonesia", "Philippines", "Thailand", "Vietnam"],
     "Philippines": ["Philippines"],
@@ -206,7 +206,7 @@ def _run_parallel(items, fn, max_workers, progress=None):
 def search_candidates(df: pd.DataFrame, company_col: str, domain_col: str, person_locations=None, persona_titles=None,
                        max_per_company=None, per_title_cap=None, employee_ranges=None, exact_titles=True,
                        organization_locations=None, person_seniorities=None, person_functions=None,
-                       exclude_titles=None):
+                       exclude_titles=None, industries=None):
     """per_title_cap (1-3 typically) switches selection to
     select_candidates_per_persona: every title in persona_titles is guaranteed
     up to per_title_cap candidates per company, instead of ranking against the
@@ -240,7 +240,12 @@ def search_candidates(df: pd.DataFrame, company_col: str, domain_col: str, perso
     whose title contains an excluded phrase (lookalike/substring match, same
     rule title_matches_any(exact=False) uses) before selection - so an
     excluded candidate is never selected or counted, regardless of
-    per_title_cap mode."""
+    per_title_cap mode.
+
+    industries is free-text industry/keyword filtering (e.g. "healthcare",
+    "fintech") sent through Apollo's documented q_organization_keyword_tags
+    filter - Apollo's search has no public, documented industry-taxonomy-ID
+    filter, so this is keyword matching rather than a curated category."""
     session = requests.Session()
     session.mount("https://", requests.adapters.HTTPAdapter(max_retries=0))
 
@@ -258,7 +263,7 @@ def search_candidates(df: pd.DataFrame, company_col: str, domain_col: str, perso
         _search.PERSONAS, _search.MAX_PER_COMPANY = personas, cap
         try:
             people = _search.search_people(session, domain, person_locations, employee_ranges, organization_locations,
-                                            person_seniorities, person_functions)
+                                            person_seniorities, person_functions, industries)
             if exclude_titles:
                 people = [p for p in people if not title_matches_any(p.get("title"), exclude_titles, exact=False)]
             if per_title_cap:

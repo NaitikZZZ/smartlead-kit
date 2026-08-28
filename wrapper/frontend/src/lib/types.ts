@@ -143,5 +143,6 @@ export interface WizardTargeting {
   employee_sizes: string[];
   regions: string[];
   organization_locations?: string[];
+  industries?: string[];
   company_names?: string[];
 }
