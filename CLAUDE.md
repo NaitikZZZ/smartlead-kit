@@ -198,3 +198,6 @@ PATCH /campaigns/{id}/status
 - ❌ Uploading > 400 leads in one request — will 422
 - ❌ Hardcoding `email_account_ids` — fetch them dynamically per environment
 - ❌ Starting a campaign before attaching at least one email account — it will sit idle
+
+## Multi-channel note (WhatsApp / Interakt)
+This kit is Smartlead-only today. If a WhatsApp/Interakt step is ever added to this pipeline, its campaign name still needs to follow the naming-convention doc in the sibling `nac_outbound_kit` repo (`docs/campaign-naming-convention.md`), which reserves a `WA` channel code for Interakt.
