@@ -1013,9 +1013,13 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         email_col_existing = _guess_col(ok_df, _EMAIL_COL_CANDIDATES)
         resolved_first_col = "Cleaned First Name" if "Cleaned First Name" in ok_df.columns else _guess_col(ok_df, ["first name", "firstname", "first_name"])
         resolved_last_col = "Cleaned Last Name" if "Cleaned Last Name" in ok_df.columns else _guess_col(ok_df, ["last name", "lastname", "last_name"])
+        named_count = int(ok_df[resolved_first_col].notna().sum()) if resolved_first_col else 0
+        # Majority, not "any row" - a single stray named row (leftover/partial
+        # data) in an otherwise company-only ABM list must not skip discovery
+        # for every other account.
         has_existing_contacts = (
             bool(resolved_first_col) and bool(resolved_last_col)
-            and int(ok_df[resolved_first_col].notna().sum()) > 0
+            and len(ok_df) > 0 and named_count >= len(ok_df) * 0.5
         )
 
         core_df = pd.DataFrame()
@@ -1025,10 +1029,9 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
 
         # ============ Step 4: People Discovery (gated; auto-skip if named contacts present) ============
         if has_existing_contacts:
-            named = int(ok_df[email_col_existing].notna().sum()) if email_col_existing else 0
             stats["apollo_search"] = {"skipped": True, "reason": "sheet already had named contacts"}
             _step(stats, "discovery", "People Discovery", "skipped",
-                  f"Sheet already has {named} named contact(s) - discovery not needed.")
+                  f"Sheet already has {named_count} named contact(s) - discovery not needed.")
             _update(run_id, stats=dict(stats))
         else:
             disc_answer = ask(
