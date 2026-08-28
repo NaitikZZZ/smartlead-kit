@@ -341,7 +341,17 @@ def _map_existing_contact_columns(df: pd.DataFrame, first_col: str, last_col: st
     # occurrence of any duplicate header, drop the rest.
     out = out.loc[:, ~out.columns.duplicated()]
     title_col = _guess_col(out, ["title", "job title"])
-    linkedin_col = _guess_col(out, ["person linkedin url", "linkedin url", "linkedin"])
+    # Prefer an already-resolved canonical "linkedin_url" column (e.g. from
+    # inngest_runner's linkedin_url passthrough) over re-guessing - otherwise
+    # the loose "linkedin" substring fallback below can match an EARLIER,
+    # unrelated column that merely contains that substring (e.g. a sheet with
+    # both "linkedinEmail" and "linkedinUrl" - "linkedinEmail" sorts first and
+    # got picked, blanking out real URLs with an all-empty email column; see
+    # run 78b2f2609c2a). "linkedinurl" (no space) goes first among the guess
+    # candidates so an exact match wins before that substring fallback ever runs.
+    linkedin_col = ("linkedin_url" if "linkedin_url" in out.columns
+                     else _guess_col(out, ["linkedinurl", "linkedin url", "person linkedin url",
+                                            "linkedin profile url", "linkedin"]))
     company_li_col = _guess_col(out, ["company linkedin url"])
     industry_col = _guess_col(out, ["industry"])
     employees_col = _guess_col(out, ["# employees", "employees", "employee count"])
