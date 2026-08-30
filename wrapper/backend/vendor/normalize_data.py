@@ -35,7 +35,7 @@ from pathlib import Path
 NAME_PREFIXES = {
     "mr", "mrs", "ms", "miss", "mx", "dr", "prof", "professor", "shri", "smt",
     "sri", "er", "eng", "capt", "col", "maj", "rev", "fr", "sir", "madam",
-    "hon", "adv",
+    "hon", "adv", "ca", "cs", "ar",
 }
 
 NAME_SUFFIXES = {
@@ -48,10 +48,13 @@ NAME_SUFFIXES = {
 # (e.g. "private limited") are matched before their component words.
 COMPANY_SUFFIXES = [
     "private limited", "pvt ltd", "pvt. ltd.", "pvt. ltd", "pte ltd",
-    "pty ltd", "public limited company", "limited liability company",
-    "limited liability partnership", "limited", "ltd.", "ltd", "llp",
+    "pte. ltd.", "pte. ltd", "pty ltd", "pty. ltd.", "pty. ltd",
+    "public limited company", "limited liability company",
+    "limited liability partnership", "one person company", "opc",
+    "hindu undivided family", "huf", "sole proprietorship",
+    "limited", "ltd.", "ltd", "llp",
     "llc", "l.l.c.", "inc.", "inc", "incorporated", "corporation", "corp.",
-    "corp", "co.", "co", "company", "gmbh", "plc", "s.a.", "sa", "ag",
+    "corp", "& co.", "& co", "& company", "co.", "co", "company", "gmbh", "plc", "s.a.", "sa", "ag",
     "s.r.l.", "srl", "bv", "n.v.", "nv", "kk", "oy", "ab",
 ]
 
