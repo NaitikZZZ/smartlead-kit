@@ -13,6 +13,7 @@ the JSON answer mechanism.
 from __future__ import annotations
 import io
 import json as _json
+import re
 import threading
 import time
 import traceback
@@ -320,6 +321,22 @@ def _guess_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
     return None
 
 
+def _company_from_domain(domain) -> str:
+    """Best-effort stand-in company name derived from a domain/website, used
+    only when no real Company Name column exists at all (see the no-company
+    ask() gate below) - strips protocol/www/TLD and title-cases what's left
+    (e.g. 'www.acme-corp.com' -> 'Acme Corp')."""
+    if not domain or pd.isna(domain):
+        return ""
+    d = str(domain).strip().lower()
+    d = re.sub(r"^https?://", "", d)
+    d = re.sub(r"^www\.", "", d)
+    d = d.split("/")[0]
+    d = d.split(".")[0]  # first label only - handles compound TLDs like .co.in/.co.uk
+    d = d.replace("-", " ").replace("_", " ")
+    return " ".join(w.capitalize() for w in d.split())
+
+
 # Ordered most- to least-preferred: a sheet with both a "Final Work Email"
 # and a plain "Email"/"Work Email" column should use the more-verified one.
 # _guess_col checks candidates in this order for an exact column-name match
@@ -341,7 +358,17 @@ def _map_existing_contact_columns(df: pd.DataFrame, first_col: str, last_col: st
     # occurrence of any duplicate header, drop the rest.
     out = out.loc[:, ~out.columns.duplicated()]
     title_col = _guess_col(out, ["title", "job title"])
-    linkedin_col = _guess_col(out, ["person linkedin url", "linkedin url", "linkedin"])
+    # Prefer an already-resolved canonical "linkedin_url" column (e.g. from
+    # inngest_runner's linkedin_url passthrough) over re-guessing - otherwise
+    # the loose "linkedin" substring fallback below can match an EARLIER,
+    # unrelated column that merely contains that substring (e.g. a sheet with
+    # both "linkedinEmail" and "linkedinUrl" - "linkedinEmail" sorts first and
+    # got picked, blanking out real URLs with an all-empty email column; see
+    # run 78b2f2609c2a). "linkedinurl" (no space) goes first among the guess
+    # candidates so an exact match wins before that substring fallback ever runs.
+    linkedin_col = ("linkedin_url" if "linkedin_url" in out.columns
+                     else _guess_col(out, ["linkedinurl", "linkedin url", "person linkedin url",
+                                            "linkedin profile url", "linkedin"]))
     company_li_col = _guess_col(out, ["company linkedin url"])
     industry_col = _guess_col(out, ["industry"])
     employees_col = _guess_col(out, ["# employees", "employees", "employee count"])
@@ -800,9 +827,54 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
 
         input_count = len(df)
         company_col = company_col or _guess_col(df, ["Company", "Company Name", "company", "Account Name", "Organization", "organization"])
+        stop_after_normalization = False
         if not company_col:
-            raise ValueError(f"Could not find a company-name column. Columns present: {list(df.columns)}")
-        region_col = _guess_col(df, ["Region", "Country", "region", "country"])
+            # No company column at all - rather than hard-failing outright, offer
+            # a way forward: if the file has a LinkedIn URL or domain/website
+            # column, that's enough signal to derive a stand-in company identity
+            # and keep going: LinkedIn already identifies a specific person, and
+            # a domain resolves to a name below. Without either, there's nothing
+            # for domain resolution/exclusion/enrichment to key off, so the only
+            # honest option is to clean names and stop for a re-run with a fix.
+            linkedin_col = _guess_col(df, ["linkedin_url", "linkedinurl", "linkedin url",
+                                           "person linkedin url", "linkedin profile url", "linkedin"])
+            domain_col_fallback = _guess_col(df, ["domain", "website", "company domain"])
+            if linkedin_col or domain_col_fallback:
+                signal = "domain/website" if domain_col_fallback else "LinkedIn URL"
+                prompt = (
+                    f"No company-name column found (columns present: {list(df.columns)}). Your file does have a "
+                    f"{signal} column though, so normalization can run and the pipeline can continue using that "
+                    "instead of a real company name. Continue?"
+                )
+            else:
+                prompt = (
+                    f"No company-name column found (columns present: {list(df.columns)}). Domain resolution, "
+                    "exclusion checking, and enrichment all need a company name, so continuing will only clean up "
+                    "names - you'd then need to start a new run with a company column added to go further. "
+                    "Continue with normalization only?"
+                )
+            proceed = ask(run_id, "no_company_column_confirm", "yes_no", prompt,
+                           default="no", context={"step": "source", "columns": list(df.columns)})
+            if not _truthy(proceed):
+                raise ValueError(f"Could not find a company-name column. Columns present: {list(df.columns)}")
+            if domain_col_fallback:
+                df["Company"] = df[domain_col_fallback].apply(_company_from_domain)
+                company_col = "Company"
+                stats.setdefault("warnings", []).append(
+                    "No company-name column found - derived a stand-in company name from the domain/website column.")
+            elif linkedin_col:
+                df["Company"] = ""
+                company_col = "Company"
+                stats.setdefault("warnings", []).append(
+                    "No company-name column found - continuing with LinkedIn URLs only; company-based steps "
+                    "(domain resolution, Apollo company search) will have little to work with.")
+            else:
+                stop_after_normalization = True
+                stats.setdefault("warnings", []).append(
+                    "No company-name column found - ran name cleanup only, then stopped. Add a Company Name "
+                    "column and start a new run to continue.")
+
+        region_col = _guess_col(df, ["Region", "Country", "region", "country"]) if not stop_after_normalization else None
         if project_meta:
             stats["project_meta"] = project_meta  # keep in local stats so it persists across updates
         _update(run_id, stats=dict(stats))
@@ -810,7 +882,7 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         # The vendored normalizer only does exact-name column matching - alias
         # whatever header we detected onto a name it recognizes so company
         # normalization (legal-suffix stripping) still runs.
-        if company_col.strip().lower() not in {"company name", "company", "organization", "organisation", "account name"} and "Company" not in df.columns:
+        if company_col and company_col.strip().lower() not in {"company name", "company", "organization", "organisation", "account name"} and "Company" not in df.columns:
             df["Company"] = df[company_col]
 
         _update(run_id, stage=RunStage.normalizing, message="Normalizing names/company")
@@ -844,6 +916,17 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         _step(stats, "source", "Input & Normalization", "done", src_summary,
               seconds=estimates.estimate_seconds("normalize", input_count))
         _update(run_id, stats=dict(stats))
+
+        # Always make the normalized file downloadable right away, whether or
+        # not the run continues further - some users only want normalization.
+        normalized_path = outputs.write_file(run_dir, "00_normalized.csv", df.to_csv(index=False), "text/csv")
+        job_so_far = get_job(run_id)
+        _update(run_id, output_files=list(job_so_far.get("output_files", [])) + [normalized_path])
+
+        if stop_after_normalization:
+            _update(run_id, stage=RunStage.normalized_stopped,
+                    message="Normalization done. Add a Company Name column and start a new run to continue.")
+            return
 
         # ============ Step 2: Domain Resolution (gated) ============
         existing_domain_col = "Domain" if "Domain" in df.columns else _guess_col(df, ["domain", "website", "company domain"])
