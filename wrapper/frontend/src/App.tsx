@@ -14,7 +14,7 @@ const REVIEW_STAGES = new Set(["awaiting_import_confirmation", "importing_to_hub
 // Only stop polling at truly terminal states. We must KEEP polling through
 // "awaiting_answer" and the processing stages between questions - otherwise
 // after you answer one question the UI never sees the next one appear.
-const POLL_STOP = new Set(["done", "failed"]);
+const POLL_STOP = new Set(["done", "failed", "normalized_stopped"]);
 
 export default function App() {
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
@@ -100,7 +100,7 @@ export default function App() {
           />
         )}
 
-        {run && !REVIEW_STAGES.has(run.stage) && run.stage !== "failed" &&
+        {run && !REVIEW_STAGES.has(run.stage) && run.stage !== "failed" && run.stage !== "normalized_stopped" &&
           !(run.stage === "awaiting_answer" && run.pending_question) && (
             <div className="card" style={{ padding: 24 }}>
               <h3>{run.message}</h3>
@@ -109,6 +109,16 @@ export default function App() {
           )}
 
         {run && REVIEW_STAGES.has(run.stage) && <ReviewUpload run={run} onImported={refresh} />}
+
+        {run && run.stage === "normalized_stopped" && (
+          <div className="card" style={{ padding: 24 }}>
+            <h3>Normalization done</h3>
+            <p style={{ marginTop: 8 }}>{run.message}</p>
+            <button className="btn-secondary" style={{ marginTop: 16 }} onClick={() => { setRunId(null); setRun(null); }}>
+              Start a new run
+            </button>
+          </div>
+        )}
 
         {run && run.stage === "failed" && (
           <div className="card" style={{ padding: 24, borderColor: "var(--red-300)" }}>

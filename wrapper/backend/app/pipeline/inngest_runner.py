@@ -92,6 +92,22 @@ def _guess_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
     return None
 
 
+def _company_from_domain(domain) -> str:
+    """Best-effort stand-in company name derived from a domain/website, used
+    only when no real Company Name column exists at all (see the no-company
+    ask() gate in _run_pipeline) - strips protocol/www/TLD and title-cases
+    what's left (e.g. 'www.acme-corp.com' -> 'Acme Corp')."""
+    if not domain or pd.isna(domain):
+        return ""
+    d = str(domain).strip().lower()
+    d = re.sub(r"^https?://", "", d)
+    d = re.sub(r"^www\.", "", d)
+    d = d.split("/")[0]
+    d = d.split(".")[0]  # first label only - handles compound TLDs like .co.in/.co.uk
+    d = d.replace("-", " ").replace("_", " ")
+    return " ".join(w.capitalize() for w in d.split())
+
+
 # Ordered most- to least-preferred: a sheet with both a "Final Work Email"
 # and a plain "Email"/"Work Email" column should use the more-verified one.
 # _guess_col checks candidates in this order for an exact column-name match
@@ -758,13 +774,58 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         input_count = len(df)
         company_col = company_col or _guess_col(
             df, ["Company", "Company Name", "company", "Account Name", "Organization", "organization"])
+        stop_after_normalization = False
         if not company_col:
-            raise ValueError(f"Could not find a company-name column. Columns present: {list(df.columns)}")
-        region_col = _guess_col(df, ["Region", "Country", "region", "country"])
+            # No company column at all - mirrors runner.py's gate: a LinkedIn URL
+            # or domain/website column is enough signal to derive a stand-in
+            # company identity and keep going; without either, clean names only
+            # and stop, since domain resolution/exclusion/enrichment all need a
+            # company name to key off.
+            linkedin_col = _guess_col(df, ["linkedin_url", "linkedinurl", "linkedin url",
+                                           "person linkedin url", "linkedin profile url", "linkedin"])
+            domain_col_fallback = _guess_col(df, ["domain", "website", "company domain"])
+            if linkedin_col or domain_col_fallback:
+                signal = "domain/website" if domain_col_fallback else "LinkedIn URL"
+                prompt = (
+                    f"No company-name column found (columns present: {list(df.columns)}). Your file does have a "
+                    f"{signal} column though, so normalization can run and the pipeline can continue using that "
+                    "instead of a real company name. Continue?"
+                )
+            else:
+                prompt = (
+                    f"No company-name column found (columns present: {list(df.columns)}). Domain resolution, "
+                    "exclusion checking, and enrichment all need a company name, so continuing will only clean up "
+                    "names - you'd then need to start a new run with a company column added to go further. "
+                    "Continue with normalization only?"
+                )
+            proceed = await _ask(step, run_id, "no_company_column_confirm", "yes_no", prompt,
+                                  default="no", context={"step": "source", "columns": list(df.columns)})
+            if not _truthy(proceed):
+                raise ValueError(f"Could not find a company-name column. Columns present: {list(df.columns)}")
+            if domain_col_fallback:
+                df["Company"] = df[domain_col_fallback].apply(_company_from_domain)
+                company_col = "Company"
+                await _set_stat(step, "stat_no_company_warning", run_id, "warnings",
+                                 ["No company-name column found - derived a stand-in company name from the "
+                                  "domain/website column."])
+            elif linkedin_col:
+                df["Company"] = ""
+                company_col = "Company"
+                await _set_stat(step, "stat_no_company_warning", run_id, "warnings",
+                                 ["No company-name column found - continuing with LinkedIn URLs only; "
+                                  "company-based steps (domain resolution, Apollo company search) will have "
+                                  "little to work with."])
+            else:
+                stop_after_normalization = True
+                await _set_stat(step, "stat_no_company_warning", run_id, "warnings",
+                                 ["No company-name column found - ran name cleanup only, then stopped. Add a "
+                                  "Company Name column and start a new run to continue."])
+
+        region_col = _guess_col(df, ["Region", "Country", "region", "country"]) if not stop_after_normalization else None
         if project_meta:
             await _set_stat(step, "stat_project_meta", run_id, "project_meta", project_meta)
 
-        if (company_col.strip().lower() not in {"company name", "company", "organization", "organisation", "account name"}
+        if (company_col and company_col.strip().lower() not in {"company name", "company", "organization", "organisation", "account name"}
                 and "Company" not in df.columns):
             df["Company"] = df[company_col]
 
@@ -788,6 +849,24 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             )
 
         await _set_step(step, "step_source_done", run_id, "source", "Input & Normalization", "done", src_summary)
+
+        # Always make the normalized file downloadable right away, whether or
+        # not the run continues further - some users only want normalization.
+        normalized_path = await asyncio.to_thread(
+            outputs.write_file, run_dir, "00_normalized.csv", df.to_csv(index=False), "text/csv")
+
+        async def _append_normalized_output_file():
+            job = run_status.get(run_id)
+            existing = list(job.get("output_files", []))
+            run_status.update(run_id, output_files=existing + [normalized_path])
+            return True
+
+        await step.run("append_normalized_output_file", _append_normalized_output_file)
+
+        if stop_after_normalization:
+            await _status(step, "status_normalized_stopped", run_id, stage="normalized_stopped",
+                           message="Normalization done. Add a Company Name column and start a new run to continue.")
+            return {"run_id": run_id, "rows": len(df), "stopped": "no_company_column"}
 
         if input_source == "campaign_idea":
             # description + CSV: description drives targeting, CSV drives the
