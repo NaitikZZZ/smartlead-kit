@@ -245,7 +245,7 @@ def _fill_missing_from_raw(enriched_df: pd.DataFrame, raw_df: pd.DataFrame) -> p
 
     # Find email and phone columns in both dataframes
     raw_email_col = _guess_col(raw_df, _EMAIL_COL_CANDIDATES)
-    raw_phone_col = next((c for c in raw_df.columns if c.lower() in ["phone", "phone number", "mobile", "mobile number"]), None)
+    raw_phone_col = next((c for c in raw_df.columns if c.lower() in ["phone", "phone number", "mobile", "mobile number", "mobile phone"]), None)
 
     # Only fill if enrichment didn't find the value
     if raw_email_col and raw_email_col in raw_df.columns:
