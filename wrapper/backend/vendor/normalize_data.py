@@ -376,6 +376,11 @@ COMMON_SHORT_WORDS = {
 }
 
 # Case-preserving brand names that don't proper-case correctly on their own.
+
+# TLDs commonly used as a deliberate, stylized suffix in a real product/
+# company name rather than pasted as a plain domain reference.
+BRAND_STYLE_TLDS = {"ai", "io", "app", "dev", "so", "sh", "xyz"}
+
 BRAND_CASE = {
     "ebay": "eBay", "iphone": "iPhone", "ipad": "iPad", "imac": "iMac",
     "paypal": "PayPal", "youtube": "YouTube", "linkedin": "LinkedIn",
@@ -408,10 +413,19 @@ def clean_company_name(value, suffixes):
     if _QUALITY_MARKER_RE.search(text):
         text = _QUALITY_MARKER_RE.sub(" ", text)
 
-    # Bare domain in the company column, e.g. "acme-corp.com".
-    if re.fullmatch(r"(?:https?://)?(?:www\.)?[a-z0-9-]+(?:\.[a-z]{2,}){1,2}/?", text, re.I):
-        host = re.sub(r"^(?:https?://)?(?:www\.)?", "", text, flags=re.I).rstrip("/")
-        text = host.split(".")[0].replace("-", " ")
+    # Bare domain in the company column, e.g. "acme-corp.com" -> "Acme Corp".
+    # Skip this when there's no http(s):// or www. prefix AND the TLD is one
+    # startups commonly brand themselves with (Examroom.ai, Linear.app,
+    # Notion.so) - those are real names, not a pasted domain, so stripping
+    # the TLD would silently delete half the brand. An explicit protocol/www
+    # prefix still means "this is a pasted link," so it's always compressed.
+    m = re.fullmatch(r"(https?://)?(www\.)?([a-z0-9-]+(?:\.[a-z]{2,}){1,2})/?", text, re.I)
+    if m:
+        had_url_prefix = bool(m.group(1) or m.group(2))
+        host = m.group(3)
+        final_tld = host.rsplit(".", 1)[-1].lower()
+        if had_url_prefix or final_tld not in BRAND_STYLE_TLDS:
+            text = host.split(".")[0].replace("-", " ")
 
     if _DESCRIPTOR_RE.search(text):
         text = _DESCRIPTOR_RE.sub(" ", text)
