@@ -267,6 +267,21 @@ def finalize_first_last(first_raw, last_raw, prefixes, suffixes):
         str(first_raw) if first_raw and not pd.isna(first_raw) else "", prefixes, suffixes)
     last_stripped = strip_prefix_suffix_tokens(
         str(last_raw) if last_raw and not pd.isna(last_raw) else "", prefixes, suffixes)
+
+    # A First Name column that already holds the whole name (e.g. First =
+    # "Ombir Singh", Last = "Singh" duplicated from it) - combine and
+    # re-split via split_full_name instead of keeping the multi-word value
+    # in First. An explicit, distinct Last value found inside the combined
+    # name is trusted over the naive tail split, same as split_full_name's
+    # caller does for a real Full Name column.
+    if len(first_stripped.split()) > 1:
+        combined = (first_stripped + " " + last_stripped).strip() if last_stripped else first_stripped
+        first_split, last_split = split_full_name(combined, prefixes, suffixes)
+        if last_stripped and last_stripped.lower() != last_split.lower() \
+                and last_stripped.lower() in combined.lower():
+            last_split = last_stripped
+        return proper_case_name(first_split), proper_case_name(last_split)
+
     last_tokens = last_stripped.split()
     if _looks_like_initials(first_stripped) and last_tokens and _looks_like_a_name(last_tokens[0]):
         first_stripped, last_stripped = last_tokens[0], " ".join([first_stripped] + last_tokens[1:])
