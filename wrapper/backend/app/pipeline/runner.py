@@ -337,6 +337,50 @@ def _company_from_domain(domain) -> str:
     return " ".join(w.capitalize() for w in d.split())
 
 
+_FREE_EMAIL_DOMAINS = {
+    "gmail.com", "googlemail.com", "yahoo.com", "yahoo.co.in", "ymail.com",
+    "hotmail.com", "outlook.com", "live.com", "msn.com", "icloud.com",
+    "me.com", "aol.com", "protonmail.com", "proton.me", "rediffmail.com",
+    "gmx.com", "mail.com",
+}
+_COMPANY_STOPWORDS = {"of", "and", "the", "for", "in", "on", "at", "to", "by"}
+
+
+def _company_domain_overlap(company, domain, min_token_len: int = 3):
+    """True/False if company and domain share plausible overlap, None if
+    there's nothing worth comparing (blank value, or a personal mailbox
+    domain). Not a correction - a domain reflecting a parent/subsidiary,
+    rebrand, or unrelated marketing domain is common and doesn't mean the
+    typed company name is wrong (a real Diwali ABM batch had 'Aon' with
+    domain 'globalinsurance.co.in' - trusting the domain there would have
+    renamed Aon). This only flags the row for a human glance, it never
+    changes the company value.
+
+    Checked per-word rather than as one string, so an abbreviated or
+    rebranded domain ("Kashiv Biosciences" -> kashivpharma.com, "Tcg
+    Lifesciences" -> tcgls.com) counts as related instead of flooding the
+    flag with legitimate names - only a company that shares no word with
+    the domain at all (Aon / globalinsurance.co.in) is flagged.
+    """
+    if not company or pd.isna(company) or not domain or pd.isna(domain):
+        return None
+    d = str(domain).strip().lower()
+    d = re.sub(r"^https?://", "", d)
+    d = re.sub(r"^www\.", "", d)
+    d = d.split("/")[0]
+    if not d or d in _FREE_EMAIL_DOMAINS:
+        return None
+    label = d.split(".")[0]
+    if not label:
+        return None
+    tokens = [re.sub(r"[^a-z0-9]", "", t.lower()) for t in str(company).split()]
+    tokens = [t for t in tokens if len(t) >= min_token_len and t not in _COMPANY_STOPWORDS]
+    if not tokens:
+        co_letters = re.sub(r"[^a-z0-9]", "", str(company).lower())
+        return (label in co_letters or co_letters in label) if co_letters else None
+    return any(t in label or label in t for t in tokens)
+
+
 # Ordered most- to least-preferred: a sheet with both a "Final Work Email"
 # and a plain "Email"/"Work Email" column should use the more-verified one.
 # _guess_col checks candidates in this order for an exact column-name match
@@ -828,6 +872,7 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         input_count = len(df)
         company_col = company_col or _guess_col(df, ["Company", "Company Name", "company", "Account Name", "Organization", "organization"])
         stop_after_normalization = False
+        company_derived_from_domain = False
         if not company_col:
             # No company column at all - rather than hard-failing outright, offer
             # a way forward: if the file has a LinkedIn URL or domain/website
@@ -860,6 +905,7 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
             if domain_col_fallback:
                 df["Company"] = df[domain_col_fallback].apply(_company_from_domain)
                 company_col = "Company"
+                company_derived_from_domain = True
                 stats.setdefault("warnings", []).append(
                     "No company-name column found - derived a stand-in company name from the domain/website column.")
             elif linkedin_col:
@@ -889,6 +935,25 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         df, norm_stats = normalize.run_normalization(df)
         stats["normalization"] = norm_stats
         resolved_company_col = "Cleaned Company Name" if "Cleaned Company Name" in df.columns else company_col
+
+        # QA-only: flag rows where the company name and its domain share no
+        # overlap at all (e.g. "Aon" with domain "globalinsurance.co.in" - a
+        # real case from a Diwali ABM batch). Never changes the company
+        # value, just surfaces it for a human glance. Skipped when Company
+        # was itself derived from the domain column above - comparing it to
+        # itself is meaningless.
+        if not company_derived_from_domain and resolved_company_col in df.columns:
+            qa_domain_col = "Domain" if "Domain" in df.columns else _guess_col(df, ["domain", "website", "company domain"])
+            if qa_domain_col:
+                overlap = df.apply(
+                    lambda r: _company_domain_overlap(r.get(resolved_company_col), r.get(qa_domain_col)), axis=1)
+                df["Company/Domain Mismatch"] = overlap.apply(lambda v: "yes" if v is False else "")
+                mismatch_count = int((overlap == False).sum())  # noqa: E712 - elementwise compare, not identity
+                if mismatch_count:
+                    norm_stats.setdefault("warnings", []).append(
+                        f"{mismatch_count} row(s) where the company name shares no word with its domain - "
+                        "possible parent/subsidiary or rebrand mismatch, worth a quick glance "
+                        "(see 'Company/Domain Mismatch' column). Not auto-corrected.")
 
         # The all-rows LLM web-search completeness pass no longer runs here
         # automatically - it used to fire one Claude+web_search call per row
