@@ -433,6 +433,7 @@ export default function CampaignIdeaWizard({
                 <div style={{ marginTop: 16 }}>
                   <p style={{ fontSize: 13, marginBottom: 8 }}>
                     Target companies to search (add them now so you're not asked again once the run starts).
+                    Leave blank to search Apollo by the filters above alone, with no company list yet.
                   </p>
                   {companyNames.length > 0 && (
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
