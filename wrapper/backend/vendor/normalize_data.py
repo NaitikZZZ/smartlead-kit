@@ -59,7 +59,11 @@ NAME_SUFFIXES = {
 # India-focused entity types plus the common global jurisdictions seen in
 # scraped/ABM lead lists.
 COMPANY_SUFFIXES = [
-    "private limited", "pvt ltd", "pvt. ltd.", "pvt. ltd", "pte ltd",
+    "private limited",
+    # Bare "private"/"pvt" with no "limited" attached - a common truncation
+    # in scraped/exported Indian company names ("Acme Solutions Private").
+    "private", "pvt.", "pvt",
+    "pvt ltd", "pvt. ltd.", "pvt. ltd", "pte ltd",
     "pte. ltd.", "pte. ltd", "pty ltd", "pty. ltd.", "pty. ltd",
     "public limited company", "limited liability company",
     "limited liability partnership", "one person company", "opc",
@@ -108,6 +112,14 @@ INVISIBLE = {
     "“": '"', "”": '"', "„": '"', "″": '"',
     "–": "-", "—": "-", "‒": "-", "―": "-", "−": "-",
     "…": "...",
+    # "®" that went through a lossy double mis-encoding (utf-8 -> read as
+    # cp1252 -> re-saved as utf-8, twice, dropping a byte along the way).
+    # Unlike the single-round cases _fix_mojibake() repairs below, this one
+    # lost real information and can't be reconstructed byte-for-byte -
+    # confirmed against raw file bytes (C3 A2 C2 AE). It only ever shows up
+    # as trademark decoration on a brand name ("Great Place To Workâ®"), so
+    # dropping it is strictly correct rather than a guess.
+    "â®": "",
 }
 _INVIS_RE = re.compile("|".join(map(re.escape, INVISIBLE)))
 
@@ -267,6 +279,21 @@ def finalize_first_last(first_raw, last_raw, prefixes, suffixes):
         str(first_raw) if first_raw and not pd.isna(first_raw) else "", prefixes, suffixes)
     last_stripped = strip_prefix_suffix_tokens(
         str(last_raw) if last_raw and not pd.isna(last_raw) else "", prefixes, suffixes)
+
+    # A First Name column that already holds the whole name (e.g. First =
+    # "Ombir Singh", Last = "Singh" duplicated from it) - combine and
+    # re-split via split_full_name instead of keeping the multi-word value
+    # in First. An explicit, distinct Last value found inside the combined
+    # name is trusted over the naive tail split, same as split_full_name's
+    # caller does for a real Full Name column.
+    if len(first_stripped.split()) > 1:
+        combined = (first_stripped + " " + last_stripped).strip() if last_stripped else first_stripped
+        first_split, last_split = split_full_name(combined, prefixes, suffixes)
+        if last_stripped and last_stripped.lower() != last_split.lower() \
+                and last_stripped.lower() in combined.lower():
+            last_split = last_stripped
+        return proper_case_name(first_split), proper_case_name(last_split)
+
     last_tokens = last_stripped.split()
     if _looks_like_initials(first_stripped) and last_tokens and _looks_like_a_name(last_tokens[0]):
         first_stripped, last_stripped = last_tokens[0], " ".join([first_stripped] + last_tokens[1:])
@@ -319,7 +346,41 @@ _QUALITY_MARKER_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# Short words that are real words, not acronyms. When an ALL-CAPS company name
+# is re-cased, any short token NOT in this set is assumed to be an acronym and
+# kept uppercase, so "FMFE, CPA" survives but "VODAFONE IDEA" -> "Vodafone Idea"
+# instead of the false-positive "Vodafone IDEA".
+COMMON_SHORT_WORDS = {
+    "the", "and", "for", "our", "you", "all", "new", "old", "one", "two", "six",
+    "ten", "top", "key", "pro", "max", "web", "net", "sun", "sky", "box", "bay",
+    "oak", "red", "big", "way", "car", "air", "gas", "oil", "law", "tax", "pay",
+    "buy", "get", "run", "fit", "eat", "joy", "art", "ace", "age", "aim", "arm",
+    "bar", "bed", "bit", "bus", "cap", "cat", "cup", "cut", "day", "dog", "ear",
+    "egg", "end", "eye", "fan", "far", "few", "fly", "fun", "gap", "gym", "hat",
+    "hit", "hot", "ice", "ink", "jar", "job", "kid", "lab", "lap", "leg", "lid",
+    "log", "lot", "low", "man", "map", "men", "mix", "now", "nut", "odd", "off",
+    "out", "own", "pan", "pen", "pet", "pie", "pig", "pin", "pit", "pot", "pub",
+    "raw", "rib", "rim", "row", "rug", "sea", "set", "she", "sit", "ski", "son",
+    "tab", "tag", "tan", "tap", "tea", "tie", "tin", "tip", "toe", "ton", "toy",
+    "try", "use", "van", "war", "wax", "wet", "win", "zip", "inn", "eco", "bio",
+    "real", "test", "best", "care", "home", "life", "work", "tech", "data",
+    "food", "bank", "city", "east", "west", "gold", "high", "land", "main",
+    "next", "open", "park", "plus", "pure", "road", "safe", "star", "true",
+    "view", "wave", "wise", "zero", "blue", "bold", "core", "edge", "fast",
+    "fine", "fire", "free", "good", "grow", "help", "idea", "king", "lead",
+    "link", "live", "look", "love", "mind", "move", "nova", "only", "path",
+    "peak", "plan", "play", "rise", "rock", "sage", "seed", "ship", "site",
+    "soft", "solo", "span", "spot", "sure", "team", "time", "tree", "unit",
+    "vast", "well", "wide", "wild", "wood", "yard", "your", "auto", "with",
+    "from", "into", "over", "more", "less", "each", "both", "some", "such",
+}
+
 # Case-preserving brand names that don't proper-case correctly on their own.
+
+# TLDs commonly used as a deliberate, stylized suffix in a real product/
+# company name rather than pasted as a plain domain reference.
+BRAND_STYLE_TLDS = {"ai", "io", "app", "dev", "so", "sh", "xyz"}
+
 BRAND_CASE = {
     "ebay": "eBay", "iphone": "iPhone", "ipad": "iPad", "imac": "iMac",
     "paypal": "PayPal", "youtube": "YouTube", "linkedin": "LinkedIn",
@@ -352,10 +413,19 @@ def clean_company_name(value, suffixes):
     if _QUALITY_MARKER_RE.search(text):
         text = _QUALITY_MARKER_RE.sub(" ", text)
 
-    # Bare domain in the company column, e.g. "acme-corp.com".
-    if re.fullmatch(r"(?:https?://)?(?:www\.)?[a-z0-9-]+(?:\.[a-z]{2,}){1,2}/?", text, re.I):
-        host = re.sub(r"^(?:https?://)?(?:www\.)?", "", text, flags=re.I).rstrip("/")
-        text = host.split(".")[0].replace("-", " ")
+    # Bare domain in the company column, e.g. "acme-corp.com" -> "Acme Corp".
+    # Skip this when there's no http(s):// or www. prefix AND the TLD is one
+    # startups commonly brand themselves with (Examroom.ai, Linear.app,
+    # Notion.so) - those are real names, not a pasted domain, so stripping
+    # the TLD would silently delete half the brand. An explicit protocol/www
+    # prefix still means "this is a pasted link," so it's always compressed.
+    m = re.fullmatch(r"(https?://)?(www\.)?([a-z0-9-]+(?:\.[a-z]{2,}){1,2})/?", text, re.I)
+    if m:
+        had_url_prefix = bool(m.group(1) or m.group(2))
+        host = m.group(3)
+        final_tld = host.rsplit(".", 1)[-1].lower()
+        if had_url_prefix or final_tld not in BRAND_STYLE_TLDS:
+            text = host.split(".")[0].replace("-", " ")
 
     if _DESCRIPTOR_RE.search(text):
         text = _DESCRIPTOR_RE.sub(" ", text)
@@ -394,7 +464,7 @@ def clean_company_name(value, suffixes):
         if low in BRAND_CASE:
             return BRAND_CASE[low]
         upper_count = sum(1 for c in word if c.isupper())
-        if word.isupper() and 1 < len(word) <= 5 and word.isalpha():
+        if word.isupper() and 1 < len(word) <= 5 and word.isalpha() and low not in COMMON_SHORT_WORDS:
             return word
         if upper_count > 1 and not word.isupper() and word.isalpha():
             return word
