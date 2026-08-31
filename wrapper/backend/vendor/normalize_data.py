@@ -59,7 +59,11 @@ NAME_SUFFIXES = {
 # India-focused entity types plus the common global jurisdictions seen in
 # scraped/ABM lead lists.
 COMPANY_SUFFIXES = [
-    "private limited", "pvt ltd", "pvt. ltd.", "pvt. ltd", "pte ltd",
+    "private limited",
+    # Bare "private"/"pvt" with no "limited" attached - a common truncation
+    # in scraped/exported Indian company names ("Acme Solutions Private").
+    "private", "pvt.", "pvt",
+    "pvt ltd", "pvt. ltd.", "pvt. ltd", "pte ltd",
     "pte. ltd.", "pte. ltd", "pty ltd", "pty. ltd.", "pty. ltd",
     "public limited company", "limited liability company",
     "limited liability partnership", "one person company", "opc",
@@ -334,6 +338,35 @@ _QUALITY_MARKER_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# Short words that are real words, not acronyms. When an ALL-CAPS company name
+# is re-cased, any short token NOT in this set is assumed to be an acronym and
+# kept uppercase, so "FMFE, CPA" survives but "VODAFONE IDEA" -> "Vodafone Idea"
+# instead of the false-positive "Vodafone IDEA".
+COMMON_SHORT_WORDS = {
+    "the", "and", "for", "our", "you", "all", "new", "old", "one", "two", "six",
+    "ten", "top", "key", "pro", "max", "web", "net", "sun", "sky", "box", "bay",
+    "oak", "red", "big", "way", "car", "air", "gas", "oil", "law", "tax", "pay",
+    "buy", "get", "run", "fit", "eat", "joy", "art", "ace", "age", "aim", "arm",
+    "bar", "bed", "bit", "bus", "cap", "cat", "cup", "cut", "day", "dog", "ear",
+    "egg", "end", "eye", "fan", "far", "few", "fly", "fun", "gap", "gym", "hat",
+    "hit", "hot", "ice", "ink", "jar", "job", "kid", "lab", "lap", "leg", "lid",
+    "log", "lot", "low", "man", "map", "men", "mix", "now", "nut", "odd", "off",
+    "out", "own", "pan", "pen", "pet", "pie", "pig", "pin", "pit", "pot", "pub",
+    "raw", "rib", "rim", "row", "rug", "sea", "set", "she", "sit", "ski", "son",
+    "tab", "tag", "tan", "tap", "tea", "tie", "tin", "tip", "toe", "ton", "toy",
+    "try", "use", "van", "war", "wax", "wet", "win", "zip", "inn", "eco", "bio",
+    "real", "test", "best", "care", "home", "life", "work", "tech", "data",
+    "food", "bank", "city", "east", "west", "gold", "high", "land", "main",
+    "next", "open", "park", "plus", "pure", "road", "safe", "star", "true",
+    "view", "wave", "wise", "zero", "blue", "bold", "core", "edge", "fast",
+    "fine", "fire", "free", "good", "grow", "help", "idea", "king", "lead",
+    "link", "live", "look", "love", "mind", "move", "nova", "only", "path",
+    "peak", "plan", "play", "rise", "rock", "sage", "seed", "ship", "site",
+    "soft", "solo", "span", "spot", "sure", "team", "time", "tree", "unit",
+    "vast", "well", "wide", "wild", "wood", "yard", "your", "auto", "with",
+    "from", "into", "over", "more", "less", "each", "both", "some", "such",
+}
+
 # Case-preserving brand names that don't proper-case correctly on their own.
 BRAND_CASE = {
     "ebay": "eBay", "iphone": "iPhone", "ipad": "iPad", "imac": "iMac",
@@ -409,7 +442,7 @@ def clean_company_name(value, suffixes):
         if low in BRAND_CASE:
             return BRAND_CASE[low]
         upper_count = sum(1 for c in word if c.isupper())
-        if word.isupper() and 1 < len(word) <= 5 and word.isalpha():
+        if word.isupper() and 1 < len(word) <= 5 and word.isalpha() and low not in COMMON_SHORT_WORDS:
             return word
         if upper_count > 1 and not word.isupper() and word.isalpha():
             return word
