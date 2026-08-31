@@ -73,6 +73,29 @@ def find_column(columns, candidates):
     return None
 
 
+_INITIAL_VOWELS = set("aeiouy")  # "y" counts as a vowel here so real names
+# like "Lynn" or "Kim" aren't mistaken for initials.
+
+
+def _looks_like_initials(token: str) -> bool:
+    """True for a token that reads as initials rather than a usable first
+    name: a single letter (with or without a trailing period, e.g. "S."),
+    or a short (2-5 letter) vowel-less run of letters (e.g. "KMG")."""
+    t = token.strip(". ")
+    if not t or not t.isalpha():
+        return False
+    if len(t) == 1:
+        return True
+    return 2 <= len(t) <= 5 and not any(c.lower() in _INITIAL_VOWELS for c in t)
+
+
+def _looks_like_a_name(text: str) -> bool:
+    """True if `text` reads as an actual name rather than initials/junk -
+    has at least one vowel and at least 2 letters."""
+    letters = re.sub(r"[^a-zA-Z]", "", text or "")
+    return len(letters) >= 2 and any(c.lower() in _INITIAL_VOWELS for c in letters)
+
+
 def strip_prefix_suffix_tokens(text, prefixes, suffixes):
     """Remove honorific/degree tokens wherever they appear in the name.
 
@@ -138,22 +161,50 @@ def split_full_name(full_name, prefixes, suffixes):
         return "", ""
     if len(tokens) == 1:
         return tokens[0], ""
+    # A first name that's really just initials (e.g. "S." or "KMG") isn't
+    # usable for personalization - "Hi S.," reads badly. If the next token
+    # looks like an actual name, swap them so the real name leads instead
+    # (e.g. "KMG Stephen" -> first "Stephen", last "KMG").
+    if _looks_like_initials(tokens[0]) and _looks_like_a_name(tokens[1]):
+        tokens[0], tokens[1] = tokens[1], tokens[0]
     first = tokens[0]
     last = " ".join(tokens[1:])  # middle name(s) fold into last name
     return first, last
 
 
-def clean_name_field(value, prefixes, suffixes):
-    if pd.isna(value) or not str(value).strip():
-        return ""
-    stripped = strip_prefix_suffix_tokens(str(value), prefixes, suffixes)
-    return proper_case_name(stripped)
+def finalize_first_last(first_raw, last_raw, prefixes, suffixes):
+    """Cleans an already-split First Name / Last Name pair, applying the
+    same initials-swap as split_full_name: if First is just initials (e.g.
+    "KMG") and Last starts with an actual name (e.g. "Stephen"), swap them."""
+    first_stripped = strip_prefix_suffix_tokens(
+        str(first_raw) if first_raw and not pd.isna(first_raw) else "", prefixes, suffixes)
+    last_stripped = strip_prefix_suffix_tokens(
+        str(last_raw) if last_raw and not pd.isna(last_raw) else "", prefixes, suffixes)
+    last_tokens = last_stripped.split()
+    if _looks_like_initials(first_stripped) and last_tokens and _looks_like_a_name(last_tokens[0]):
+        first_stripped, last_stripped = last_tokens[0], " ".join([first_stripped] + last_tokens[1:])
+    return proper_case_name(first_stripped), proper_case_name(last_stripped)
+
+
+def _dedupe_pipe_scrape_noise(text: str) -> str:
+    """A LinkedIn-scraped company field often looks like
+    "A2MP | Africa Minerals and Metals Processing Platform | LinkedIn" - an
+    acronym, its full expansion, and the site name, pipe-separated. Drop the
+    "LinkedIn" noise and keep the longest remaining segment (the expanded,
+    readable name) instead of the acronym."""
+    if "|" not in text:
+        return text
+    segments = [s.strip() for s in text.split("|") if s.strip() and s.strip().lower() != "linkedin"]
+    if not segments:
+        return text
+    return max(segments, key=len)
 
 
 def clean_company_name(value, suffixes):
     if pd.isna(value) or not str(value).strip():
         return ""
     text = str(value).strip()
+    text = _dedupe_pipe_scrape_noise(text)
     # Remove commas before suffixes, e.g. "Acme, Inc." -> "Acme Inc."
     text = text.replace(",", " ")
     text = re.sub(r"\s+", " ", text).strip()
@@ -193,12 +244,12 @@ def process_dataframe(df):
     report = []
 
     if first_name_col and last_name_col:
-        df["Cleaned First Name"] = df[first_name_col].apply(
-            lambda v: clean_name_field(v, NAME_PREFIXES, NAME_SUFFIXES)
+        finalized = df.apply(
+            lambda row: finalize_first_last(row[first_name_col], row[last_name_col], NAME_PREFIXES, NAME_SUFFIXES),
+            axis=1,
         )
-        df["Cleaned Last Name"] = df[last_name_col].apply(
-            lambda v: clean_name_field(v, NAME_PREFIXES, NAME_SUFFIXES)
-        )
+        df["Cleaned First Name"] = finalized.apply(lambda t: t[0])
+        df["Cleaned Last Name"] = finalized.apply(lambda t: t[1])
         report.append(f"Cleaned existing '{first_name_col}' / '{last_name_col}' columns.")
     elif full_name_col:
         split = df[full_name_col].apply(lambda v: split_full_name(v, NAME_PREFIXES, NAME_SUFFIXES))
