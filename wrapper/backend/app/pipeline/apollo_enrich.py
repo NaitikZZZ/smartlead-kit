@@ -23,6 +23,10 @@ import icp_titles as _icp_titles  # noqa: E402
 import json as _json
 
 DEFAULT_WORKERS = 8
+# search_candidates_by_icp paginates Apollo's people search directly (no
+# per-company loop to bound it), so this caps worst-case spend if a target
+# count is set unreasonably high or Apollo keeps returning full pages.
+MAX_ICP_PAGES = 10
 
 # Apollo's person_locations filter matches on literal place names ("Saudi
 # Arabia"), not abbreviations - confirmed by hand: filtering on "KSA" returned
@@ -294,6 +298,77 @@ def search_candidates(df: pd.DataFrame, company_col: str, domain_col: str, perso
         "companies_searched": len(per_company_counts),
         "candidates_found": len(rows),
         "zero_match_companies": zero_match_companies,
+    }
+
+
+def search_candidates_by_icp(person_locations=None, persona_titles=None, target_count=100,
+                              employee_ranges=None, organization_locations=None, person_seniorities=None,
+                              person_functions=None, exclude_titles=None, industries=None,
+                              per_title_cap=None, exact_titles=True):
+    """Domain-less counterpart to search_candidates - for building an account
+    list from scratch, when there are no target companies to search yet (just
+    ICP filters: job titles/employee size/region/industry). Paginates Apollo's
+    mixed_people/api_search directly (no q_organization_domains_list) instead
+    of looping per company, since matches can land at any number of different
+    organizations. Company/Domain per candidate come from Apollo's own
+    organization data on each person, not a caller-supplied list.
+
+    target_count is a soft cap - pagination stops once at least that many
+    people have been fetched (then selection may trim further), or once
+    Apollo returns a short page (no more results), or after MAX_ICP_PAGES."""
+    session = requests.Session()
+    session.mount("https://", requests.adapters.HTTPAdapter(max_retries=0))
+
+    person_locations = expand_person_locations(person_locations)
+    personas = persona_titles or _search.PERSONAS
+
+    old_personas = _search.PERSONAS
+    _search.PERSONAS = personas
+    people = []
+    page = 1
+    try:
+        while len(people) < target_count and page <= MAX_ICP_PAGES:
+            batch = _search.search_people(
+                session, None, person_locations, employee_ranges, organization_locations,
+                person_seniorities, person_functions, industries, page=page, per_page=100)
+            if not batch:
+                break
+            people.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+            time.sleep(0.3)
+    finally:
+        _search.PERSONAS = old_personas
+
+    if exclude_titles:
+        people = [p for p in people if not title_matches_any(p.get("title"), exclude_titles, exact=False)]
+
+    if per_title_cap:
+        selected = _search.select_candidates_per_persona(people, personas, per_title_cap, exact=exact_titles)
+    else:
+        selected = _search.select_candidates(people)
+    selected = selected[:target_count]
+
+    rows = []
+    companies_seen = set()
+    for p in selected:
+        org = p.get("organization") or {}
+        company = org.get("name") or "Unknown"
+        domain = org.get("primary_domain")
+        companies_seen.add(company)
+        rows.append({
+            "Company": company, "Domain": domain, "apollo_id": p.get("id"),
+            "obfuscated_name": f"{p.get('first_name', '')} {p.get('last_name_obfuscated', '')}",
+            "title": p.get("title"), "persona_tier": p["_tier"],
+            "has_email": p.get("has_email"), "has_direct_phone": p.get("has_direct_phone"),
+        })
+
+    candidates_df = pd.DataFrame(rows)
+    return candidates_df, {
+        "companies_searched": len(companies_seen),
+        "candidates_found": len(rows),
+        "zero_match_companies": [],
     }
 
 

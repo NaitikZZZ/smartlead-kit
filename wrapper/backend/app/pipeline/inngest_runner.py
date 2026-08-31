@@ -1277,20 +1277,22 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                          f"Campaign idea captured: \"{campaign_idea[:80]}\".")
 
         wizard_company_names = _company_names_from_wizard(wizard_targeting) if wizard_targeting else []
-        if wizard_company_names:
-            # Already collected in the wizard's review step - asking again
-            # would just repeat a question the user already answered.
+        if wizard_targeting:
+            # The wizard's review step already offered a company-names field
+            # as optional ("otherwise add target companies below") and never
+            # blocks Start on it - an empty list here means the user is
+            # building an account list from scratch and wants to search by
+            # ICP filters alone, not a skipped question to re-ask.
             company_names = wizard_company_names
         else:
             companies_answer = await _ask(
                 step, run_id, "apollo_company_names", "text",
                 "Company names to search (comma-separated, or paste one per line/space-separated - "
-                "URLs are fine too):\ne.g. Acme Corp, TechCo Inc, StartUp Labs",
+                "URLs are fine too). Leave blank to search purely by the ICP filters above, with no "
+                "target companies yet:\ne.g. Acme Corp, TechCo Inc, StartUp Labs",
                 default="", context={"step": "source"},
             )
             company_names = _parse_company_names(str(companies_answer))
-        if not company_names:
-            raise ValueError("No company names provided for Apollo search.")
 
         async def _do_search(names, p_titles, p_locations, p_employee_ranges=None, key_suffix="", exact_titles=True,
                               p_org_locations=None, p_industries=None):
@@ -1322,17 +1324,44 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             search_result = await step.run(f"search_candidates_idea{key_suffix}", _search)
             return pd.DataFrame(search_result["records"]), search_result["search_stats"]
 
-        candidates_df, search_stats = await _do_search(company_names, persona_titles, person_locations, employee_ranges,
-                                                          exact_titles=exact_titles, p_org_locations=organization_locations,
-                                                          p_industries=industries)
-        await _set_step(step, "step_domain_done_idea", run_id, "domain", "Domain Resolution", "done",
-                         f"Resolved domains for {len(company_names)} compan{'y' if len(company_names) == 1 else 'ies'}.")
-        await _set_step(
-            step, "step_discovery_done_idea", run_id, "discovery", "People Discovery", "done",
-            f"Searched {search_stats['companies_searched']} compan{'y' if search_stats['companies_searched'] == 1 else 'ies'}, "
-            f"found {search_stats['candidates_found']} candidate(s).",
-        )
-        await _set_stat(step, "stat_discovery_idea", run_id, "apollo_search", search_stats)
+        if not company_names:
+            # No target companies known yet - search Apollo by ICP filters
+            # alone (job titles/employee size/region/industry), pulling
+            # candidates from across Apollo's whole org database instead of
+            # a caller-supplied company list. See search_candidates_by_icp.
+            await _set_step(step, "step_domain_skipped_idea", run_id, "domain", "Domain Resolution", "skipped",
+                             "No target companies yet - searching Apollo by ICP filters only.")
+
+            async def _search_icp_only():
+                found_df, sstats = apollo_enrich.search_candidates_by_icp(
+                    person_locations=person_locations, persona_titles=persona_titles,
+                    employee_ranges=employee_ranges, organization_locations=organization_locations,
+                    industries=industries, per_title_cap=(2 if persona_titles else None),
+                    exact_titles=exact_titles, target_count=config.MAX_CONTACTS_PER_COMPANY_DEFAULT * 20)
+                return _nan_safe({"records": found_df.to_dict("records"), "search_stats": sstats})
+
+            search_result = await step.run("search_candidates_icp_only", _search_icp_only)
+            candidates_df = pd.DataFrame(search_result["records"])
+            search_stats = search_result["search_stats"]
+            await _set_step(
+                step, "step_discovery_done_idea", run_id, "discovery", "People Discovery", "done",
+                f"Searched Apollo by ICP filters (no company list), found {search_stats['candidates_found']} "
+                f"candidate(s) across {search_stats['companies_searched']} "
+                f"compan{'y' if search_stats['companies_searched'] == 1 else 'ies'}.",
+            )
+            await _set_stat(step, "stat_discovery_idea", run_id, "apollo_search", search_stats)
+        else:
+            candidates_df, search_stats = await _do_search(company_names, persona_titles, person_locations, employee_ranges,
+                                                              exact_titles=exact_titles, p_org_locations=organization_locations,
+                                                              p_industries=industries)
+            await _set_step(step, "step_domain_done_idea", run_id, "domain", "Domain Resolution", "done",
+                             f"Resolved domains for {len(company_names)} compan{'y' if len(company_names) == 1 else 'ies'}.")
+            await _set_step(
+                step, "step_discovery_done_idea", run_id, "discovery", "People Discovery", "done",
+                f"Searched {search_stats['companies_searched']} compan{'y' if search_stats['companies_searched'] == 1 else 'ies'}, "
+                f"found {search_stats['candidates_found']} candidate(s).",
+            )
+            await _set_stat(step, "stat_discovery_idea", run_id, "apollo_search", search_stats)
 
         candidates_df, persona_titles, person_locations, employee_ranges = await _add_more_prospects_loop(
             step, run_id, candidates_df, persona_titles, person_locations, employee_ranges, _do_search,
