@@ -112,6 +112,14 @@ INVISIBLE = {
     "“": '"', "”": '"', "„": '"', "″": '"',
     "–": "-", "—": "-", "‒": "-", "―": "-", "−": "-",
     "…": "...",
+    # "®" that went through a lossy double mis-encoding (utf-8 -> read as
+    # cp1252 -> re-saved as utf-8, twice, dropping a byte along the way).
+    # Unlike the single-round cases _fix_mojibake() repairs below, this one
+    # lost real information and can't be reconstructed byte-for-byte -
+    # confirmed against raw file bytes (C3 A2 C2 AE). It only ever shows up
+    # as trademark decoration on a brand name ("Great Place To Workâ®"), so
+    # dropping it is strictly correct rather than a guess.
+    "â®": "",
 }
 _INVIS_RE = re.compile("|".join(map(re.escape, INVISIBLE)))
 
