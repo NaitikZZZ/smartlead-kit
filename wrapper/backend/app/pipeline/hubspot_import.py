@@ -123,13 +123,17 @@ def batch_upsert_contacts(rows: list[dict]) -> tuple[list[dict], list[dict]]:
 def associate_contacts(contact_ids: list[str], object_type_id: str, to_object_id: str):
     assoc_spec = association_resolve.get_association_type(object_type_id)
     inputs = [{"from": {"id": cid}, "to": {"id": to_object_id}, "types": [assoc_spec]} for cid in contact_ids]
-    r = request_with_retry(
-        "POST", f"https://api.hubapi.com/crm/v4/associations/contacts/{object_type_id}/batch/create",
-        headers=_headers(), json={"inputs": inputs}, timeout=60,
-    )
-    if not r.ok:
-        raise requests.HTTPError(f"{r.status_code} {r.reason} for {r.url}: {r.text[:1000]}", response=r)
-    return len(r.json().get("results", []))
+    total = 0
+    for i in range(0, len(inputs), 2000):  # HubSpot v4 associations batch limit
+        chunk = inputs[i:i + 2000]
+        r = request_with_retry(
+            "POST", f"https://api.hubapi.com/crm/v4/associations/contacts/{object_type_id}/batch/create",
+            headers=_headers(), json={"inputs": chunk}, timeout=60,
+        )
+        if not r.ok:
+            raise requests.HTTPError(f"{r.status_code} {r.reason} for {r.url}: {r.text[:1000]}", response=r)
+        total += len(r.json().get("results", []))
+    return total
 
 
 def import_contacts_with_list(rows: list[dict], campaign_title: str, associations: list[dict] | None = None):
