@@ -373,6 +373,13 @@ COMMON_SHORT_WORDS = {
     "soft", "solo", "span", "spot", "sure", "team", "time", "tree", "unit",
     "vast", "well", "wide", "wild", "wood", "yard", "your", "auto", "with",
     "from", "into", "over", "more", "less", "each", "both", "some", "such",
+    # Country/continent names short enough to collide with the acronym
+    # threshold - "XYZ IRAN OPERATIONS" must not keep "IRAN" uppercase.
+    "asia", "chad", "cuba", "fiji", "iran", "iraq", "laos", "mali", "oman",
+    "peru", "togo", "truck", "india", "china", "chile", "egypt", "gabon",
+    "ghana", "haiti", "italy", "japan", "kenya", "libya", "malta", "nauru",
+    "nepal", "niger", "palau", "qatar", "spain", "sudan", "tonga", "yemen",
+    "congo", "korea",
 }
 
 # Case-preserving brand names that don't proper-case correctly on their own.
@@ -464,7 +471,7 @@ def clean_company_name(value, suffixes):
         if low in BRAND_CASE:
             return BRAND_CASE[low]
         upper_count = sum(1 for c in word if c.isupper())
-        if word.isupper() and 1 < len(word) <= 5 and word.isalpha() and low not in COMMON_SHORT_WORDS:
+        if word.isupper() and 1 < len(word) <= 4 and word.isalpha() and low not in COMMON_SHORT_WORDS:
             return word
         if upper_count > 1 and not word.isupper() and word.isalpha():
             return word
