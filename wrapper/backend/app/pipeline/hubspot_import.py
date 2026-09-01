@@ -10,6 +10,7 @@ import requests
 
 from .. import config
 from . import association_resolve, hubspot_lists
+from .hubspot_retry import request_with_retry
 
 
 def _headers():
@@ -95,8 +96,8 @@ def batch_upsert_contacts(rows: list[dict]) -> tuple[list[dict], list[dict]]:
         for _attempt in range(6):
             if not chunk:
                 break
-            r = requests.post(
-                "https://api.hubapi.com/crm/v3/objects/contacts/batch/upsert",
+            r = request_with_retry(
+                "POST", "https://api.hubapi.com/crm/v3/objects/contacts/batch/upsert",
                 headers=_headers(), json={"inputs": chunk}, timeout=60,
             )
             if r.ok:
@@ -122,8 +123,8 @@ def batch_upsert_contacts(rows: list[dict]) -> tuple[list[dict], list[dict]]:
 def associate_contacts(contact_ids: list[str], object_type_id: str, to_object_id: str):
     assoc_spec = association_resolve.get_association_type(object_type_id)
     inputs = [{"from": {"id": cid}, "to": {"id": to_object_id}, "types": [assoc_spec]} for cid in contact_ids]
-    r = requests.post(
-        f"https://api.hubapi.com/crm/v4/associations/contacts/{object_type_id}/batch/create",
+    r = request_with_retry(
+        "POST", f"https://api.hubapi.com/crm/v4/associations/contacts/{object_type_id}/batch/create",
         headers=_headers(), json={"inputs": inputs}, timeout=60,
     )
     if not r.ok:
