@@ -10,7 +10,7 @@ from __future__ import annotations
 import io
 import re
 import requests
-import pandas as pd
+from .._lazy import pd
 
 from .. import config
 

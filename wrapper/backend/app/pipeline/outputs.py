@@ -9,7 +9,7 @@ import re
 import math
 from pathlib import Path
 
-import pandas as pd
+from .._lazy import pd
 import phonenumbers
 
 try:

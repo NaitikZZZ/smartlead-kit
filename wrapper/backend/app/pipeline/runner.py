@@ -19,8 +19,8 @@ import traceback
 import uuid
 from pathlib import Path
 
-import pandas as pd
-from anthropic import Anthropic
+from .._lazy import pd
+from .._lazy import Anthropic
 
 from .. import config
 from ..models import RunStage

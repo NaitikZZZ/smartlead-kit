@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import re
 
-import pandas as pd
+from .._lazy import pd
 
 from .. import config
 

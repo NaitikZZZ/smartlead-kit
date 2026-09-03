@@ -18,7 +18,7 @@ import os
 import re
 import subprocess
 
-import pandas as pd
+from .._lazy import pd
 import requests
 
 from .. import config, redis_cache

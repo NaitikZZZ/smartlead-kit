@@ -24,7 +24,7 @@ except ImportError:
     from datetime import datetime, timezone
     UTC = timezone.utc
 
-import pandas as pd
+from .._lazy import pd
 import requests
 
 from .. import config, redis_cache

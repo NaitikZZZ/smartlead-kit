@@ -13,8 +13,8 @@ import json
 import logging
 from typing import Optional
 
-import pandas as pd
-from anthropic import Anthropic
+from .._lazy import pd
+from .._lazy import Anthropic
 
 from .. import config
 

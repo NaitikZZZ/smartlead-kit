@@ -10,7 +10,7 @@ LinkedIn file becomes a HeyReach list, ready to attach to a campaign in HeyReach
 """
 from __future__ import annotations
 
-import pandas as pd
+from .._lazy import pd
 import requests
 
 from .. import config

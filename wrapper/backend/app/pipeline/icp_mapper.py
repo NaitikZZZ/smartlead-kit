@@ -1,7 +1,8 @@
 """ICP Mapper - Load predefined ICPs from Excel and map to Apollo filters."""
+from __future__ import annotations
 
 import re
-import pandas as pd
+from .._lazy import pd
 from typing import Dict, List, Optional
 
 from .. import config

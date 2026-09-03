@@ -31,7 +31,7 @@ import sys
 import json
 import time
 import requests
-import pandas as pd
+from _lazy import pd
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(__file__))

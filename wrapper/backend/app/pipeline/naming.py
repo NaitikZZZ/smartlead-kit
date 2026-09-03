@@ -6,7 +6,7 @@ ambiguous enough that guessing wrong silently would be worse than asking)."""
 from __future__ import annotations
 import re
 
-import pandas as pd
+from .._lazy import pd
 
 REGION_CODES = {
     "saudi arabia": "KSA", "ksa": "KSA", "indonesia": "IDN", "united states": "US",

@@ -8,7 +8,7 @@ import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import pandas as pd
+from .._lazy import pd
 import requests
 
 from .. import config, redis_cache
