@@ -92,12 +92,77 @@ def _guess_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
     return None
 
 
+def _company_from_domain(domain) -> str:
+    """Best-effort stand-in company name derived from a domain/website, used
+    only when no real Company Name column exists at all (see the no-company
+    ask() gate in _run_pipeline) - strips protocol/www/TLD and title-cases
+    what's left (e.g. 'www.acme-corp.com' -> 'Acme Corp')."""
+    if not domain or pd.isna(domain):
+        return ""
+    d = str(domain).strip().lower()
+    d = re.sub(r"^https?://", "", d)
+    d = re.sub(r"^www\.", "", d)
+    d = d.split("/")[0]
+    d = d.split(".")[0]  # first label only - handles compound TLDs like .co.in/.co.uk
+    d = d.replace("-", " ").replace("_", " ")
+    return " ".join(w.capitalize() for w in d.split())
+
+
+_FREE_EMAIL_DOMAINS = {
+    "gmail.com", "googlemail.com", "yahoo.com", "yahoo.co.in", "ymail.com",
+    "hotmail.com", "outlook.com", "live.com", "msn.com", "icloud.com",
+    "me.com", "aol.com", "protonmail.com", "proton.me", "rediffmail.com",
+    "gmx.com", "mail.com",
+}
+_COMPANY_STOPWORDS = {"of", "and", "the", "for", "in", "on", "at", "to", "by"}
+
+
+def _company_domain_overlap(company, domain, min_token_len: int = 3):
+    """True/False if company and domain share plausible overlap, None if
+    there's nothing worth comparing (blank value, or a personal mailbox
+    domain). Not a correction - a domain reflecting a parent/subsidiary,
+    rebrand, or unrelated marketing domain is common and doesn't mean the
+    typed company name is wrong (a real Diwali ABM batch had 'Aon' with
+    domain 'globalinsurance.co.in' - trusting the domain there would have
+    renamed Aon). This only flags the row for a human glance, it never
+    changes the company value.
+
+    Checked per-word rather than as one string, so an abbreviated or
+    rebranded domain ("Kashiv Biosciences" -> kashivpharma.com, "Tcg
+    Lifesciences" -> tcgls.com) counts as related instead of flooding the
+    flag with legitimate names - only a company that shares no word with
+    the domain at all (Aon / globalinsurance.co.in) is flagged.
+    """
+    if not company or pd.isna(company) or not domain or pd.isna(domain):
+        return None
+    d = str(domain).strip().lower()
+    d = re.sub(r"^https?://", "", d)
+    d = re.sub(r"^www\.", "", d)
+    d = d.split("/")[0]
+    if not d or d in _FREE_EMAIL_DOMAINS:
+        return None
+    label = d.split(".")[0]
+    if not label:
+        return None
+    tokens = [re.sub(r"[^a-z0-9]", "", t.lower()) for t in str(company).split()]
+    tokens = [t for t in tokens if len(t) >= min_token_len and t not in _COMPANY_STOPWORDS]
+    if not tokens:
+        co_letters = re.sub(r"[^a-z0-9]", "", str(company).lower())
+        return (label in co_letters or co_letters in label) if co_letters else None
+    return any(t in label or label in t for t in tokens)
+
+
 # Ordered most- to least-preferred: a sheet with both a "Final Work Email"
 # and a plain "Email"/"Work Email" column should use the more-verified one.
 # _guess_col checks candidates in this order for an exact column-name match
 # before ever falling back to substring matching, so this ordering is what
 # actually decides which column wins when a sheet has several.
 _EMAIL_COL_CANDIDATES = ["final work email", "work email", "email address", "email"]
+
+# "linkedinurl" first so an exact-match hit (e.g. a HeyReach export's
+# "linkedinUrl") wins before substring fallback ever risks matching
+# "company_linkedinUrl" instead - see the linkedin_url passthrough below.
+_LINKEDIN_COL_CANDIDATES = ["linkedinurl", "linkedin url", "person linkedin url", "linkedin profile url", "linkedin"]
 
 
 def _blank_domain_mask(df: pd.DataFrame) -> pd.Series:
@@ -167,18 +232,21 @@ def _targeting_from_wizard(wizard_targeting: dict):
     there's nothing left to infer or re-confirm, so callers skip
     _extract_and_confirm_icp (no Claude call, no icp_confirm_form ask) and
     use this directly. Returns (persona_titles, person_locations,
-    employee_ranges, exact_titles, organization_locations) - the first three
-    the same shape _extract_and_confirm_icp returns; exact_titles is True
-    unless the wizard's "include similar/lookalike titles" box was checked.
-    organization_locations is the separate company-HQ location filter (city/
-    state/country free text) for "HQ based" use cases - distinct from
-    person_locations, which filters by where the contact themselves sits."""
+    employee_ranges, exact_titles, organization_locations, industries) - the
+    first three the same shape _extract_and_confirm_icp returns; exact_titles
+    is True unless the wizard's "include similar/lookalike titles" box was
+    checked. organization_locations is the separate company-HQ location
+    filter (city/state/country free text) for "HQ based" use cases - distinct
+    from person_locations, which filters by where the contact themselves
+    sits. industries is free-text industry keywords, sent to Apollo via
+    q_organization_keyword_tags (see apollo_enrich.search_candidates)."""
     job_titles = [t.strip() for t in (wizard_targeting.get("job_titles") or []) if str(t).strip()]
     regions = [r.strip() for r in (wizard_targeting.get("regions") or []) if str(r).strip()]
     employee_ranges = _normalize_employee_size_labels(wizard_targeting.get("employee_sizes") or [])
     exact_titles = not bool(wizard_targeting.get("include_lookalikes"))
     org_locations = [r.strip() for r in (wizard_targeting.get("organization_locations") or []) if str(r).strip()]
-    return job_titles or None, regions or None, employee_ranges, exact_titles, org_locations or None
+    industries = [i.strip() for i in (wizard_targeting.get("industries") or []) if str(i).strip()]
+    return job_titles or None, regions or None, employee_ranges, exact_titles, org_locations or None, industries or None
 
 
 def _company_names_from_wizard(wizard_targeting: dict) -> list[str]:
@@ -257,7 +325,7 @@ def _fill_missing_from_raw(enriched_df: pd.DataFrame, raw_df: pd.DataFrame) -> p
     out = enriched_df.copy()
 
     raw_email_col = _guess_col(raw_df, _EMAIL_COL_CANDIDATES)
-    raw_phone_col = next((c for c in raw_df.columns if c.lower() in ["phone", "phone number", "mobile", "mobile number"]), None)
+    raw_phone_col = next((c for c in raw_df.columns if c.lower() in ["phone", "phone number", "mobile", "mobile number", "mobile phone"]), None)
 
     if raw_email_col and raw_email_col in raw_df.columns:
         for idx, row in out.iterrows():
@@ -487,15 +555,16 @@ If uncertain, pick the most likely match. Return ONLY JSON, no markdown."""
 async def _add_more_prospects_loop(step: inngest.Step, run_id: str, candidates_df: pd.DataFrame,
                                     persona_titles, person_locations, employee_ranges, do_search,
                                     exact_titles: bool = True, max_iterations: int = 5,
-                                    organization_locations=None):
+                                    organization_locations=None, industries=None):
     """Bounded version of runner.py's unbounded `while add_more:` loop (lines
     597-715 there) - Inngest step keys must be unique per run, so a real
     while loop can't work here; capped at max_iterations rounds instead.
     do_search(names, titles, locations, employee_ranges, key_suffix) is the
     same closure the caller used for the initial search, reused here for
-    each iteration. organization_locations (company HQ filter) carries
-    through unchanged across iterations - only the campaign-idea path can set
-    it, and re-extracting ICP from a refined idea never touches it."""
+    each iteration. organization_locations (company HQ filter) and industries
+    carry through unchanged across iterations - only the campaign-idea path
+    can set them, and re-extracting ICP from a refined idea never touches
+    either."""
     total_found = len(candidates_df)
     for i in range(1, max_iterations + 1):
         add_more = await _ask(
@@ -525,7 +594,7 @@ async def _add_more_prospects_loop(step: inngest.Step, run_id: str, candidates_d
                 continue
             more_df, _more_stats = await do_search(names, persona_titles, person_locations, employee_ranges,
                                                      key_suffix=f"_more_{i}", exact_titles=exact_titles,
-                                                     p_org_locations=organization_locations)
+                                                     p_org_locations=organization_locations, p_industries=industries)
             candidates_df = pd.concat([candidates_df, more_df], ignore_index=True)
         else:
             new_idea = await _ask(
@@ -546,7 +615,7 @@ async def _add_more_prospects_loop(step: inngest.Step, run_id: str, candidates_d
             same_companies = candidates_df["Company"].dropna().unique().tolist()
             new_df, _new_stats = await do_search(same_companies, persona_titles, person_locations, employee_ranges,
                                                    key_suffix=f"_refilter_{i}", exact_titles=exact_titles,
-                                                   p_org_locations=organization_locations)
+                                                   p_org_locations=organization_locations, p_industries=industries)
             candidates_df = pd.concat([candidates_df, new_df], ignore_index=True)
             if "obfuscated_name" in candidates_df.columns:
                 candidates_df = candidates_df.drop_duplicates(subset=["obfuscated_name", "Company"], keep="first")
@@ -737,6 +806,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
     employee_ranges_from_idea = None
     exact_titles_from_idea = True
     organization_locations_from_idea = None
+    industries_from_idea = None
 
     if not campaign_idea_no_csv:
         # Some exports (seen on a real HubSpot pull) carry the same header twice -
@@ -748,19 +818,87 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         input_count = len(df)
         company_col = company_col or _guess_col(
             df, ["Company", "Company Name", "company", "Account Name", "Organization", "organization"])
+        stop_after_normalization = False
+        company_derived_from_domain = False
         if not company_col:
-            raise ValueError(f"Could not find a company-name column. Columns present: {list(df.columns)}")
-        region_col = _guess_col(df, ["Region", "Country", "region", "country"])
+            # No company column at all - mirrors runner.py's gate: a LinkedIn URL
+            # or domain/website column is enough signal to derive a stand-in
+            # company identity and keep going; without either, clean names only
+            # and stop, since domain resolution/exclusion/enrichment all need a
+            # company name to key off.
+            linkedin_col = _guess_col(df, ["linkedin_url", "linkedinurl", "linkedin url",
+                                           "person linkedin url", "linkedin profile url", "linkedin"])
+            domain_col_fallback = _guess_col(df, ["domain", "website", "company domain"])
+            if linkedin_col or domain_col_fallback:
+                signal = "domain/website" if domain_col_fallback else "LinkedIn URL"
+                prompt = (
+                    f"No company-name column found (columns present: {list(df.columns)}). Your file does have a "
+                    f"{signal} column though, so normalization can run and the pipeline can continue using that "
+                    "instead of a real company name. Continue?"
+                )
+            else:
+                prompt = (
+                    f"No company-name column found (columns present: {list(df.columns)}). Domain resolution, "
+                    "exclusion checking, and enrichment all need a company name, so continuing will only clean up "
+                    "names - you'd then need to start a new run with a company column added to go further. "
+                    "Continue with normalization only?"
+                )
+            proceed = await _ask(step, run_id, "no_company_column_confirm", "yes_no", prompt,
+                                  default="no", context={"step": "source", "columns": list(df.columns)})
+            if not _truthy(proceed):
+                raise ValueError(f"Could not find a company-name column. Columns present: {list(df.columns)}")
+            if domain_col_fallback:
+                df["Company"] = df[domain_col_fallback].apply(_company_from_domain)
+                company_col = "Company"
+                company_derived_from_domain = True
+                await _set_stat(step, "stat_no_company_warning", run_id, "warnings",
+                                 ["No company-name column found - derived a stand-in company name from the "
+                                  "domain/website column."])
+            elif linkedin_col:
+                df["Company"] = ""
+                company_col = "Company"
+                await _set_stat(step, "stat_no_company_warning", run_id, "warnings",
+                                 ["No company-name column found - continuing with LinkedIn URLs only; "
+                                  "company-based steps (domain resolution, Apollo company search) will have "
+                                  "little to work with."])
+            else:
+                stop_after_normalization = True
+                await _set_stat(step, "stat_no_company_warning", run_id, "warnings",
+                                 ["No company-name column found - ran name cleanup only, then stopped. Add a "
+                                  "Company Name column and start a new run to continue."])
+
+        region_col = _guess_col(df, ["Region", "Country", "region", "country"]) if not stop_after_normalization else None
         if project_meta:
             await _set_stat(step, "stat_project_meta", run_id, "project_meta", project_meta)
 
-        if (company_col.strip().lower() not in {"company name", "company", "organization", "organisation", "account name"}
+        if (company_col and company_col.strip().lower() not in {"company name", "company", "organization", "organisation", "account name"}
                 and "Company" not in df.columns):
             df["Company"] = df[company_col]
 
         await _status(step, "status_normalizing", run_id, stage="normalizing", message="Normalizing names/company")
         df, norm_stats = normalize.run_normalization(df)
         resolved_company_col = "Cleaned Company Name" if "Cleaned Company Name" in df.columns else company_col
+
+        # QA-only: flag rows where the company name and its domain share no
+        # overlap at all (e.g. "Aon" with domain "globalinsurance.co.in" - a
+        # real case from a Diwali ABM batch). Never changes the company
+        # value, just surfaces it for a human glance. Skipped when Company
+        # was itself derived from the domain column above - comparing it to
+        # itself is meaningless.
+        if not company_derived_from_domain and resolved_company_col in df.columns:
+            qa_domain_col = "Domain" if "Domain" in df.columns else _guess_col(df, ["domain", "website", "company domain"])
+            if qa_domain_col:
+                overlap = df.apply(
+                    lambda r: _company_domain_overlap(r.get(resolved_company_col), r.get(qa_domain_col)), axis=1)
+                df["Company/Domain Mismatch"] = overlap.apply(lambda v: "yes" if v is False else "")
+                mismatch_count = int((overlap == False).sum())  # noqa: E712 - elementwise compare, not identity
+                if mismatch_count:
+                    await _set_stat(step, "stat_company_domain_mismatch", run_id, "company_domain_mismatch", {
+                        "count": mismatch_count,
+                        "message": f"{mismatch_count} row(s) where the company name shares no word with its "
+                                   "domain - possible parent/subsidiary or rebrand mismatch, worth a quick "
+                                   "glance (see 'Company/Domain Mismatch' column). Not auto-corrected.",
+                    })
 
         src_summary = f"{input_count} row(s) read. Names & companies normalized."
         if scrape_stats:
@@ -779,6 +917,24 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
 
         await _set_step(step, "step_source_done", run_id, "source", "Input & Normalization", "done", src_summary)
 
+        # Always make the normalized file downloadable right away, whether or
+        # not the run continues further - some users only want normalization.
+        normalized_path = await asyncio.to_thread(
+            outputs.write_file, run_dir, "00_normalized.csv", df.to_csv(index=False), "text/csv")
+
+        async def _append_normalized_output_file():
+            job = run_status.get(run_id)
+            existing = list(job.get("output_files", []))
+            run_status.update(run_id, output_files=existing + [normalized_path])
+            return True
+
+        await step.run("append_normalized_output_file", _append_normalized_output_file)
+
+        if stop_after_normalization:
+            await _status(step, "status_normalized_stopped", run_id, stage="normalized_stopped",
+                           message="Normalization done. Add a Company Name column and start a new run to continue.")
+            return {"run_id": run_id, "rows": len(df), "stopped": "no_company_column"}
+
         if input_source == "campaign_idea":
             # description + CSV: description drives targeting, CSV drives the
             # company list - confirm ICP now so People Discovery below can
@@ -787,7 +943,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                 # User already confirmed targeting in the wizard - skip Claude
                 # extraction and the icp_confirm_form re-ask entirely.
                 (persona_titles_from_idea, person_locations_from_idea, employee_ranges_from_idea,
-                 exact_titles_from_idea, organization_locations_from_idea) = \
+                 exact_titles_from_idea, organization_locations_from_idea, industries_from_idea) = \
                     _targeting_from_wizard(wizard_targeting)
             else:
                 persona_titles_from_idea, person_locations_from_idea, employee_ranges_from_idea = \
@@ -804,6 +960,17 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         if "Domain" not in df.columns:
             df["Domain"] = None
         df["Domain"] = df["Domain"].apply(lambda v: outputs.strip_url_prefix(v) if pd.notna(v) else v)
+
+        # A sheet that already carries LinkedIn URLs under a differently-named
+        # column (e.g. a HeyReach export's "linkedinUrl") must not lose them -
+        # outputs.build_channel_files only ever reads the exact "linkedin_url"
+        # column, and Apollo enrichment only fills it in when blank (and needs
+        # a domain to do so), so without this passthrough a sheet with real,
+        # ready-to-use LinkedIn URLs produced 0 rows in every channel output
+        # whenever domain resolution was skipped.
+        existing_linkedin_col = "linkedin_url" if "linkedin_url" in df.columns else _guess_col(df, _LINKEDIN_COL_CANDIDATES)
+        if existing_linkedin_col and existing_linkedin_col != "linkedin_url":
+            df["linkedin_url"] = df[existing_linkedin_col]
 
         missing_mask = _blank_domain_mask(df)
         missing_count = int(missing_mask.sum())
@@ -970,17 +1137,21 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         email_col_existing = _guess_col(ok_df, _EMAIL_COL_CANDIDATES)
         resolved_first_col = "Cleaned First Name" if "Cleaned First Name" in ok_df.columns else _guess_col(ok_df, ["first name", "firstname", "first_name"])
         resolved_last_col = "Cleaned Last Name" if "Cleaned Last Name" in ok_df.columns else _guess_col(ok_df, ["last name", "lastname", "last_name"])
+        named_count = int(ok_df[resolved_first_col].notna().sum()) if resolved_first_col else 0
+        # Majority, not "any row" - a single stray named row (leftover/partial
+        # data) in an otherwise company-only ABM list must not skip discovery
+        # for every other account. See has_existing_contacts's doc comment in
+        # runner.py for the intended "already a person-level export" case.
         has_existing_contacts = (
             bool(resolved_first_col) and bool(resolved_last_col)
-            and int(ok_df[resolved_first_col].notna().sum()) > 0
+            and len(ok_df) > 0 and named_count >= len(ok_df) * 0.5
         )
 
         candidates_df = pd.DataFrame()
 
         if has_existing_contacts:
-            named = int(ok_df[email_col_existing].notna().sum()) if email_col_existing else 0
             await _set_step(step, "step_discovery_auto_skipped", run_id, "discovery", "People Discovery", "skipped",
-                             f"Sheet already has {named} named contact(s) - discovery not needed.")
+                             f"Sheet already has {named_count} named contact(s) - discovery not needed.")
             await _set_stat(step, "stat_discovery_auto_skipped", run_id, "apollo_search",
                              {"skipped": True, "reason": "sheet already had named contacts"})
         else:
@@ -988,7 +1159,11 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                 step, run_id, "people_discovery_needed", "yes_no",
                 f"No contacts in the sheet. Find decision-makers at the {len(ok_df)} account(s)? "
                 "Search is free; revealing emails/phones later costs credits.",
-                default="yes", context={"step": "discovery"},
+                default="yes", context={
+                    "step": "discovery",
+                    "excluded_accounts": exclusion_stats.get("excluded_rows", []),
+                    "excluded_count": exclusion_stats.get("excluded", 0),
+                },
             )
 
             if _truthy(disc_answer):
@@ -1000,6 +1175,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                     employee_ranges = employee_ranges_from_idea
                     exact_titles = exact_titles_from_idea
                     organization_locations = organization_locations_from_idea
+                    industries = industries_from_idea
                     # No management-level/department/exclude-titles ask on the
                     # wizard path yet - keep prior behavior (hardcoded default
                     # seniorities, no function filter, no exclusions).
@@ -1010,6 +1186,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                     company_cap = 1
                 else:
                     employee_ranges = None  # discovery_form doesn't collect this (out of scope, see plan)
+                    industries = None  # discovery_form doesn't collect this either - wizard-only for now
                     icp_hint = project_meta.get("icp", "") if project_meta else ""
                     form_answer = await _ask(
                         step, run_id, "discovery_form", "discovery_form",
@@ -1129,7 +1306,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                     per_title_cap=effective_per_title_cap, employee_ranges=employee_ranges,
                     exact_titles=exact_titles, organization_locations=organization_locations,
                     person_seniorities=person_seniorities, person_functions=person_functions,
-                    exclude_titles=exclude_titles,
+                    exclude_titles=exclude_titles, industries=industries,
                 )
 
                 cap_note = f" (up to {per_title_cap} per title, {company_cap} per company)" if effective_per_title_cap else ""
@@ -1152,7 +1329,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         if wizard_targeting:
             # User already confirmed targeting in the wizard - skip Claude
             # extraction and the icp_confirm_form re-ask entirely.
-            persona_titles, person_locations, employee_ranges, exact_titles, organization_locations = \
+            persona_titles, person_locations, employee_ranges, exact_titles, organization_locations, industries = \
                 _targeting_from_wizard(wizard_targeting)
         else:
             persona_titles, person_locations, employee_ranges = await _extract_and_confirm_icp(
@@ -1161,28 +1338,31 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             )
             exact_titles = True  # no wizard toggle on this path - exact-title matching by default
             organization_locations = None  # no HQ-location ask on the manual ICP-extraction path
+            industries = None  # no industry ask on the manual ICP-extraction path
 
         await _set_step(step, "step_source_done_idea", run_id, "source", "Input & Normalization", "done",
                          f"Campaign idea captured: \"{campaign_idea[:80]}\".")
 
         wizard_company_names = _company_names_from_wizard(wizard_targeting) if wizard_targeting else []
-        if wizard_company_names:
-            # Already collected in the wizard's review step - asking again
-            # would just repeat a question the user already answered.
+        if wizard_targeting:
+            # The wizard's review step already offered a company-names field
+            # as optional ("otherwise add target companies below") and never
+            # blocks Start on it - an empty list here means the user is
+            # building an account list from scratch and wants to search by
+            # ICP filters alone, not a skipped question to re-ask.
             company_names = wizard_company_names
         else:
             companies_answer = await _ask(
                 step, run_id, "apollo_company_names", "text",
                 "Company names to search (comma-separated, or paste one per line/space-separated - "
-                "URLs are fine too):\ne.g. Acme Corp, TechCo Inc, StartUp Labs",
+                "URLs are fine too). Leave blank to search purely by the ICP filters above, with no "
+                "target companies yet:\ne.g. Acme Corp, TechCo Inc, StartUp Labs",
                 default="", context={"step": "source"},
             )
             company_names = _parse_company_names(str(companies_answer))
-        if not company_names:
-            raise ValueError("No company names provided for Apollo search.")
 
         async def _do_search(names, p_titles, p_locations, p_employee_ranges=None, key_suffix="", exact_titles=True,
-                              p_org_locations=None):
+                              p_org_locations=None, p_industries=None):
             domains_df = pd.DataFrame([{"Company": c} for c in names])
 
             async def _resolve():
@@ -1205,26 +1385,54 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                     resolved_df, "Company", "Domain", person_locations=p_locations,
                     persona_titles=p_titles, max_per_company=config.MAX_CONTACTS_PER_COMPANY_DEFAULT,
                     per_title_cap=(2 if p_titles else None), employee_ranges=p_employee_ranges,
-                    exact_titles=exact_titles, organization_locations=p_org_locations)
+                    exact_titles=exact_titles, organization_locations=p_org_locations, industries=p_industries)
                 return _nan_safe({"records": found_df.to_dict("records"), "search_stats": sstats})
 
             search_result = await step.run(f"search_candidates_idea{key_suffix}", _search)
             return pd.DataFrame(search_result["records"]), search_result["search_stats"]
 
-        candidates_df, search_stats = await _do_search(company_names, persona_titles, person_locations, employee_ranges,
-                                                          exact_titles=exact_titles, p_org_locations=organization_locations)
-        await _set_step(step, "step_domain_done_idea", run_id, "domain", "Domain Resolution", "done",
-                         f"Resolved domains for {len(company_names)} compan{'y' if len(company_names) == 1 else 'ies'}.")
-        await _set_step(
-            step, "step_discovery_done_idea", run_id, "discovery", "People Discovery", "done",
-            f"Searched {search_stats['companies_searched']} compan{'y' if search_stats['companies_searched'] == 1 else 'ies'}, "
-            f"found {search_stats['candidates_found']} candidate(s).",
-        )
-        await _set_stat(step, "stat_discovery_idea", run_id, "apollo_search", search_stats)
+        if not company_names:
+            # No target companies known yet - search Apollo by ICP filters
+            # alone (job titles/employee size/region/industry), pulling
+            # candidates from across Apollo's whole org database instead of
+            # a caller-supplied company list. See search_candidates_by_icp.
+            await _set_step(step, "step_domain_skipped_idea", run_id, "domain", "Domain Resolution", "skipped",
+                             "No target companies yet - searching Apollo by ICP filters only.")
+
+            async def _search_icp_only():
+                found_df, sstats = apollo_enrich.search_candidates_by_icp(
+                    person_locations=person_locations, persona_titles=persona_titles,
+                    employee_ranges=employee_ranges, organization_locations=organization_locations,
+                    industries=industries, per_title_cap=(2 if persona_titles else None),
+                    exact_titles=exact_titles, target_count=config.MAX_CONTACTS_PER_COMPANY_DEFAULT * 20)
+                return _nan_safe({"records": found_df.to_dict("records"), "search_stats": sstats})
+
+            search_result = await step.run("search_candidates_icp_only", _search_icp_only)
+            candidates_df = pd.DataFrame(search_result["records"])
+            search_stats = search_result["search_stats"]
+            await _set_step(
+                step, "step_discovery_done_idea", run_id, "discovery", "People Discovery", "done",
+                f"Searched Apollo by ICP filters (no company list), found {search_stats['candidates_found']} "
+                f"candidate(s) across {search_stats['companies_searched']} "
+                f"compan{'y' if search_stats['companies_searched'] == 1 else 'ies'}.",
+            )
+            await _set_stat(step, "stat_discovery_idea", run_id, "apollo_search", search_stats)
+        else:
+            candidates_df, search_stats = await _do_search(company_names, persona_titles, person_locations, employee_ranges,
+                                                              exact_titles=exact_titles, p_org_locations=organization_locations,
+                                                              p_industries=industries)
+            await _set_step(step, "step_domain_done_idea", run_id, "domain", "Domain Resolution", "done",
+                             f"Resolved domains for {len(company_names)} compan{'y' if len(company_names) == 1 else 'ies'}.")
+            await _set_step(
+                step, "step_discovery_done_idea", run_id, "discovery", "People Discovery", "done",
+                f"Searched {search_stats['companies_searched']} compan{'y' if search_stats['companies_searched'] == 1 else 'ies'}, "
+                f"found {search_stats['candidates_found']} candidate(s).",
+            )
+            await _set_stat(step, "stat_discovery_idea", run_id, "apollo_search", search_stats)
 
         candidates_df, persona_titles, person_locations, employee_ranges = await _add_more_prospects_loop(
             step, run_id, candidates_df, persona_titles, person_locations, employee_ranges, _do_search,
-            exact_titles=exact_titles, organization_locations=organization_locations)
+            exact_titles=exact_titles, organization_locations=organization_locations, industries=industries)
 
         # Exclusion gate, applied to candidates - a separate small block rather
         # than sharing code with the tested exclusion block above, deliberately,
@@ -1509,8 +1717,22 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
 
         missing_details_count = await step.run("count_missing_details", _count_missing_details)
         if missing_details_count == 0:
+            # count_missing_details already ran Apollo's free bulk-match-by-email
+            # tier live to reach this number (see its docstring) - but only to
+            # COUNT what the paid tier would still owe, throwing away the actual
+            # matched details it fetched. If that free tier alone resolved every
+            # row (the common case for an already-emailed sheet), skipping
+            # fill_missing_details here meant LinkedIn URL/etc. never actually
+            # got written to core_df, silently starving linkedin_upload.csv (and
+            # therefore the HeyReach push) even though the data was one API call
+            # away. Calling it here is free: paid_lookups will be 0 by
+            # definition (that's exactly what missing_details_count == 0 means).
+            core_df, details_stats = await asyncio.to_thread(
+                apollo_enrich.fill_missing_details,
+                core_df, resolved_first_col, resolved_last_col, "Domain",
+            )
             await _set_stat(step, "stat_details_no_gaps", run_id, "existing_contact_details",
-                             {"skipped": True, "reason": "no missing details", "missing": 0})
+                             {**details_stats, "reason": "resolved via free bulk-match tier, no paid lookups needed"})
         else:
             details_est = estimates.cost_block("existing_contact_details", missing_details_count)
             details_answer = await _ask(

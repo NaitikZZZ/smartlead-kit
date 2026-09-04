@@ -8,7 +8,7 @@ import AddCustomChip from "./AddCustomChip";
 const _OTHER = "Other - not listed";
 
 type Mode = "wizard" | "ai_infer";
-const STEP_TITLES = ["Idea", "Use case", "Job titles", "Employee size", "Region", "Review"];
+const STEP_TITLES = ["Idea", "Use case", "Job titles", "Employee size", "Region", "Industry", "Review"];
 
 export default function CampaignIdeaWizard({
   icpOptions, onStarted,
@@ -52,6 +52,7 @@ export default function CampaignIdeaWizard({
   const [employeeSizes, setEmployeeSizes] = useState<string[]>([]);
   const [regions, setRegions] = useState<string[]>([]);
   const [hqLocationsText, setHqLocationsText] = useState("");
+  const [industries, setIndustries] = useState<string[]>([]);
   const [companyNames, setCompanyNames] = useState<string[]>([]);
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -115,6 +116,7 @@ export default function CampaignIdeaWizard({
         employee_sizes: employeeSizes,
         regions,
         organization_locations: hqLocations,
+        industries,
         company_names: csvFile ? undefined : companyNames,
       };
       const campaignIdea = idea.trim() || effectiveUseCase || "Campaign idea (targeting set via wizard)";
@@ -340,7 +342,10 @@ export default function CampaignIdeaWizard({
 
           {step === 4 && (
             <div>
-              <p style={{ fontSize: 13, marginBottom: 12 }}>Region / country (optional - blank = Global).</p>
+              <p style={{ fontSize: 13, marginBottom: 12 }}>
+                Person HQ / location (optional - blank = Global) - where the contact themselves is based,
+                regardless of where their company is headquartered.
+              </p>
               <LocationMultiSelect
                 regions={icpOptions?.regions || []}
                 countries={icpOptions?.countries || []}
@@ -368,6 +373,33 @@ export default function CampaignIdeaWizard({
 
           {step === 5 && (
             <div>
+              <p style={{ fontSize: 13, marginBottom: 12 }}>
+                Industry (optional - leave blank for no filter). Sent to Apollo as keyword matching, not an
+                exact taxonomy, so broader terms tend to match better than narrow ones.
+              </p>
+              {industries.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                  {industries.map((t) => (
+                    <span
+                      key={t}
+                      className="pill active"
+                      style={{ cursor: "pointer" }}
+                      onClick={() => setIndustries((cur) => cur.filter((x) => x !== t))}
+                    >
+                      {t} ✕
+                    </span>
+                  ))}
+                </div>
+              )}
+              <AddCustomChip
+                placeholder="Add an industry, e.g. Healthcare, Fintech, Retail..."
+                onAdd={(v) => setIndustries((cur) => (cur.includes(v) ? cur : [...cur, v]))}
+              />
+            </div>
+          )}
+
+          {step === 6 && (
+            <div>
               <div className="card" style={{ padding: 14, marginBottom: 12 }}>
                 <table className="kv-table">
                   <tbody>
@@ -387,8 +419,9 @@ export default function CampaignIdeaWizard({
                       </td>
                     </tr>
                     <tr><td style={{ fontWeight: 600 }}>Employee size</td><td>{employeeSizes.length ? employeeSizes.join(", ") : "No filter"}</td></tr>
-                    <tr><td style={{ fontWeight: 600 }}>Region</td><td>{regions.length ? regions.join(", ") : "Global"}</td></tr>
+                    <tr><td style={{ fontWeight: 600 }}>Person HQ / location</td><td>{regions.length ? regions.join(", ") : "Global"}</td></tr>
                     <tr><td style={{ fontWeight: 600 }}>Company HQ location</td><td>{hqLocationsText.trim() ? hqLocationsText : "No filter"}</td></tr>
+                    <tr><td style={{ fontWeight: 600 }}>Industry</td><td>{industries.length ? industries.join(", ") : "No filter"}</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -400,6 +433,7 @@ export default function CampaignIdeaWizard({
                 <div style={{ marginTop: 16 }}>
                   <p style={{ fontSize: 13, marginBottom: 8 }}>
                     Target companies to search (add them now so you're not asked again once the run starts).
+                    Leave blank to search Apollo by the filters above alone, with no company list yet.
                   </p>
                   {companyNames.length > 0 && (
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>

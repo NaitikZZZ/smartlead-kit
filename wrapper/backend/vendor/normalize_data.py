@@ -9,9 +9,17 @@ CSV or Excel file:
   - Strips honorific prefixes (Mr., Dr., Shri, ...) and suffixes (Jr., PhD, ...)
     from names.
   - Proper-cases names (JOHN -> John, o'brien -> O'Brien, mary-jane -> Mary-Jane).
-  - Strips legal-entity suffixes (Pvt Ltd, LLC, Inc, Corp, ...) from company
-    names and proper-cases what's left, while preserving short ALL-CAPS
-    acronyms (IBM, HDFC, HR).
+  - Swaps an initials-only First Name (e.g. "S." or "KMG") with a usable name
+    sitting in the other slot, so personalization doesn't address someone as
+    "Hi S.,".
+  - Repairs mojibake (cp1252/utf-8 mix-ups) and strips invisible/smart-quote
+    characters that scrape tools leave behind.
+  - Strips LinkedIn-scrape pipe noise ("A2MP | Africa Minerals... | LinkedIn"),
+    "a company of X" / "a subsidiary of Y" descriptors, and [DUPE]/[TEST]-style
+    quality markers from company names.
+  - Strips legal-entity suffixes (Pvt Ltd, LLC, Inc, Corp, GmbH, Sdn Bhd, ...)
+    from company names and proper-cases what's left, while preserving short
+    ALL-CAPS acronyms (IBM, HDFC, HR) and known brand casing (eBay, PayPal).
   - Never overwrites original columns -- always writes new "Cleaned ..."
     columns next to the originals, so raw data is preserved.
 
@@ -22,8 +30,9 @@ If output_file is omitted, writes "<input_stem>_normalized.<ext>" next to
 the input file (same format: .csv stays .csv, .xlsx stays .xlsx).
 """
 
-import sys
 import re
+import sys
+import unicodedata
 from pathlib import Path
 
 
@@ -51,7 +60,7 @@ pd = _LazyPandas()
 NAME_PREFIXES = {
     "mr", "mrs", "ms", "miss", "mx", "dr", "prof", "professor", "shri", "smt",
     "sri", "er", "eng", "capt", "col", "maj", "rev", "fr", "sir", "madam",
-    "hon", "adv",
+    "hon", "adv", "ca", "cs", "ar",
 }
 
 NAME_SUFFIXES = {
@@ -61,14 +70,31 @@ NAME_SUFFIXES = {
 }
 
 # Company legal-entity suffixes, longest phrases first so multi-word ones
-# (e.g. "private limited") are matched before their component words.
+# (e.g. "private limited") are matched before their component words. Covers
+# India-focused entity types plus the common global jurisdictions seen in
+# scraped/ABM lead lists.
 COMPANY_SUFFIXES = [
-    "private limited", "pvt ltd", "pvt. ltd.", "pvt. ltd", "pte ltd",
-    "pty ltd", "public limited company", "limited liability company",
-    "limited liability partnership", "limited", "ltd.", "ltd", "llp",
-    "llc", "l.l.c.", "inc.", "inc", "incorporated", "corporation", "corp.",
-    "corp", "co.", "co", "company", "gmbh", "plc", "s.a.", "sa", "ag",
-    "s.r.l.", "srl", "bv", "n.v.", "nv", "kk", "oy", "ab",
+    "private limited",
+    # Bare "private"/"pvt" with no "limited" attached - a common truncation
+    # in scraped/exported Indian company names ("Acme Solutions Private").
+    "private", "pvt.", "pvt",
+    "pvt ltd", "pvt. ltd.", "pvt. ltd", "pte ltd",
+    "pte. ltd.", "pte. ltd", "pty ltd", "pty. ltd.", "pty. ltd",
+    "public limited company", "limited liability company",
+    "limited liability partnership", "one person company", "opc",
+    "hindu undivided family", "huf", "sole proprietorship",
+    "sdn bhd", "sdn. bhd.", "co., ltd.", "co. ltd.", "co ltd", "co.,ltd",
+    "s.a. de c.v.", "sa de cv", "s. de r.l.", "s de rl", "s.r.l.", "s.r.o.",
+    "sp. z o.o.", "sp z oo", "d.o.o.", "gesellschaft mit beschrankter haftung",
+    "s.a.s.", "s.a.r.l.", "sarl", "sas", "spa", "s.p.a.", "srl", "gmbh",
+    "mbh", "ohg", "kgaa", "kg", "ug", "nv", "n.v.", "bv", "b.v.",
+    "cv", "vof", "asa", "aps", "oyj", "kft", "zrt", "nyrt",
+    "ltda", "ltda.", "eirl", "sac", "s.a.c.", "plc", "p.l.c.",
+    "l.l.c.", "l.l.p.", "lllp", "pllc", "p.c.",
+    "limited", "ltd.", "ltd", "llp",
+    "llc", "inc.", "inc", "incorporated", "corporation", "corp.",
+    "corp", "& co.", "& co", "& company", "co.", "co", "company", "ag",
+    "kk", "oy", "ab", "s.a.", "sa",
 ]
 
 FULL_NAME_COL_CANDIDATES = ["full name", "name", "contact name", "prospect name"]
@@ -86,6 +112,100 @@ def find_column(columns, candidates):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Text hygiene -- mojibake repair and invisible/smart-punctuation cleanup.
+# Scraped lead lists routinely carry cp1252/utf-8 mix-ups ("Great Place To
+# Workâ€¢") and non-breaking spaces / smart quotes that break downstream
+# string matching (legal-suffix stripping, dedup, merge tags).
+# ---------------------------------------------------------------------------
+
+INVISIBLE = {
+    " ": " ", " ": " ", " ": " ", " ": " ", " ": " ",
+    "　": " ", "​": "", "‌": "", "‍": "", "﻿": "",
+    "­": "", " ": " ", " ": " ",
+    "‘": "'", "’": "'", "‚": "'", "′": "'",
+    "“": '"', "”": '"', "„": '"', "″": '"',
+    "–": "-", "—": "-", "‒": "-", "―": "-", "−": "-",
+    "…": "...",
+    # "®" that went through a lossy double mis-encoding (utf-8 -> read as
+    # cp1252 -> re-saved as utf-8, twice, dropping a byte along the way).
+    # Unlike the single-round cases _fix_mojibake() repairs below, this one
+    # lost real information and can't be reconstructed byte-for-byte -
+    # confirmed against raw file bytes (C3 A2 C2 AE). It only ever shows up
+    # as trademark decoration on a brand name ("Great Place To Workâ®"), so
+    # dropping it is strictly correct rather than a guess.
+    "â®": "",
+}
+_INVIS_RE = re.compile("|".join(map(re.escape, INVISIBLE)))
+
+MOJIBAKE_HINTS = ("Ã©", "Ã¨", "Ã¼", "Ã¶", "Ã±", "Ã¡", "Ã³", "Ã­", "â€™", "â€œ", "â€\x9d", "â€“", "Â ")
+
+EMOJI_RE = re.compile(
+    "[" "\U0001F000-\U0001FAFF" "\U00002600-\U000027BF" "\U0001F1E6-\U0001F1FF"
+    "\U00002190-\U000021FF" "\U00002B00-\U00002BFF" "\U0000FE00-\U0000FE0F"
+    "\U0001F900-\U0001F9FF" "™®©✓✔✅❌⭐" "]+", flags=re.UNICODE,
+)
+
+
+def _fix_mojibake(s):
+    if not s or not any(h in s for h in MOJIBAKE_HINTS):
+        return s
+    try:
+        return s.encode("cp1252", errors="strict").decode("utf-8", errors="strict")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return s
+
+
+def clean_text(s):
+    """Normalize whitespace, invisibles, mojibake, smart punctuation. Never drops letters."""
+    if s is None or (isinstance(s, float) and pd.isna(s)):
+        return ""
+    s = str(s)
+    s = _fix_mojibake(s)
+    s = unicodedata.normalize("NFC", s)
+    s = _INVIS_RE.sub(lambda m: INVISIBLE[m.group()], s)
+    s = EMOJI_RE.sub(" ", s)
+    s = re.sub(r"[\t\r\n\f\v]+", " ", s)
+    s = re.sub(r" {2,}", " ", s)
+    return s.strip()
+
+
+def _looks_like_formula_injection(s):
+    return bool(s) and s[0] in ("=", "+", "@") and re.search(r"[A-Za-z]+\(|![A-Z]", s)
+
+
+_INITIAL_VOWELS = set("aeiouy")  # "y" counts as a vowel here so real names
+# like "Lynn" or "Kim" aren't mistaken for initials.
+
+
+def _looks_like_initials(token: str) -> bool:
+    """True for a token that reads as initials rather than a usable first
+    name: a single letter (with or without a trailing period, e.g. "S."),
+    or a short (2-5 letter) vowel-less run of letters (e.g. "KMG")."""
+    t = token.strip(". ")
+    if not t or not t.isalpha():
+        return False
+    if len(t) == 1:
+        return True
+    return 2 <= len(t) <= 5 and not any(c.lower() in _INITIAL_VOWELS for c in t)
+
+
+def _looks_like_a_name(text: str) -> bool:
+    """True if `text` reads as an actual name rather than initials/junk -
+    has at least one vowel and at least 2 letters."""
+    letters = re.sub(r"[^a-zA-Z]", "", text or "")
+    return len(letters) >= 2 and any(c.lower() in _INITIAL_VOWELS for c in letters)
+
+
+# LinkedIn-style banner text pasted into name fields ("Jane Doe | Open to
+# Work", "John Smith - Hiring Now").
+_NAME_NOISE_RE = re.compile(
+    r"\s*[|/•·]\s*.*$|\s*[-–]\s*(?:open to work|#opentowork|hiring|"
+    r"we'?re hiring|now hiring|looking for work)\b.*$",
+    re.IGNORECASE,
+)
+
+
 def strip_prefix_suffix_tokens(text, prefixes, suffixes):
     """Remove honorific/degree tokens wherever they appear in the name.
 
@@ -97,6 +217,10 @@ def strip_prefix_suffix_tokens(text, prefixes, suffixes):
     """
     if not text:
         return text
+    text = clean_text(text)
+    if _looks_like_formula_injection(text):
+        return ""
+    text = _NAME_NOISE_RE.sub("", text)
     tokens = text.strip().split()
     if not tokens:
         return text
@@ -151,22 +275,185 @@ def split_full_name(full_name, prefixes, suffixes):
         return "", ""
     if len(tokens) == 1:
         return tokens[0], ""
+    # A first name that's really just initials (e.g. "S." or "KMG") isn't
+    # usable for personalization - "Hi S.," reads badly. If the next token
+    # looks like an actual name, swap them so the real name leads instead
+    # (e.g. "KMG Stephen" -> first "Stephen", last "KMG").
+    if _looks_like_initials(tokens[0]) and _looks_like_a_name(tokens[1]):
+        tokens[0], tokens[1] = tokens[1], tokens[0]
     first = tokens[0]
     last = " ".join(tokens[1:])  # middle name(s) fold into last name
     return first, last
 
 
-def clean_name_field(value, prefixes, suffixes):
-    if pd.isna(value) or not str(value).strip():
-        return ""
-    stripped = strip_prefix_suffix_tokens(str(value), prefixes, suffixes)
-    return proper_case_name(stripped)
+def finalize_first_last(first_raw, last_raw, prefixes, suffixes):
+    """Cleans an already-split First Name / Last Name pair, applying the
+    same initials-swap as split_full_name: if First is just initials (e.g.
+    "KMG") and Last starts with an actual name (e.g. "Stephen"), swap them."""
+    first_stripped = strip_prefix_suffix_tokens(
+        str(first_raw) if first_raw and not pd.isna(first_raw) else "", prefixes, suffixes)
+    last_stripped = strip_prefix_suffix_tokens(
+        str(last_raw) if last_raw and not pd.isna(last_raw) else "", prefixes, suffixes)
+
+    # A First Name column that already holds the whole name (e.g. First =
+    # "Ombir Singh", Last = "Singh" duplicated from it) - combine and
+    # re-split via split_full_name instead of keeping the multi-word value
+    # in First. An explicit, distinct Last value found inside the combined
+    # name is trusted over the naive tail split, same as split_full_name's
+    # caller does for a real Full Name column.
+    if len(first_stripped.split()) > 1:
+        combined = (first_stripped + " " + last_stripped).strip() if last_stripped else first_stripped
+        first_split, last_split = split_full_name(combined, prefixes, suffixes)
+        if last_stripped and last_stripped.lower() != last_split.lower() \
+                and last_stripped.lower() in combined.lower():
+            last_split = last_stripped
+        return proper_case_name(first_split), proper_case_name(last_split)
+
+    last_tokens = last_stripped.split()
+    if _looks_like_initials(first_stripped) and last_tokens and _looks_like_a_name(last_tokens[0]):
+        first_stripped, last_stripped = last_tokens[0], " ".join([first_stripped] + last_tokens[1:])
+    return proper_case_name(first_stripped), proper_case_name(last_stripped)
+
+
+def _dedupe_pipe_scrape_noise(text: str) -> str:
+    """A LinkedIn-scraped company field often looks like
+    "A2MP | Africa Minerals and Metals Processing Platform | LinkedIn" - an
+    acronym, its full expansion, and the site name, pipe-separated. Drop the
+    "LinkedIn" noise and keep the longest remaining segment (the expanded,
+    readable name) instead of the acronym."""
+    if "|" not in text:
+        return text
+    segments = [s.strip() for s in text.split("|") if s.strip() and s.strip().lower() != "linkedin"]
+    if not segments:
+        return text
+    return max(segments, key=len)
+
+
+# "Cora, a company of Blank" / ", a subsidiary of X" / "(an Acme company)"
+_DESCRIPTOR_RE = re.compile(
+    r"""(?:
+          \s*[,;\-]\s*(?:an?|the)\s+[^,;]{0,60}?\s*
+              (?:company|business|brand|group|firm|venture|entity|subsidiary|
+                 division|unit|portfolio\s+company|agency|studio|practice)\b.*$
+        | \s*[,;\-]\s*(?:an?|the)\s+
+              (?:company|subsidiary|division|unit|brand|part|member|affiliate)\s+of\s+.*$
+        | \s*[,;\-]\s*(?:part|member|division|subsidiary|unit|affiliate)\s+of\s+.*$
+        | \s*[,;\-]\s*(?:owned|acquired|backed|operated|powered)\s+by\s+.*$
+        | \s*[,;\-]\s*(?:d/?b/?a|dba|doing\s+business\s+as|f/?k/?a|fka|
+                          formerly\s+known\s+as|formerly|now|nee)\b.*$
+        | \s*\(\s*(?:an?|the)\s+[^)]{0,60}?
+              (?:company|subsidiary|division|brand|group|business)\s*\)\s*
+        | \s*\(\s*(?:part|member|division|subsidiary|unit)\s+of\s+[^)]*\)\s*
+        | \s*\(\s*(?:formerly|fka|f\.k\.a\.|dba|d/b/a|now|acquired\s+by)\b[^)]*\)\s*
+      )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Bracketed/trailing quality markers left by scrape or QA tools.
+_QUALITY_MARKER_RE = re.compile(
+    r"""(?:
+          \s*[\(\[\{]\s*(?:dupe|duplicate|test|testing|inactive|do\s*not\s*use|
+              dnu|obsolete|old|delete|deleted|invalid|sample|demo|placeholder|
+              xxx|tbd|unverified|needs\s*review|check|archive[d]?)\s*[\)\]\}]\s*
+        | [\s,;\-]+(?:dupe|duplicate|do\s*not\s*use|dnu|inactive|obsolete|
+              deleted|placeholder|unverified|needs\s*review)\s*$
+      )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Short words that are real words, not acronyms. When an ALL-CAPS company name
+# is re-cased, any short token NOT in this set is assumed to be an acronym and
+# kept uppercase, so "FMFE, CPA" survives but "VODAFONE IDEA" -> "Vodafone Idea"
+# instead of the false-positive "Vodafone IDEA".
+COMMON_SHORT_WORDS = {
+    "the", "and", "for", "our", "you", "all", "new", "old", "one", "two", "six",
+    "ten", "top", "key", "pro", "max", "web", "net", "sun", "sky", "box", "bay",
+    "oak", "red", "big", "way", "car", "air", "gas", "oil", "law", "tax", "pay",
+    "buy", "get", "run", "fit", "eat", "joy", "art", "ace", "age", "aim", "arm",
+    "bar", "bed", "bit", "bus", "cap", "cat", "cup", "cut", "day", "dog", "ear",
+    "egg", "end", "eye", "fan", "far", "few", "fly", "fun", "gap", "gym", "hat",
+    "hit", "hot", "ice", "ink", "jar", "job", "kid", "lab", "lap", "leg", "lid",
+    "log", "lot", "low", "man", "map", "men", "mix", "now", "nut", "odd", "off",
+    "out", "own", "pan", "pen", "pet", "pie", "pig", "pin", "pit", "pot", "pub",
+    "raw", "rib", "rim", "row", "rug", "sea", "set", "she", "sit", "ski", "son",
+    "tab", "tag", "tan", "tap", "tea", "tie", "tin", "tip", "toe", "ton", "toy",
+    "try", "use", "van", "war", "wax", "wet", "win", "zip", "inn", "eco", "bio",
+    "real", "test", "best", "care", "home", "life", "work", "tech", "data",
+    "food", "bank", "city", "east", "west", "gold", "high", "land", "main",
+    "next", "open", "park", "plus", "pure", "road", "safe", "star", "true",
+    "view", "wave", "wise", "zero", "blue", "bold", "core", "edge", "fast",
+    "fine", "fire", "free", "good", "grow", "help", "idea", "king", "lead",
+    "link", "live", "look", "love", "mind", "move", "nova", "only", "path",
+    "peak", "plan", "play", "rise", "rock", "sage", "seed", "ship", "site",
+    "soft", "solo", "span", "spot", "sure", "team", "time", "tree", "unit",
+    "vast", "well", "wide", "wild", "wood", "yard", "your", "auto", "with",
+    "from", "into", "over", "more", "less", "each", "both", "some", "such",
+    # Country/continent names short enough to collide with the acronym
+    # threshold - "XYZ IRAN OPERATIONS" must not keep "IRAN" uppercase.
+    "asia", "chad", "cuba", "fiji", "iran", "iraq", "laos", "mali", "oman",
+    "peru", "togo", "truck", "india", "china", "chile", "egypt", "gabon",
+    "ghana", "haiti", "italy", "japan", "kenya", "libya", "malta", "nauru",
+    "nepal", "niger", "palau", "qatar", "spain", "sudan", "tonga", "yemen",
+    "congo", "korea",
+    # Short Indian city/state names, same collision as country names above.
+    "pune", "goa", "agra", "kota", "puri", "diu", "club",
+}
+
+# Case-preserving brand names that don't proper-case correctly on their own.
+
+# TLDs commonly used as a deliberate, stylized suffix in a real product/
+# company name rather than pasted as a plain domain reference.
+BRAND_STYLE_TLDS = {"ai", "io", "app", "dev", "so", "sh", "xyz"}
+
+BRAND_CASE = {
+    "ebay": "eBay", "iphone": "iPhone", "ipad": "iPad", "imac": "iMac",
+    "paypal": "PayPal", "youtube": "YouTube", "linkedin": "LinkedIn",
+    "github": "GitHub", "gitlab": "GitLab", "whatsapp": "WhatsApp",
+    "tiktok": "TikTok", "snapchat": "Snapchat", "salesforce": "Salesforce",
+    "hubspot": "HubSpot", "mailchimp": "Mailchimp", "quickbooks": "QuickBooks",
+    "wordpress": "WordPress", "woocommerce": "WooCommerce", "bigcommerce": "BigCommerce",
+    "shopify": "Shopify", "netsuite": "NetSuite", "servicenow": "ServiceNow",
+    "workday": "Workday", "docusign": "DocuSign", "surveymonkey": "SurveyMonkey",
+    "zoominfo": "ZoomInfo", "openai": "OpenAI", "deepmind": "DeepMind",
+    "xoxoday": "Xoxoday", "loylty": "Loylty", "empuls": "Empuls", "plum": "Plum",
+    "freshworks": "Freshworks", "zoho": "Zoho", "postman": "Postman",
+    "browserstack": "BrowserStack", "swiggy": "Swiggy", "zomato": "Zomato",
+    "flipkart": "Flipkart", "myntra": "Myntra", "makemytrip": "MakeMyTrip",
+    "byjus": "BYJU'S", "byju's": "BYJU'S", "paytm": "Paytm", "phonepe": "PhonePe",
+    "razorpay": "Razorpay", "mcdonalds": "McDonald's", "mcdonald's": "McDonald's",
+    "mckinsey": "McKinsey", "mcafee": "McAfee", "o'reilly": "O'Reilly",
+    "oreilly": "O'Reilly", "l'oreal": "L'Oreal",
+}
 
 
 def clean_company_name(value, suffixes):
     if pd.isna(value) or not str(value).strip():
         return ""
-    text = str(value).strip()
+    text = clean_text(value)
+    if _looks_like_formula_injection(text):
+        return ""
+    text = _dedupe_pipe_scrape_noise(text)
+
+    if _QUALITY_MARKER_RE.search(text):
+        text = _QUALITY_MARKER_RE.sub(" ", text)
+
+    # Bare domain in the company column, e.g. "acme-corp.com" -> "Acme Corp".
+    # Skip this when there's no http(s):// or www. prefix AND the TLD is one
+    # startups commonly brand themselves with (Examroom.ai, Linear.app,
+    # Notion.so) - those are real names, not a pasted domain, so stripping
+    # the TLD would silently delete half the brand. An explicit protocol/www
+    # prefix still means "this is a pasted link," so it's always compressed.
+    m = re.fullmatch(r"(https?://)?(www\.)?([a-z0-9-]+(?:\.[a-z]{2,}){1,2})/?", text, re.I)
+    if m:
+        had_url_prefix = bool(m.group(1) or m.group(2))
+        host = m.group(3)
+        final_tld = host.rsplit(".", 1)[-1].lower()
+        if had_url_prefix or final_tld not in BRAND_STYLE_TLDS:
+            text = host.split(".")[0].replace("-", " ")
+
+    if _DESCRIPTOR_RE.search(text):
+        text = _DESCRIPTOR_RE.sub(" ", text)
+
     # Remove commas before suffixes, e.g. "Acme, Inc." -> "Acme Inc."
     text = text.replace(",", " ")
     text = re.sub(r"\s+", " ", text).strip()
@@ -176,18 +463,32 @@ def clean_company_name(value, suffixes):
     for suf in suffixes:
         pattern = r"\s+" + re.escape(suf) + r"\.?\s*$"
         if re.search(pattern, lowered):
-            text = re.sub(pattern, "", text, flags=re.IGNORECASE)
-            lowered = text.lower()
+            candidate = re.sub(pattern, "", text, flags=re.IGNORECASE)
+            # Never strip a suffix down to nothing -- "The Company" stays put.
+            if candidate.strip(" .,-&/"):
+                text = candidate
+                lowered = text.lower()
 
     text = re.sub(r"\s+", " ", text).strip().strip(".,-")
 
-    # Proper-case each word, but preserve short ALL-CAPS acronyms (IBM, HR, HDFC)
-    # and intentional mixed-case branding (GreenLeaf, PayPal, eBay) -- a word
-    # with more than one uppercase letter that ISN'T all-caps is almost always
-    # deliberate stylization, not a typo, so leave it as typed.
+    # "Johnson and Johnson" -> "Johnson & Johnson"
+    text = re.sub(r"(?<=\w)\s+and\s+(?=[A-Z])", " & ", text)
+    text = re.sub(r"\s*&\s*", " & ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if not text:
+        return clean_text(value)
+
+    # Proper-case each word, but preserve short ALL-CAPS acronyms (IBM, HR, HDFC),
+    # known brand casing (eBay, PayPal), and intentional mixed-case branding
+    # (GreenLeaf) -- a word with more than one uppercase letter that ISN'T
+    # all-caps is almost always deliberate stylization, not a typo.
     def cap_word(word):
+        low = word.lower().strip(".,&-'")
+        if low in BRAND_CASE:
+            return BRAND_CASE[low]
         upper_count = sum(1 for c in word if c.isupper())
-        if word.isupper() and 1 < len(word) <= 5 and word.isalpha():
+        if word.isupper() and 1 < len(word) <= 4 and word.isalpha() and low not in COMMON_SHORT_WORDS:
             return word
         if upper_count > 1 and not word.isupper() and word.isalpha():
             return word
@@ -206,12 +507,12 @@ def process_dataframe(df):
     report = []
 
     if first_name_col and last_name_col:
-        df["Cleaned First Name"] = df[first_name_col].apply(
-            lambda v: clean_name_field(v, NAME_PREFIXES, NAME_SUFFIXES)
+        finalized = df.apply(
+            lambda row: finalize_first_last(row[first_name_col], row[last_name_col], NAME_PREFIXES, NAME_SUFFIXES),
+            axis=1,
         )
-        df["Cleaned Last Name"] = df[last_name_col].apply(
-            lambda v: clean_name_field(v, NAME_PREFIXES, NAME_SUFFIXES)
-        )
+        df["Cleaned First Name"] = finalized.apply(lambda t: t[0])
+        df["Cleaned Last Name"] = finalized.apply(lambda t: t[1])
         report.append(f"Cleaned existing '{first_name_col}' / '{last_name_col}' columns.")
     elif full_name_col:
         split = df[full_name_col].apply(lambda v: split_full_name(v, NAME_PREFIXES, NAME_SUFFIXES))

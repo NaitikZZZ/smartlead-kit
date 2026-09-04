@@ -19,6 +19,7 @@ company only has 3 real matches, we return 3, not padded fakes.
 Usage:
     python3 search_company_contacts_apollo.py <input_csv> <company_col> <domain_col> <output_csv>
 """
+import logging
 import os
 import re
 import sys
@@ -28,6 +29,8 @@ from _lazy import pd
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 APOLLO_KEY = os.environ.get('APOLLO_API_KEY')
 MAX_PER_COMPANY = 10
 # Optional override for one-off runs targeting a persona set other than the
@@ -103,8 +106,8 @@ ALL_FUNCTIONS = ['sales', 'marketing', 'engineering', 'product_management',
                   'support', 'data_science']
 
 
-def search_people(session, domain, person_locations=None, employee_ranges=None, organization_locations=None,
-                   person_seniorities=None, person_functions=None):
+def search_people(session, domain=None, person_locations=None, employee_ranges=None, organization_locations=None,
+                   person_seniorities=None, person_functions=None, industries=None, page=1, per_page=50):
     # person_seniorities matters a lot for large companies: without it, a
     # single page of title-matched results can be dominated by hundreds of
     # "HR Business Partner" hits and never surface the actual CHRO/CPO at
@@ -124,11 +127,24 @@ def search_people(session, domain, person_locations=None, employee_ranges=None, 
     #
     # person_functions is the "Departments & Job Function" filter - see
     # ALL_FUNCTIONS above for how its value list was verified.
+    #
+    # industries maps to Apollo's documented q_organization_keyword_tags
+    # filter (free-text keywords, e.g. "healthcare", "fintech") - Apollo has
+    # no public, documented industry-taxonomy-ID filter to use instead.
+    #
+    # domain=None omits q_organization_domains_list entirely, which makes this
+    # an ICP-only search across Apollo's whole org database instead of one
+    # company - used when building an account list from scratch, with no
+    # target companies known yet (see search_candidates_by_icp in
+    # apollo_enrich.py). page/per_page let that caller paginate; per-domain
+    # callers keep the prior page=1/per_page=50 defaults.
     payload = {
-        'q_organization_domains_list': [domain], 'person_titles': PERSONAS,
+        'person_titles': PERSONAS,
         'person_seniorities': person_seniorities or DEFAULT_SENIORITIES,
-        'page': 1, 'per_page': 50,
+        'page': page, 'per_page': per_page,
     }
+    if domain:
+        payload['q_organization_domains_list'] = [domain]
     if person_locations:
         payload['person_locations'] = person_locations
     if employee_ranges:
@@ -137,6 +153,8 @@ def search_people(session, domain, person_locations=None, employee_ranges=None, 
         payload['organization_locations'] = organization_locations
     if person_functions:
         payload['person_functions'] = person_functions
+    if industries:
+        payload['q_organization_keyword_tags'] = industries
     try:
         r = session.post(
             'https://api.apollo.io/api/v1/mixed_people/api_search',
@@ -144,8 +162,16 @@ def search_people(session, domain, person_locations=None, employee_ranges=None, 
             json=payload,
             timeout=(5, 15),
         )
-        return r.json().get('people', [])
-    except Exception:
+        body = r.json()
+        if not r.ok:
+            # A rejected request (bad filter value, rate limit, etc.) would
+            # otherwise look identical to "this company has zero matches" -
+            # log it so a real API failure is visible instead of silently
+            # returning no candidates.
+            logger.error(f"Apollo search_people failed for domain={domain!r}: HTTP {r.status_code} - {body}")
+        return body.get('people', [])
+    except Exception as e:
+        logger.error(f"Apollo search_people request error for domain={domain!r}: {e}")
         return []
 
 

@@ -13,6 +13,7 @@ the JSON answer mechanism.
 from __future__ import annotations
 import io
 import json as _json
+import re
 import threading
 import time
 import traceback
@@ -42,7 +43,7 @@ _LOCK = threading.Lock()
 # abbreviations/group names itself.
 REGION_OPTIONS = [
     "US", "UK", "India", "Europe", "APAC", "Canada", "Australia",
-    "GCC", "KSA", "Africa", "Philippines", "Indonesia", "SEA", "Global",
+    "GCC", "Saudi Arabia", "Africa", "Philippines", "Indonesia", "SEA", "Global",
 ]
 
 # Individual countries offered alongside the broad groups above, so a run can
@@ -244,7 +245,7 @@ def _fill_missing_from_raw(enriched_df: pd.DataFrame, raw_df: pd.DataFrame) -> p
 
     # Find email and phone columns in both dataframes
     raw_email_col = _guess_col(raw_df, _EMAIL_COL_CANDIDATES)
-    raw_phone_col = next((c for c in raw_df.columns if c.lower() in ["phone", "phone number", "mobile", "mobile number"]), None)
+    raw_phone_col = next((c for c in raw_df.columns if c.lower() in ["phone", "phone number", "mobile", "mobile number", "mobile phone"]), None)
 
     # Only fill if enrichment didn't find the value
     if raw_email_col and raw_email_col in raw_df.columns:
@@ -320,6 +321,66 @@ def _guess_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
     return None
 
 
+def _company_from_domain(domain) -> str:
+    """Best-effort stand-in company name derived from a domain/website, used
+    only when no real Company Name column exists at all (see the no-company
+    ask() gate below) - strips protocol/www/TLD and title-cases what's left
+    (e.g. 'www.acme-corp.com' -> 'Acme Corp')."""
+    if not domain or pd.isna(domain):
+        return ""
+    d = str(domain).strip().lower()
+    d = re.sub(r"^https?://", "", d)
+    d = re.sub(r"^www\.", "", d)
+    d = d.split("/")[0]
+    d = d.split(".")[0]  # first label only - handles compound TLDs like .co.in/.co.uk
+    d = d.replace("-", " ").replace("_", " ")
+    return " ".join(w.capitalize() for w in d.split())
+
+
+_FREE_EMAIL_DOMAINS = {
+    "gmail.com", "googlemail.com", "yahoo.com", "yahoo.co.in", "ymail.com",
+    "hotmail.com", "outlook.com", "live.com", "msn.com", "icloud.com",
+    "me.com", "aol.com", "protonmail.com", "proton.me", "rediffmail.com",
+    "gmx.com", "mail.com",
+}
+_COMPANY_STOPWORDS = {"of", "and", "the", "for", "in", "on", "at", "to", "by"}
+
+
+def _company_domain_overlap(company, domain, min_token_len: int = 3):
+    """True/False if company and domain share plausible overlap, None if
+    there's nothing worth comparing (blank value, or a personal mailbox
+    domain). Not a correction - a domain reflecting a parent/subsidiary,
+    rebrand, or unrelated marketing domain is common and doesn't mean the
+    typed company name is wrong (a real Diwali ABM batch had 'Aon' with
+    domain 'globalinsurance.co.in' - trusting the domain there would have
+    renamed Aon). This only flags the row for a human glance, it never
+    changes the company value.
+
+    Checked per-word rather than as one string, so an abbreviated or
+    rebranded domain ("Kashiv Biosciences" -> kashivpharma.com, "Tcg
+    Lifesciences" -> tcgls.com) counts as related instead of flooding the
+    flag with legitimate names - only a company that shares no word with
+    the domain at all (Aon / globalinsurance.co.in) is flagged.
+    """
+    if not company or pd.isna(company) or not domain or pd.isna(domain):
+        return None
+    d = str(domain).strip().lower()
+    d = re.sub(r"^https?://", "", d)
+    d = re.sub(r"^www\.", "", d)
+    d = d.split("/")[0]
+    if not d or d in _FREE_EMAIL_DOMAINS:
+        return None
+    label = d.split(".")[0]
+    if not label:
+        return None
+    tokens = [re.sub(r"[^a-z0-9]", "", t.lower()) for t in str(company).split()]
+    tokens = [t for t in tokens if len(t) >= min_token_len and t not in _COMPANY_STOPWORDS]
+    if not tokens:
+        co_letters = re.sub(r"[^a-z0-9]", "", str(company).lower())
+        return (label in co_letters or co_letters in label) if co_letters else None
+    return any(t in label or label in t for t in tokens)
+
+
 # Ordered most- to least-preferred: a sheet with both a "Final Work Email"
 # and a plain "Email"/"Work Email" column should use the more-verified one.
 # _guess_col checks candidates in this order for an exact column-name match
@@ -341,7 +402,17 @@ def _map_existing_contact_columns(df: pd.DataFrame, first_col: str, last_col: st
     # occurrence of any duplicate header, drop the rest.
     out = out.loc[:, ~out.columns.duplicated()]
     title_col = _guess_col(out, ["title", "job title"])
-    linkedin_col = _guess_col(out, ["person linkedin url", "linkedin url", "linkedin"])
+    # Prefer an already-resolved canonical "linkedin_url" column (e.g. from
+    # inngest_runner's linkedin_url passthrough) over re-guessing - otherwise
+    # the loose "linkedin" substring fallback below can match an EARLIER,
+    # unrelated column that merely contains that substring (e.g. a sheet with
+    # both "linkedinEmail" and "linkedinUrl" - "linkedinEmail" sorts first and
+    # got picked, blanking out real URLs with an all-empty email column; see
+    # run 78b2f2609c2a). "linkedinurl" (no space) goes first among the guess
+    # candidates so an exact match wins before that substring fallback ever runs.
+    linkedin_col = ("linkedin_url" if "linkedin_url" in out.columns
+                     else _guess_col(out, ["linkedinurl", "linkedin url", "person linkedin url",
+                                            "linkedin profile url", "linkedin"]))
     company_li_col = _guess_col(out, ["company linkedin url"])
     industry_col = _guess_col(out, ["industry"])
     employees_col = _guess_col(out, ["# employees", "employees", "employee count"])
@@ -800,9 +871,56 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
 
         input_count = len(df)
         company_col = company_col or _guess_col(df, ["Company", "Company Name", "company", "Account Name", "Organization", "organization"])
+        stop_after_normalization = False
+        company_derived_from_domain = False
         if not company_col:
-            raise ValueError(f"Could not find a company-name column. Columns present: {list(df.columns)}")
-        region_col = _guess_col(df, ["Region", "Country", "region", "country"])
+            # No company column at all - rather than hard-failing outright, offer
+            # a way forward: if the file has a LinkedIn URL or domain/website
+            # column, that's enough signal to derive a stand-in company identity
+            # and keep going: LinkedIn already identifies a specific person, and
+            # a domain resolves to a name below. Without either, there's nothing
+            # for domain resolution/exclusion/enrichment to key off, so the only
+            # honest option is to clean names and stop for a re-run with a fix.
+            linkedin_col = _guess_col(df, ["linkedin_url", "linkedinurl", "linkedin url",
+                                           "person linkedin url", "linkedin profile url", "linkedin"])
+            domain_col_fallback = _guess_col(df, ["domain", "website", "company domain"])
+            if linkedin_col or domain_col_fallback:
+                signal = "domain/website" if domain_col_fallback else "LinkedIn URL"
+                prompt = (
+                    f"No company-name column found (columns present: {list(df.columns)}). Your file does have a "
+                    f"{signal} column though, so normalization can run and the pipeline can continue using that "
+                    "instead of a real company name. Continue?"
+                )
+            else:
+                prompt = (
+                    f"No company-name column found (columns present: {list(df.columns)}). Domain resolution, "
+                    "exclusion checking, and enrichment all need a company name, so continuing will only clean up "
+                    "names - you'd then need to start a new run with a company column added to go further. "
+                    "Continue with normalization only?"
+                )
+            proceed = ask(run_id, "no_company_column_confirm", "yes_no", prompt,
+                           default="no", context={"step": "source", "columns": list(df.columns)})
+            if not _truthy(proceed):
+                raise ValueError(f"Could not find a company-name column. Columns present: {list(df.columns)}")
+            if domain_col_fallback:
+                df["Company"] = df[domain_col_fallback].apply(_company_from_domain)
+                company_col = "Company"
+                company_derived_from_domain = True
+                stats.setdefault("warnings", []).append(
+                    "No company-name column found - derived a stand-in company name from the domain/website column.")
+            elif linkedin_col:
+                df["Company"] = ""
+                company_col = "Company"
+                stats.setdefault("warnings", []).append(
+                    "No company-name column found - continuing with LinkedIn URLs only; company-based steps "
+                    "(domain resolution, Apollo company search) will have little to work with.")
+            else:
+                stop_after_normalization = True
+                stats.setdefault("warnings", []).append(
+                    "No company-name column found - ran name cleanup only, then stopped. Add a Company Name "
+                    "column and start a new run to continue.")
+
+        region_col = _guess_col(df, ["Region", "Country", "region", "country"]) if not stop_after_normalization else None
         if project_meta:
             stats["project_meta"] = project_meta  # keep in local stats so it persists across updates
         _update(run_id, stats=dict(stats))
@@ -810,13 +928,32 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         # The vendored normalizer only does exact-name column matching - alias
         # whatever header we detected onto a name it recognizes so company
         # normalization (legal-suffix stripping) still runs.
-        if company_col.strip().lower() not in {"company name", "company", "organization", "organisation", "account name"} and "Company" not in df.columns:
+        if company_col and company_col.strip().lower() not in {"company name", "company", "organization", "organisation", "account name"} and "Company" not in df.columns:
             df["Company"] = df[company_col]
 
         _update(run_id, stage=RunStage.normalizing, message="Normalizing names/company")
         df, norm_stats = normalize.run_normalization(df)
         stats["normalization"] = norm_stats
         resolved_company_col = "Cleaned Company Name" if "Cleaned Company Name" in df.columns else company_col
+
+        # QA-only: flag rows where the company name and its domain share no
+        # overlap at all (e.g. "Aon" with domain "globalinsurance.co.in" - a
+        # real case from a Diwali ABM batch). Never changes the company
+        # value, just surfaces it for a human glance. Skipped when Company
+        # was itself derived from the domain column above - comparing it to
+        # itself is meaningless.
+        if not company_derived_from_domain and resolved_company_col in df.columns:
+            qa_domain_col = "Domain" if "Domain" in df.columns else _guess_col(df, ["domain", "website", "company domain"])
+            if qa_domain_col:
+                overlap = df.apply(
+                    lambda r: _company_domain_overlap(r.get(resolved_company_col), r.get(qa_domain_col)), axis=1)
+                df["Company/Domain Mismatch"] = overlap.apply(lambda v: "yes" if v is False else "")
+                mismatch_count = int((overlap == False).sum())  # noqa: E712 - elementwise compare, not identity
+                if mismatch_count:
+                    norm_stats.setdefault("warnings", []).append(
+                        f"{mismatch_count} row(s) where the company name shares no word with its domain - "
+                        "possible parent/subsidiary or rebrand mismatch, worth a quick glance "
+                        "(see 'Company/Domain Mismatch' column). Not auto-corrected.")
 
         # The all-rows LLM web-search completeness pass no longer runs here
         # automatically - it used to fire one Claude+web_search call per row
@@ -844,6 +981,17 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         _step(stats, "source", "Input & Normalization", "done", src_summary,
               seconds=estimates.estimate_seconds("normalize", input_count))
         _update(run_id, stats=dict(stats))
+
+        # Always make the normalized file downloadable right away, whether or
+        # not the run continues further - some users only want normalization.
+        normalized_path = outputs.write_file(run_dir, "00_normalized.csv", df.to_csv(index=False), "text/csv")
+        job_so_far = get_job(run_id)
+        _update(run_id, output_files=list(job_so_far.get("output_files", [])) + [normalized_path])
+
+        if stop_after_normalization:
+            _update(run_id, stage=RunStage.normalized_stopped,
+                    message="Normalization done. Add a Company Name column and start a new run to continue.")
+            return
 
         # ============ Step 2: Domain Resolution (gated) ============
         existing_domain_col = "Domain" if "Domain" in df.columns else _guess_col(df, ["domain", "website", "company domain"])
@@ -1013,9 +1161,13 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         email_col_existing = _guess_col(ok_df, _EMAIL_COL_CANDIDATES)
         resolved_first_col = "Cleaned First Name" if "Cleaned First Name" in ok_df.columns else _guess_col(ok_df, ["first name", "firstname", "first_name"])
         resolved_last_col = "Cleaned Last Name" if "Cleaned Last Name" in ok_df.columns else _guess_col(ok_df, ["last name", "lastname", "last_name"])
+        named_count = int(ok_df[resolved_first_col].notna().sum()) if resolved_first_col else 0
+        # Majority, not "any row" - a single stray named row (leftover/partial
+        # data) in an otherwise company-only ABM list must not skip discovery
+        # for every other account.
         has_existing_contacts = (
             bool(resolved_first_col) and bool(resolved_last_col)
-            and int(ok_df[resolved_first_col].notna().sum()) > 0
+            and len(ok_df) > 0 and named_count >= len(ok_df) * 0.5
         )
 
         core_df = pd.DataFrame()
@@ -1025,10 +1177,9 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
 
         # ============ Step 4: People Discovery (gated; auto-skip if named contacts present) ============
         if has_existing_contacts:
-            named = int(ok_df[email_col_existing].notna().sum()) if email_col_existing else 0
             stats["apollo_search"] = {"skipped": True, "reason": "sheet already had named contacts"}
             _step(stats, "discovery", "People Discovery", "skipped",
-                  f"Sheet already has {named} named contact(s) - discovery not needed.")
+                  f"Sheet already has {named_count} named contact(s) - discovery not needed.")
             _update(run_id, stats=dict(stats))
         else:
             disc_answer = ask(

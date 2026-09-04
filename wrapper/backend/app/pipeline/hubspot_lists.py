@@ -5,6 +5,7 @@ from __future__ import annotations
 import requests
 
 from .. import config
+from .hubspot_retry import request_with_retry
 
 
 def _headers():
@@ -22,8 +23,8 @@ def _raise_with_body(r: requests.Response):
 
 
 def _find_list_id_by_exact_name(list_name: str) -> str | None:
-    r = requests.post(
-        "https://api.hubapi.com/crm/v3/lists/search",
+    r = request_with_retry(
+        "POST", "https://api.hubapi.com/crm/v3/lists/search",
         headers=_headers(),
         json={"query": list_name, "processingTypes": ["MANUAL"], "objectTypeId": "0-1"},
         timeout=20,
@@ -36,8 +37,8 @@ def _find_list_id_by_exact_name(list_name: str) -> str | None:
 
 
 def create_list_with_contacts(list_name: str, contact_ids: list[str]) -> dict:
-    create_resp = requests.post(
-        "https://api.hubapi.com/crm/v3/lists",
+    create_resp = request_with_retry(
+        "POST", "https://api.hubapi.com/crm/v3/lists",
         headers=_headers(),
         json={"name": list_name, "objectTypeId": "0-1", "processingType": "MANUAL"},
         timeout=20,
@@ -54,8 +55,8 @@ def create_list_with_contacts(list_name: str, contact_ids: list[str]) -> dict:
         list_id = create_resp.json()["list"]["listId"]
 
     if contact_ids:
-        add_resp = requests.put(
-            f"https://api.hubapi.com/crm/v3/lists/{list_id}/memberships/add",
+        add_resp = request_with_retry(
+            "PUT", f"https://api.hubapi.com/crm/v3/lists/{list_id}/memberships/add",
             headers=_headers(),
             json=contact_ids,
             timeout=30,
