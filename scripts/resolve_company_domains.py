@@ -68,26 +68,56 @@ CACHE_FIELDS = ['company_key', 'company_name', 'domain', 'linkedin', 'country', 
 # local CSV file above isn't writable/persistent across invocations. Falls
 # back to the CSV file when Redis isn't configured, so this script still runs
 # standalone (e.g. via the manual CLAUDE.md pipeline) without any new setup.
+#
+# Stored as a Redis HASH (one field per company), not a single JSON-blob
+# STRING under one key - confirmed live (2026-09-01): writing the whole
+# ~290k-company cache as one JSON string silently failed (the SET never took;
+# production's key stayed at its pre-write 2,567-company size) once the blob
+# grew large enough, almost certainly Upstash's per-value size cap on a single
+# STRING. A HASH has no such ceiling since each company is its own field,
+# written independently, and reading the whole cache back is one HGETALL.
 _REDIS_URL = os.environ.get('UPSTASH_REDIS_REST_URL')
 _REDIS_TOKEN = os.environ.get('UPSTASH_REDIS_REST_TOKEN')
-_REDIS_KEY = 'cache:company_domain'
+_REDIS_KEY = 'cache:company_domain:hash'
+_REDIS_PIPELINE_BATCH = 500  # companies per HTTP round-trip when writing
 
 
 def _redis_configured():
     return bool(_REDIS_URL and _REDIS_TOKEN)
 
 
-def _redis_get_json(key):
-    r = requests.get(f'{_REDIS_URL}/get/{key}', headers={'Authorization': f'Bearer {_REDIS_TOKEN}'}, timeout=15)
+def _redis_hgetall(key):
+    r = requests.get(f'{_REDIS_URL}/hgetall/{key}', headers={'Authorization': f'Bearer {_REDIS_TOKEN}'}, timeout=30)
     r.raise_for_status()
-    raw = r.json().get('result')
-    return json.loads(raw) if raw is not None else None
+    flat = r.json().get('result') or []
+    return {flat[i]: json.loads(flat[i + 1]) for i in range(0, len(flat), 2)}
 
 
-def _redis_set_json(key, value):
-    r = requests.post(f'{_REDIS_URL}/set/{key}', headers={'Authorization': f'Bearer {_REDIS_TOKEN}'},
-                       data=json.dumps(value).encode('utf-8'), timeout=15)
-    r.raise_for_status()
+def _redis_hset_batch(key, items):
+    """items: list of (field, value_dict) pairs. Batches many HSET commands
+    per HTTP call via Upstash's /pipeline endpoint - one round-trip per 500
+    companies instead of one call per company (290k calls) or one oversized
+    blob (the failure mode this replaced). Each batch is an idempotent HSET,
+    never a delete, so retrying (or re-running the whole push from scratch
+    after a partial failure) is always safe - confirmed needed live: a
+    transient SSL error killed a real push after only 1 of ~577 batches."""
+    for i in range(0, len(items), _REDIS_PIPELINE_BATCH):
+        batch = items[i:i + _REDIS_PIPELINE_BATCH]
+        commands = [['HSET', key, field, json.dumps(value)] for field, value in batch]
+        last_exc = None
+        for attempt in range(1, 6):
+            try:
+                r = requests.post(f'{_REDIS_URL}/pipeline',
+                                   headers={'Authorization': f'Bearer {_REDIS_TOKEN}', 'Content-Type': 'application/json'},
+                                   data=json.dumps(commands).encode('utf-8'), timeout=30)
+                r.raise_for_status()
+                last_exc = None
+                break
+            except requests.exceptions.RequestException as e:
+                last_exc = e
+                time.sleep(3 * attempt)
+        if last_exc:
+            raise last_exc
 
 
 _LEGAL_SUFFIX_RE = re.compile(
@@ -143,7 +173,7 @@ def parse_employee_count(raw):
 
 def load_cache():
     if _redis_configured():
-        return _redis_get_json(_REDIS_KEY) or {}
+        return _redis_hgetall(_REDIS_KEY)
     if not os.path.exists(CACHE_PATH):
         return {}
     with open(CACHE_PATH, newline='', encoding='utf-8') as f:
@@ -151,8 +181,12 @@ def load_cache():
 
 
 def save_cache(cache):
+    """Called everywhere with the full, already-merged cache dict (never a
+    dict with entries removed - nothing in this codebase ever deletes a
+    company), so writing every field via HSET is safe: it only adds/updates,
+    it can never orphan an existing company that HSET wasn't told about."""
     if _redis_configured():
-        _redis_set_json(_REDIS_KEY, cache)
+        _redis_hset_batch(_REDIS_KEY, list(cache.items()))
         return
     with open(CACHE_PATH, 'w', newline='', encoding='utf-8') as f:
         w = csv.DictWriter(f, fieldnames=CACHE_FIELDS)
