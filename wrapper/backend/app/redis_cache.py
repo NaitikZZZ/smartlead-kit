@@ -37,14 +37,11 @@ def _base_url():
 
 
 def get_raw(key: str) -> str | None:
-    r = requests.get(f"{_base_url()}/get/{key}", headers=_headers(), timeout=15)
-    r.raise_for_status()
-    return r.json().get("result")
+    return _pipeline([["GET", key]])[0]
 
 
 def set_raw(key: str, value: str) -> None:
-    r = requests.post(f"{_base_url()}/set/{key}", headers=_headers(), data=value.encode("utf-8"), timeout=15)
-    r.raise_for_status()
+    _pipeline([["SET", key, value]])
 
 
 def get_json(key: str):
