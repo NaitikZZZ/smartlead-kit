@@ -394,7 +394,7 @@ def _to_status(run_id: str, engine: str) -> RunStatus:
         stats["elapsed_s"] = round(time.time() - job["started_at"], 1)
     stats = _nan_safe(stats)
     return RunStatus(
-        run_id=run_id, stage=job["stage"], message=job.get("message", ""), error=job.get("error"),
+        run_id=run_id, stage=job.get("stage", "failed"), message=job.get("message", ""), error=job.get("error"),
         stats=stats,
         output_files=[Path(p).name for p in job.get("output_files", [])],
         pr_url=job.get("pr_url"),
