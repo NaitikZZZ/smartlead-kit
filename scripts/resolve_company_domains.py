@@ -8,25 +8,37 @@ Usage:
 Reads/writes the shared cache at reference/company_domain_cache.csv so companies
 resolved once are instant and correct on every future list.
 
-Matching logic per company:
-  1. Check the cache first (normalized name match). If found, done - no API call.
-  2. Try Clearbit's free Autocomplete API first (no key needed, no cost) -
-     exact-name match only; a lone .com among several exact matches is
-     accepted as confident, otherwise it's treated as a weak guess.
-  3. If Clearbit gave a confident answer: accept it, skip Apollo entirely
-     (saves the credit). Otherwise (Clearbit empty, or only a weak guess),
-     query Apollo org search (paid), keep only candidates whose normalized
-     name exactly equals the query.
-  4. If exactly one Apollo exact-name candidate: accept it.
-  5. If multiple: rank by closeness of estimated_num_employees to the source
+Matching logic per company (see try_free_tiers() for the free-tier chain):
+  1. Check the cache first (normalized name match). If found, done - no API
+     call. Seed this cache once, for free, from your own saved Apollo
+     Accounts via apollo_export_accounts_to_cache.py - see that script's
+     docstring; it's a different, uncredited Apollo endpoint from the paid
+     org search used in step 4 below.
+  2. HubSpot Company search (free, read-only, needs HUBSPOT_PRIVATE_APP_TOKEN
+     or HUBSPOT_API_KEY) - your own team's verified data, so trusted first.
+  3. Clearbit's free Autocomplete API (no key needed) - exact-name match
+     only; a lone .com among several exact matches is accepted as confident,
+     otherwise it's treated as a weak guess (not trusted here - see step 6).
+  4. Brandfetch Brand Search API (free tier, needs BRANDFETCH_API_KEY - skipped
+     silently if unset) - same exact-name-match philosophy.
+  5. Wikidata (free, keyless) - only covers companies notable enough to carry
+     an "official website" (P856) claim; strong for large/public companies,
+     near-blank for small/private ones.
+  6. If none of the above are confident: query Apollo org search (paid, 1
+     credit/page - v1/mixed_companies/search), keep only candidates whose
+     normalized name exactly equals the query.
+  7. If exactly one Apollo exact-name candidate: accept it.
+  8. If multiple: rank by closeness of estimated_num_employees to the source
      list's employee count (parsed from free text like "~1,200", "~500-1,000",
      "1-10"). Pick the closest; if the gap between the best and second-best
      candidate is small (ambiguous), flag for manual review instead of guessing.
-  6. If Apollo also has zero exact-name candidates: fall back to Clearbit's
-     weak guess from step 2, if it had one. Apollo's org database skews
+  9. If Apollo also has zero exact-name candidates: fall back to Clearbit's
+     weak guess from step 3, if it had one. Apollo's org database skews
      B2B/SaaS and is frequently blank for small/local businesses (confirmed:
      a real ~700-company wedding-vendor list only resolved ~95 via Apollo alone).
-  7. Still nothing: mark Unresolved for manual/web-search follow-up.
+  10. Still nothing: mark Unresolved for manual/web-search follow-up (the
+      wrapper backend's runner.py has one more tier after this: a Claude
+      web-search pass in web_completeness.py, best-effort, ANTHROPIC_API_KEY-gated).
 
 Confirmed resolutions (any source) get written back to the cache.
 """
@@ -42,6 +54,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 APOLLO_KEY = os.environ.get('APOLLO_API_KEY')
+# Two different .env conventions exist in this repo (root .env uses
+# HUBSPOT_API_KEY, wrapper/backend/.env uses HUBSPOT_PRIVATE_APP_TOKEN) since
+# this script runs standalone under both - accept either.
+HUBSPOT_TOKEN = os.environ.get('HUBSPOT_PRIVATE_APP_TOKEN') or os.environ.get('HUBSPOT_API_KEY')
+# Optional - these tiers are silently skipped (never block resolution) if unset.
+BRANDFETCH_API_KEY = os.environ.get('BRANDFETCH_API_KEY')
 CACHE_PATH = os.path.join(os.path.dirname(__file__), '..', 'reference', 'company_domain_cache.csv')
 
 CACHE_FIELDS = ['company_key', 'company_name', 'domain', 'linkedin', 'country', 'city', 'source', 'notes']
@@ -74,9 +92,17 @@ def _redis_set_json(key, value):
 
 _LEGAL_SUFFIX_RE = re.compile(
     r'[,]?\s*\(?\b(incorporated|corporation|company|limited|pte\.?\s*ltd\.?|pty\.?\s*ltd\.?|'
-    r'p\.?\s*ltd\.?|inc\.?|llc\.?|ltd\.?|corp\.?|plc\.?|gmbh\.?|co\.?)\)?\.?\s*$',
+    r'p\.?\s*ltd\.?|inc\.?|llc\.?|ltd\.?|corp\.?|plc\.?|gmbh\.?|co\.?|'
+    r's\.?a\.?r\.?l\.?|s\.?p\.?a\.?|s\.?r\.?o\.?|a/s|aps|kft)\)?\.?\s*$',
     re.IGNORECASE,
 )
+# AB/AG/SA/BV/NV/AS/KG are legal-entity suffixes in Sweden/Germany/France/
+# Netherlands/Norway respectively, but also plain English words or initials
+# ("AG Barr", "Landmark AG") - re.IGNORECASE here would risk stripping a real
+# word and searching for the wrong company. These are conventionally written
+# all-caps as a suffix, so match only the exact uppercase trailing token
+# instead of folding case like the suffixes above.
+_SHORT_INTL_SUFFIX_RE = re.compile(r'[,]?\s*\b(AB|AG|SA|BV|NV|AS|KG)\s*$')
 # Catches the dangling "(P)" left behind after "Ltd" strips from "X (P) Ltd"
 # (Indian/Asian "Private Limited" shorthand) - "(P)" and "Ltd" are two
 # separate tokens, not one atomic suffix, so the main regex above only gets
@@ -93,6 +119,7 @@ def strip_legal_suffix(s):
     while prev != s:
         prev = s
         s = _LEGAL_SUFFIX_RE.sub('', s).strip().rstrip(',.').strip()
+        s = _SHORT_INTL_SUFFIX_RE.sub('', s).strip().rstrip(',.').strip()
         s = _DANGLING_PAREN_RE.sub('', s).strip().rstrip(',.').strip()
     return s
 
@@ -188,6 +215,174 @@ def clearbit_resolve(session, query_candidates, qn_final):
     return None, None, []
 
 
+def hubspot_search(session, query_name):
+    if not HUBSPOT_TOKEN:
+        return []
+    try:
+        r = session.post(
+            'https://api.hubapi.com/crm/v3/objects/companies/search',
+            headers={'Authorization': f'Bearer {HUBSPOT_TOKEN}', 'Content-Type': 'application/json'},
+            json={
+                'filterGroups': [{'filters': [{'propertyName': 'name', 'operator': 'CONTAINS_TOKEN', 'value': query_name}]}],
+                'properties': ['name', 'domain'],
+                'limit': 10,
+            },
+            timeout=(5, 10),
+        )
+        return r.json().get('results', []) if r.ok else []
+    except Exception:
+        return []
+
+
+def hubspot_resolve(session, query_candidates):
+    """Your own HubSpot Company records - read-only (never writes/updates,
+    per this kit's HubSpot rule), free, and the most trustworthy source
+    since it's data your own team already verified. Same exact-name-match
+    philosophy as Clearbit: CONTAINS_TOKEN search casts wide, only a single
+    normalized-exact-name result with a domain is trusted."""
+    if not HUBSPOT_TOKEN:
+        return None, None
+    for q in query_candidates:
+        results = hubspot_search(session, q)
+        qn = norm(q)
+        exact = [c for c in results
+                 if norm(c.get('properties', {}).get('name', '')) == qn and c.get('properties', {}).get('domain')]
+        if len(exact) == 1:
+            return {'domain': exact[0]['properties']['domain'], 'country': '', 'city': ''}, 'HubSpot-exact'
+    return None, None
+
+
+BRANDFETCH_SEARCH_URL = 'https://api.brandfetch.io/v2/search/{}'
+
+
+def brandfetch_search(session, query_name):
+    if not BRANDFETCH_API_KEY:
+        return []
+    try:
+        r = session.get(
+            BRANDFETCH_SEARCH_URL.format(requests.utils.quote(query_name, safe='')),
+            headers={'Authorization': f'Bearer {BRANDFETCH_API_KEY}'},
+            timeout=(5, 10),
+        )
+        return r.json() if r.ok else []
+    except Exception:
+        return []
+
+
+def brandfetch_resolve(session, query_candidates):
+    """Free tier (requires a free Brandfetch API key - set BRANDFETCH_API_KEY
+    to enable; silently skipped otherwise). Multiple real
+    companies/sub-brands/CDN domains commonly share the same display name -
+    confirmed live: 'Stripe' alone returns 5 exact-name matches (stripe.com,
+    stripecdn.com, stripeassets.com, stripe-atlas.com, getstripe.com), all
+    ending in .com, so a Clearbit-style "lone .com" tiebreak wouldn't
+    disambiguate this at all. Brandfetch exposes a real relevance score
+    (_score) per result, unlike Clearbit's unscored list order - ranking by
+    it and trusting the top exact-name match outright is a materially
+    stronger signal than Clearbit's blind top-ranked guess, so (unlike
+    Clearbit's equivalent tier) this is treated as confident, not deferred."""
+    if not BRANDFETCH_API_KEY:
+        return None, None
+    for q in query_candidates:
+        suggestions = brandfetch_search(session, q)
+        qn = norm(q)
+        exact = [s for s in suggestions if norm(s.get('name', '')) == qn and s.get('domain')]
+        if not exact:
+            continue
+        if len(exact) == 1:
+            return {'domain': exact[0]['domain'], 'country': '', 'city': ''}, 'Brandfetch-exact'
+        best = max(exact, key=lambda s: s.get('_score', 0))
+        return {'domain': best['domain'], 'country': '', 'city': ''}, 'Brandfetch-exact-top-scored'
+    return None, None
+
+
+
+# Wikimedia rejects requests with the default python-requests User-Agent
+# (their UA policy blocks generic/unidentified clients, confirmed: got a
+# bare 403 without this) - a descriptive UA with contact info is required,
+# not optional. See https://meta.wikimedia.org/wiki/User-Agent_policy
+WIKIDATA_HEADERS = {'User-Agent': 'XoxodayOutboundKit-DomainResolver/1.0 (internal tool; no public contact)'}
+
+
+def wikidata_search(session, query_name):
+    try:
+        r = session.get(
+            'https://www.wikidata.org/w/api.php',
+            params={'action': 'wbsearchentities', 'search': query_name, 'language': 'en',
+                    'type': 'item', 'format': 'json', 'limit': 5},
+            headers=WIKIDATA_HEADERS,
+            timeout=(5, 10),
+        )
+        return r.json().get('search', []) if r.ok else []
+    except Exception:
+        return []
+
+
+def wikidata_official_website(session, qid):
+    try:
+        r = session.get(
+            'https://www.wikidata.org/w/api.php',
+            params={'action': 'wbgetclaims', 'entity': qid, 'property': 'P856', 'format': 'json'},
+            headers=WIKIDATA_HEADERS,
+            timeout=(5, 10),
+        )
+        claims = r.json().get('claims', {}).get('P856', [])
+        if claims:
+            return claims[0]['mainsnak']['datavalue']['value']
+    except Exception:
+        pass
+    return None
+
+
+def wikidata_resolve(session, query_candidates):
+    """Free, keyless, no signup. Only covers companies notable enough to
+    have a Wikidata item with an 'official website' (P856) claim - strong
+    for large/public companies, essentially blank for small/private ones.
+    Treat as a supplemental long-tail-of-fame tier, not a general fallback."""
+    for q in query_candidates:
+        qn = norm(q)
+        exact = [c for c in wikidata_search(session, q) if norm(c.get('label', '')) == qn]
+        if len(exact) == 1:
+            url = wikidata_official_website(session, exact[0]['id'])
+            if url:
+                domain = re.sub(r'^https?://(www\.)?', '', str(url)).split('/')[0].strip()
+                if domain:
+                    return {'domain': domain, 'country': '', 'city': ''}, 'Wikidata-exact'
+    return None, None
+
+
+def try_free_tiers(session, query_candidates):
+    """Ordered cheapest/most-trustworthy first: HubSpot (your own verified
+    data) -> Clearbit (confident branch only) -> Brandfetch -> Wikidata.
+    Returns (result_dict_or_None, source_or_None, cb_best, cb_source) - the
+    last two are Clearbit's raw weak-guess result (if any), always computed
+    since resolve() needs it later as a last-resort fallback after Apollo
+    itself finds nothing, even when it wasn't confident enough to win here.
+
+    Kept as a single function (not inlined into resolve()) so
+    estimate_needs_apollo() calls the exact same chain instead of a second,
+    possibly-drifting copy of it - that drift is exactly what caused the old
+    Clearbit-only estimate to overstate cost before this file's own
+    docstring/comments flagged it."""
+    hubspot_result, hubspot_source = hubspot_resolve(session, query_candidates)
+    if hubspot_result:
+        return hubspot_result, hubspot_source, None, None
+
+    cb_best, cb_source, _ = clearbit_resolve(session, query_candidates, norm(query_candidates[-1]))
+    if cb_best and cb_source != 'Clearbit-exact-top-ranked':
+        return {'domain': cb_best.get('domain', ''), 'country': '', 'city': ''}, cb_source, cb_best, cb_source
+
+    brandfetch_result, brandfetch_source = brandfetch_resolve(session, query_candidates)
+    if brandfetch_result:
+        return brandfetch_result, brandfetch_source, cb_best, cb_source
+
+    wikidata_result, wikidata_source = wikidata_resolve(session, query_candidates)
+    if wikidata_result:
+        return wikidata_result, wikidata_source, cb_best, cb_source
+
+    return None, None, cb_best, cb_source
+
+
 def geo_of(account):
     """HQ country/city, preferring the firmographic organization_* fields
     over the account-record's own address override (a CRM-synced account can
@@ -217,20 +412,20 @@ def build_query_candidates(company_name):
 
 
 def estimate_needs_apollo(session, cache, company_name):
-    """Free pre-check (Clearbit only, no Apollo) for whether this company
-    would actually cost an Apollo credit in resolve() below - i.e. it's not
-    already cached AND Clearbit can't confidently resolve it either. Exists
-    so the pre-run cost estimate shown to the user reflects what will really
-    get charged, instead of assuming every uncached company needs Apollo and
-    ignoring that Clearbit resolves a large share of them for free. Repeats
-    the same free Clearbit call resolve() will make rather than caching the
-    verdict here, to avoid a second, possibly-stale place tracking it."""
+    """Free pre-check (no Apollo call) for whether this company would
+    actually cost an Apollo credit in resolve() below - i.e. it's not
+    already cached AND none of the free tiers (HubSpot, Clearbit, Brandfetch,
+    Wikidata) can confidently resolve it either. Exists so the pre-run cost
+    estimate shown to the user reflects what will really get charged, instead
+    of assuming every uncached company needs Apollo. Calls try_free_tiers -
+    the same chain resolve() uses - rather than duplicating it, to avoid a
+    second, possibly-stale copy of the chain drifting out of sync."""
     key = norm(str(company_name).strip())
     if key in cache:
         return False
     query_candidates = build_query_candidates(company_name)
-    cb_best, cb_source, _ = clearbit_resolve(session, query_candidates, norm(query_candidates[-1]))
-    return not (cb_best and cb_source != 'Clearbit-exact-top-ranked')
+    best, source, _cb_best, _cb_source = try_free_tiers(session, query_candidates)
+    return best is None
 
 
 def resolve(session, cache, company_name, employee_raw):
@@ -250,16 +445,17 @@ def resolve(session, cache, company_name, employee_raw):
 
     query_candidates = build_query_candidates(full_name)
 
-    # Clearbit first - it's free, so try it before spending an Apollo credit.
-    # Only trust it outright when confident (a single exact match, or a lone
-    # .com among several); its weaker "top-ranked guess among multiple .coms"
-    # tier falls through to Apollo, which can actually disambiguate via
-    # employee count instead of guessing.
-    cb_best, cb_source, _ = clearbit_resolve(session, query_candidates, norm(query_candidates[-1]))
-    if cb_best and cb_source != 'Clearbit-exact-top-ranked':
+    # Free tiers first, cheapest/most-trustworthy order - HubSpot (your own
+    # verified data) -> Clearbit (confident branch only) -> Brandfetch ->
+    # Wikidata - all before spending an Apollo credit. Clearbit's weaker
+    # "top-ranked guess" tier isn't trusted here; it's only used later as a
+    # last-resort fallback if Apollo itself comes back with nothing.
+    free_result, free_source, cb_best, cb_source = try_free_tiers(session, query_candidates)
+    if free_result:
         return {
-            'domain': cb_best.get('domain', ''), 'linkedin': '', 'country': '', 'city': '',
-            'source': cb_source, 'candidates': [],
+            'domain': free_result.get('domain', ''), 'linkedin': '',
+            'country': free_result.get('country', ''), 'city': free_result.get('city', ''),
+            'source': free_source, 'candidates': [],
         }
 
     accounts, qn, query_name = [], norm(full_name), full_name
@@ -371,11 +567,15 @@ def main():
         json.dump(results, f, indent=2)
 
     from_cache = sum(1 for r in results.values() if r['source'] == 'Cache')
-    from_apollo = sum(1 for r in results.values() if r['domain'] and r['source'].startswith('Apollo'))
+    from_hubspot = sum(1 for r in results.values() if r['domain'] and r['source'].startswith('HubSpot'))
     from_clearbit = sum(1 for r in results.values() if r['domain'] and r['source'].startswith('Clearbit'))
+    from_brandfetch = sum(1 for r in results.values() if r['domain'] and r['source'].startswith('Brandfetch'))
+    from_wikidata = sum(1 for r in results.values() if r['domain'] and r['source'].startswith('Wikidata'))
+    from_apollo = sum(1 for r in results.values() if r['domain'] and r['source'].startswith('Apollo'))
     resolved = sum(1 for r in results.values() if r['domain'])
-    print(f"\n{len(results)} companies: {from_cache} from cache, {from_apollo} via Apollo, "
-          f"{from_clearbit} via Clearbit fallback, {resolved} total resolved, "
+    print(f"\n{len(results)} companies: {from_cache} from cache, {from_hubspot} via HubSpot, "
+          f"{from_clearbit} via Clearbit, {from_brandfetch} via Brandfetch, {from_wikidata} via Wikidata, "
+          f"{from_apollo} via Apollo, {resolved} total resolved, "
           f"{len(results) - resolved} unresolved/ambiguous. {new_cache_entries} new cache entries saved.")
 
 

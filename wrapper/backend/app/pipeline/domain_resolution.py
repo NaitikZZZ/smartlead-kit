@@ -10,7 +10,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-from .._lazy import pd
+import pandas as pd
 
 from .. import config
 
