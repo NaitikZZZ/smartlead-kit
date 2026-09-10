@@ -25,7 +25,7 @@ import re
 import sys
 import time
 import requests
-from _lazy import pd
+import pandas as pd
 from dotenv import load_dotenv
 
 load_dotenv()
