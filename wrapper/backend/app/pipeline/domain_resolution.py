@@ -10,7 +10,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-import pandas as pd
+from .._lazy import pd
 
 from .. import config
 
@@ -113,13 +113,19 @@ def resolve_domains_for_df(df: pd.DataFrame, company_col: str, employee_col: str
     out["Domain Resolution Source"] = sources
 
     resolved = sum(1 for d in domains if d)
-    from_apollo = sum(1 for d, s in zip(domains, sources) if d and s.startswith("Apollo"))
+    from_hubspot = sum(1 for d, s in zip(domains, sources) if d and s.startswith("HubSpot"))
     from_clearbit = sum(1 for d, s in zip(domains, sources) if d and s.startswith("Clearbit"))
+    from_brandfetch = sum(1 for d, s in zip(domains, sources) if d and s.startswith("Brandfetch"))
+    from_wikidata = sum(1 for d, s in zip(domains, sources) if d and s.startswith("Wikidata"))
+    from_apollo = sum(1 for d, s in zip(domains, sources) if d and s.startswith("Apollo"))
     return out, {
         "total": len(out),
         "resolved": resolved,
-        "from_apollo": from_apollo,
+        "from_hubspot": from_hubspot,
         "from_clearbit": from_clearbit,
+        "from_brandfetch": from_brandfetch,
+        "from_wikidata": from_wikidata,
+        "from_apollo": from_apollo,
         "unresolved_or_ambiguous": len(out) - resolved,
         "ambiguous": ambiguous_rows,
     }

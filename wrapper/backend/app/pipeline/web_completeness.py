@@ -74,6 +74,8 @@ def fill_completeness_gaps(df: pd.DataFrame, company_col: str):
     just returns the original df with a note explaining why nothing changed."""
     if not config.ANTHROPIC_API_KEY:
         return df, {"skipped": True, "reason": "ANTHROPIC_API_KEY not configured", "filled": 0}
+    if not config.PAID_ENRICHMENT_ENABLED:
+        return df, {"skipped": True, "reason": "paid enrichment disabled (PAID_ENRICHMENT_ENABLED=false)", "filled": 0}
 
     domain_col = _find_col(df.columns, DOMAIN_CANDIDATES)
     industry_col = _find_col(df.columns, INDUSTRY_CANDIDATES)

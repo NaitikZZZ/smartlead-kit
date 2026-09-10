@@ -459,11 +459,177 @@ def _pct(n, total):
     return f"{(n / total * 100):.1f}%" if total else "-"
 
 
-def build_summary_markdown(campaign_title: str, stats: dict, accounts_processed: pd.DataFrame, import_result: dict | None = None) -> str:
+def _norm_key(v) -> str:
+    v = _clean_cell(v)
+    return str(v).strip().lower() if v is not None else ""
+
+
+def build_summary_stats(accounts_processed: pd.DataFrame, enriched: pd.DataFrame, stats: dict) -> dict:
+    """Account/prospect funnel for the run: received -> excluded -> lost to
+    incomplete data -> finalized, plus a prospect channel-completeness matrix.
+    Consumed by build_summary_markdown(); see its "Account & prospect funnel"
+    section.
+
+    Accounts are keyed by normalized Domain, falling back to company name when
+    no domain resolved - there's no dedicated account-ID column in
+    accounts_processed (see normalize.py/domain_resolution.py).
+
+    Both splits (farming bucket / active deals, and meeting completed /
+    lifecycle DNC / lead status DNC) are sourced from the "Exclusion Reason"
+    text hubspot_exclusion.py now writes per HubSpot property lookups - see
+    _classify_company_reason/_classify_prospect_reason there."""
+    accounts_processed = accounts_processed if accounts_processed is not None else pd.DataFrame()
+    enriched = enriched if enriched is not None else pd.DataFrame()
+
+    company_col = "Cleaned Company Name" if "Cleaned Company Name" in accounts_processed.columns else next(
+        (c for c in accounts_processed.columns if "company" in c.lower()), None)
+
+    account_keys = set()
+    excluded_keys = set()
+    reason_buckets = {"meeting": set(), "lifecycle_dnc": set(), "lead_status_dnc": set(),
+                       "farming": set(), "active_deals": set(), "other": set()}
+    ok_no_domain_keys, ok_with_domain_keys = set(), set()
+
+    for _, row in accounts_processed.iterrows():
+        domain = _norm_key(strip_url_prefix(row.get("Domain"))) if "Domain" in accounts_processed.columns else ""
+        company = _norm_key(row.get(company_col)) if company_col else ""
+        key = domain or company
+        if not key:
+            continue
+        account_keys.add(key)
+
+        if row.get("Exclusion Status") == "Excluded":
+            excluded_keys.add(key)
+            reason = str(row.get("Exclusion Reason") or "").lower()
+            if "meeting completed" in reason:
+                reason_buckets["meeting"].add(key)
+            elif "lifecycle stage dnc" in reason:
+                reason_buckets["lifecycle_dnc"].add(key)
+            elif "lead status dnc" in reason:
+                reason_buckets["lead_status_dnc"].add(key)
+            elif "farming/churned account" in reason:
+                reason_buckets["farming"].add(key)
+            elif "active deal on account" in reason:
+                reason_buckets["active_deals"].add(key)
+            else:
+                reason_buckets["other"].add(key)
+        elif domain:
+            ok_with_domain_keys.add(key)
+        else:
+            ok_no_domain_keys.add(key)
+
+    has_email, has_linkedin, has_phone = [], [], []
+    finalized_account_keys = set()
+    for _, row in enriched.iterrows():
+        domain = _norm_key(strip_url_prefix(row.get("company_domain")))
+        company = _norm_key(row.get("search_company") or row.get("organization_name"))
+        key = domain or company
+        e = _clean_cell(row.get("email")) is not None
+        li = _clean_cell(row.get("linkedin_url")) is not None
+        ph = _clean_cell(row.get("Phone Number")) is not None or _clean_cell(row.get("mobile_phone")) is not None
+        has_email.append(e)
+        has_linkedin.append(li)
+        has_phone.append(ph)
+        if key and (e or li or ph):
+            finalized_account_keys.add(key)
+
+    matrix = {"email_only": 0, "linkedin_only": 0, "phone_only": 0, "email_linkedin": 0,
+              "email_phone": 0, "linkedin_phone": 0, "all_three": 0, "none": 0}
+    for e, li, ph in zip(has_email, has_linkedin, has_phone):
+        if e and li and ph:
+            matrix["all_three"] += 1
+        elif e and li:
+            matrix["email_linkedin"] += 1
+        elif e and ph:
+            matrix["email_phone"] += 1
+        elif li and ph:
+            matrix["linkedin_phone"] += 1
+        elif e:
+            matrix["email_only"] += 1
+        elif li:
+            matrix["linkedin_only"] += 1
+        elif ph:
+            matrix["phone_only"] += 1
+        else:
+            matrix["none"] += 1
+
+    prospects_finalized = len(has_email) - matrix["none"]
+    missing_email = len(ok_with_domain_keys - finalized_account_keys)
+    accounts_finalized = len(ok_with_domain_keys & finalized_account_keys)
+    enrich_stats = (stats or {}).get("apollo_enrich", {})
+
+    return {
+        "accounts_received": len(account_keys),
+        "prospects_received": enrich_stats.get("contacts_enriched") or enrich_stats.get("total", 0),
+        "accounts_excluded": {
+            "total": len(excluded_keys),
+            "meeting_completed": len(reason_buckets["meeting"]),
+            "lifecycle_stage_dnc": len(reason_buckets["lifecycle_dnc"]),
+            "lead_status_dnc": len(reason_buckets["lead_status_dnc"]),
+            "farming_bucket": len(reason_buckets["farming"]),
+            "active_deals": len(reason_buckets["active_deals"]),
+            "other": len(reason_buckets["other"]),
+        },
+        "loss_incomplete_data": {
+            "missing_email": missing_email,
+            "company_not_found": len(ok_no_domain_keys),
+        },
+        "accounts_finalized": accounts_finalized,
+        "prospects_finalized": prospects_finalized,
+        "prospect_channel_matrix": matrix,
+        "avg_prospects_per_account": round(prospects_finalized / accounts_finalized, 1) if accounts_finalized else None,
+    }
+
+
+def build_summary_markdown(campaign_title: str, stats: dict, accounts_processed: pd.DataFrame, enriched: pd.DataFrame | None = None, import_result: dict | None = None) -> str:
     lines = [
         f"# Run summary: {campaign_title}",
         "",
         f"Generated: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}",
+        "",
+    ]
+
+    funnel = build_summary_stats(accounts_processed, enriched if enriched is not None else pd.DataFrame(), stats)
+    exc = funnel["accounts_excluded"]
+    loss = funnel["loss_incomplete_data"]
+    m = funnel["prospect_channel_matrix"]
+    avg = funnel["avg_prospects_per_account"]
+    lines += [
+        "## Account & prospect funnel",
+        "",
+        f"1. Unique accounts received: **{funnel['accounts_received']}**",
+        f"2. Unique prospects received: **{funnel['prospects_received']}**",
+        f"3. Accounts excluded: **{exc['total']}**",
+        f"   - Farming bucket (Parent Company Type set): {exc['farming_bucket']}",
+        f"   - Active deals on account: {exc['active_deals']}",
+        f"   - Meeting completed with account: {exc['meeting_completed']}",
+        f"   - Lifecycle stage = DNC: {exc['lifecycle_stage_dnc']}",
+        f"   - Lead status DNC: {exc['lead_status_dnc']}",
+    ]
+    if exc["other"]:
+        lines.append(f"   - Other DNU match (reason not further classified): {exc['other']}")
+    lines += [
+        f"4. Loss due to incomplete data: **{loss['missing_email'] + loss['company_not_found']}**",
+        f"   - Missing email (company/domain found, no verified email): {loss['missing_email']}",
+        f"   - Company not found (domain unresolved): {loss['company_not_found']}",
+        f"5. Unique accounts finalized for campaigns: **{funnel['accounts_finalized']}**",
+        f"6. Unique prospects finalized for campaigns: **{funnel['prospects_finalized']}**",
+        "",
+        "| Channels available | Prospects |",
+        "|---|---|",
+        f"| Email + LinkedIn + Phone | {m['all_three']} |",
+        f"| Email + LinkedIn | {m['email_linkedin']} |",
+        f"| Email + Phone | {m['email_phone']} |",
+        f"| LinkedIn + Phone | {m['linkedin_phone']} |",
+        f"| Email only | {m['email_only']} |",
+        f"| LinkedIn only | {m['linkedin_only']} |",
+        f"| Phone only | {m['phone_only']} |",
+    ]
+    if m["none"]:
+        lines.append(f"| None (not campaign-ready, excluded from finalized count) | {m['none']} |")
+    lines += [
+        "",
+        f"7. Avg prospects per account: **{avg if avg is not None else '-'}**",
         "",
     ]
 
@@ -601,6 +767,6 @@ def write_outputs(run_dir: Path, accounts_processed: pd.DataFrame, enriched: pd.
         "calling": int(len(channels["calling"])),
         "whatsapp": int(len(channels["whatsapp"])),
     }
-    refs["SUMMARY.md"] = write_file(run_dir, "SUMMARY.md", build_summary_markdown(campaign_title, stats, accounts_processed), "text/markdown")
+    refs["SUMMARY.md"] = write_file(run_dir, "SUMMARY.md", build_summary_markdown(campaign_title, stats, accounts_processed, enriched), "text/markdown")
 
     return refs, channels["email"]

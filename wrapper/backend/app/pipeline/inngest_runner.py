@@ -1069,18 +1069,25 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                 await _set_stat(step, "stat_domain_gap_declined", run_id, "domain_completeness",
                                  {"skipped": True, "reason": "declined by user", "gaps": still_missing_count})
 
-        # ============ Exclusion Check (gated) ============
+        # ============ Company-Level Exclusion Check (gated) ============
+        # Stage 1 of 2 - company-level ONLY (broad: domain/company-name), so
+        # it drops whole accounts before enrichment spend. The prospect-level
+        # list runs alone, late, inside runner.run_confirmed_import (Stage 2)
+        # - both pipeline flavors converge on that same function for the
+        # actual HubSpot/HeyReach/Interakt write, so it only needs wiring once.
         exclusion_answer = await _ask(
             step, run_id, "exclusion_needed", "yes_no",
-            "Check these accounts against the HubSpot DNU list and drop existing clients?",
+            "Check these accounts against the company-level HubSpot DNU list and drop existing/active-deal accounts?",
             default="yes",
-            context={"step": "exclusion", "reference_url": config.exclusion_list_url(), "reference_label": "ABM EXCLSIONS - DNU"},
+            context={"step": "exclusion",
+                     "reference_url": config.exclusion_list_url(config.HUBSPOT_EXCLUSION_LIST_ID_COMPANY),
+                     "reference_label": "ABM EXCLSIONS Company Level - DNU"},
         )
 
         if _truthy(exclusion_answer):
             await _status(step, "status_checking_exclusions", run_id, stage="checking_exclusions",
-                           message="Checking against HubSpot DNU list")
-            await _set_step(step, "step_exclusion_running", run_id, "exclusion", "Exclusion Check", "running")
+                           message="Checking against company-level HubSpot DNU list")
+            await _set_step(step, "step_exclusion_running", run_id, "exclusion", "Company Exclusion Check", "running")
 
             exclusion_domain_col = "Domain" if "Domain" in df.columns else (domain_col or _guess_col(df, ["Domain", "Website"]))
 
@@ -1095,9 +1102,10 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             # still keeps the blocking Redis fetch + index build off the event
             # loop, it just isn't captured as a separate Inngest step anymore.
             df, exclusion_stats = await asyncio.to_thread(
-                hubspot_exclusion.run_exclusion_check, df, exclusion_domain_col
+                hubspot_exclusion.run_exclusion_check, df, exclusion_domain_col,
+                sources={hubspot_exclusion.SOURCE_COMPANY},
             )
-            exclusion_stats["dnu_list_url"] = config.exclusion_list_url()
+            exclusion_stats["dnu_list_url"] = config.exclusion_list_url(config.HUBSPOT_EXCLUSION_LIST_ID_COMPANY)
 
             excl_name_col = resolved_company_col if resolved_company_col in df.columns else company_col
             ex_df = df[df["Exclusion Status"] == "Excluded"]
@@ -1111,17 +1119,18 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             ]
 
             await _set_step(
-                step, "step_exclusion_done", run_id, "exclusion", "Exclusion Check", "done",
-                f"{exclusion_stats['excluded']} excluded, {exclusion_stats['ok_to_reach_out']} OK "
+                step, "step_exclusion_done", run_id, "exclusion", "Company Exclusion Check", "done",
+                f"{exclusion_stats['excluded']} account(s) excluded, {exclusion_stats['ok_to_reach_out']} OK "
                 f"(of {exclusion_stats['total']}); matched vs {exclusion_stats['dnu_record_count']} DNU records "
-                f"from list {exclusion_stats['dnu_list_id']}.",
+                f"from list {exclusion_stats['dnu_list_id']}. Contact-level check still runs once, individually, "
+                "right before the final send.",
             )
             await _set_stat(step, "stat_exclusion_checked", run_id, "exclusion", exclusion_stats)
         else:
             df["Exclusion Status"] = "OK to reach out"
             df["Exclusion Reason"] = "Exclusion check skipped by user"
             exclusion_stats = {"skipped": True, "total": len(df), "excluded": 0, "ok_to_reach_out": len(df)}
-            await _set_step(step, "step_exclusion_skipped", run_id, "exclusion", "Exclusion Check", "skipped",
+            await _set_step(step, "step_exclusion_skipped", run_id, "exclusion", "Company Exclusion Check", "skipped",
                              f"Skipped - all {len(df)} treated as OK to reach out.")
             await _set_stat(step, "stat_exclusion_skipped", run_id, "exclusion", exclusion_stats)
 
@@ -1434,32 +1443,43 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             step, run_id, candidates_df, persona_titles, person_locations, employee_ranges, _do_search,
             exact_titles=exact_titles, organization_locations=organization_locations, industries=industries)
 
-        # Exclusion gate, applied to candidates - a separate small block rather
-        # than sharing code with the tested exclusion block above, deliberately,
-        # to avoid touching already-verified working code for a marginal dedup win.
+        # Company-Level Exclusion gate, applied to candidates - a separate
+        # small block rather than sharing code with the tested exclusion
+        # block above, deliberately, to avoid touching already-verified
+        # working code for a marginal dedup win. Company-level ONLY, same as
+        # the CSV-upload path's Stage 1: candidates_df merges into the shared
+        # `df` right below and flows through the same hubspot_ready.json ->
+        # awaiting_import_confirmation -> runner.run_confirmed_import terminal
+        # path as the CSV flow (confirmed by tracing this function), so Stage
+        # 2's prospect-level check (exact email/LinkedIn) already covers this
+        # entry point too - no separate prospect-level gate needed here.
         exclusion_answer = await _ask(
             step, run_id, "exclusion_needed_idea", "yes_no",
-            "Check these candidates against the HubSpot DNU list and drop existing clients?",
+            "Check these candidates against the company-level HubSpot DNU list and drop existing/active-deal accounts?",
             default="yes",
-            context={"step": "exclusion", "reference_url": config.exclusion_list_url(), "reference_label": "ABM EXCLSIONS - DNU"},
+            context={"step": "exclusion",
+                     "reference_url": config.exclusion_list_url(config.HUBSPOT_EXCLUSION_LIST_ID_COMPANY),
+                     "reference_label": "ABM EXCLSIONS Company Level - DNU"},
         )
         if _truthy(exclusion_answer):
-            await _set_step(step, "step_exclusion_running_idea", run_id, "exclusion", "Exclusion Check", "running")
+            await _set_step(step, "step_exclusion_running_idea", run_id, "exclusion", "Company Exclusion Check", "running")
 
             async def _run_exclusion_idea():
-                result_df, estats = hubspot_exclusion.run_exclusion_check(candidates_df, "Domain")
+                result_df, estats = hubspot_exclusion.run_exclusion_check(
+                    candidates_df, "Domain", sources={hubspot_exclusion.SOURCE_COMPANY})
                 return _nan_safe({"records": result_df.to_dict("records"), "exclusion_stats": estats})
 
             excl_result = await step.run("run_exclusion_check_idea", _run_exclusion_idea)
             candidates_df = pd.DataFrame(excl_result["records"])
             exclusion_stats = excl_result["exclusion_stats"]
-            await _set_step(step, "step_exclusion_done_idea", run_id, "exclusion", "Exclusion Check", "done",
-                             f"{exclusion_stats['excluded']} excluded, {exclusion_stats['ok_to_reach_out']} OK.")
+            await _set_step(step, "step_exclusion_done_idea", run_id, "exclusion", "Company Exclusion Check", "done",
+                             f"{exclusion_stats['excluded']} account(s) excluded, {exclusion_stats['ok_to_reach_out']} OK. "
+                             "Contact-level check still runs once, individually, right before the final send.")
             await _set_stat(step, "stat_exclusion_checked_idea", run_id, "exclusion", exclusion_stats)
             candidates_df = candidates_df[candidates_df["Exclusion Status"] == "OK to reach out"].copy()
         else:
             candidates_df["Exclusion Status"] = "OK to reach out"
-            await _set_step(step, "step_exclusion_skipped_idea", run_id, "exclusion", "Exclusion Check", "skipped",
+            await _set_step(step, "step_exclusion_skipped_idea", run_id, "exclusion", "Company Exclusion Check", "skipped",
                              "Skipped by user.")
             await _set_stat(step, "stat_exclusion_skipped_idea", run_id, "exclusion", {"skipped": True})
 
@@ -1870,7 +1890,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
     async def _rewrite_summary():
         stats_snapshot = run_status.get(run_id).get("stats", {})
         outputs.write_file(run_dir, "SUMMARY.md",
-                            outputs.build_summary_markdown(campaign_title, stats_snapshot, accounts_processed),
+                            outputs.build_summary_markdown(campaign_title, stats_snapshot, accounts_processed, core_df),
                             "text/markdown")
         return True
 

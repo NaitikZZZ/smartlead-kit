@@ -15,7 +15,16 @@ _MAX_ATTEMPTS = 5
 
 def request_with_retry(method: str, url: str, **kwargs) -> requests.Response:
     for attempt in range(_MAX_ATTEMPTS):
-        r = requests.request(method, url, **kwargs)
+        try:
+            r = requests.request(method, url, **kwargs)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            # A read timeout/connection drop never returns a Response - there's
+            # no status code or Retry-After to check, so just back off and
+            # retry the same way as a 5xx. Re-raise once attempts are spent.
+            if attempt == _MAX_ATTEMPTS - 1:
+                raise
+            time.sleep(2 ** attempt)
+            continue
         if r.status_code == 429 or r.status_code >= 500:
             if attempt == _MAX_ATTEMPTS - 1:
                 return r

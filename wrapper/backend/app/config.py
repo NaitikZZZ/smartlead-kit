@@ -3,6 +3,7 @@
 Loads secrets from a .env file. Never log or return these values in API
 responses - only use them internally when calling Apollo/HubSpot/GitHub.
 """
+from __future__ import annotations
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -47,17 +48,25 @@ CRON_SECRET = os.environ.get("CRON_SECRET", "")
 INNGEST_EVENT_KEY = os.environ.get("INNGEST_EVENT_KEY", "")
 INNGEST_SIGNING_KEY = os.environ.get("INNGEST_SIGNING_KEY", "")
 
-# Exclusion source: When the user chooses to run exclusion checks, they MUST use the
-# HubSpot "ABM EXCLSIONS - DNU" contacts list (28280).
-# Portal: https://app-na2.hubspot.com/contacts/6512810/objectLists/28280/filters
-#
-# This list contains ~120k existing clients. When exclusion is enabled, it's mandatory.
-# Do NOT change this ID without explicit authorization.
-# Its members' email domains/names/LinkedIn URLs are the do-not-use set. The list is huge (~120k),
-# so its data set is cached on disk and refreshed live every run - see pipeline/hubspot_exclusion.py.
-#
-# See EXCLUSION_LIST_MANDATORY.md for full documentation.
-HUBSPOT_EXCLUSION_LIST_ID = os.environ.get("HUBSPOT_EXCLUSION_LIST_ID", "28280")
+# Exclusion sources: two dynamic HubSpot lists, checked with different match
+# rules because they represent different things (confirmed 2026-09-01):
+#   - PROSPECT list: Meeting Completed (SDR/AE) / Lifecycle DNC / Lead Status
+#     DNC. These are signals about ONE PERSON, not their employer - one
+#     contact completing a meeting must not block outreach to their
+#     colleagues. Matched narrowly: exact email address or exact LinkedIn
+#     URL only.
+#   - COMPANY list: Parent Company Type (Farming/Churned) / active deal
+#     stages. These are account-level signals, so matched broadly on company
+#     domain/name to protect the whole account.
+# See pipeline/hubspot_exclusion.py for the matching logic.
+# Do NOT change these IDs without explicit authorization.
+HUBSPOT_EXCLUSION_LIST_ID_PROSPECT = os.environ.get("HUBSPOT_EXCLUSION_LIST_ID_PROSPECT", "29147")
+# Built 2026-09-10: "ABM EXCLSIONS Company Level (Deal Stage & Parent Company
+# Type) - DNU", a dynamic Contacts list (objectTypeId 0-1), confirmed via a
+# read-only GET against crm/v3/lists/29338. run_exclusion_check() skips
+# company-level matching entirely if this is ever unset again, rather than
+# erroring.
+HUBSPOT_EXCLUSION_LIST_ID_COMPANY = os.environ.get("HUBSPOT_EXCLUSION_LIST_ID_COMPANY", "29338")
 # Cache TTL: keeps local copy fresh within 24h. Daily cron at 2 AM rebuilds it
 # during off-hours, so daytime runs use cached version (instant).
 EXCLUSION_CACHE_TTL_HOURS = int(os.environ.get("EXCLUSION_CACHE_TTL_HOURS", "24"))
@@ -81,6 +90,23 @@ GITHUB_BASE_BRANCH = os.environ.get("GITHUB_BASE_BRANCH", "main")
 # the completeness step is skipped entirely if this isn't set. Per-instance
 # config - each person running this backend uses their own key.
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+
+# Cost-control kill switch (2026-09-10, user request: Apollo credit spend was
+# running high). When False, every paid Apollo/Claude enrichment call site
+# skips itself and falls through to free-tier-only behavior:
+#   - domain_resolution: stops after HubSpot/Clearbit/Brandfetch/Wikidata,
+#     never calls Apollo org search (gated in scripts/resolve_company_domains.py
+#     itself via its own PAID_ENRICHMENT_ENABLED env read - same var name).
+#   - web_completeness: Claude web-search gap-fill is skipped entirely.
+#   - apollo_enrich.enrich_candidates / enrich_existing_contacts / the paid
+#     tier of fill_missing_details: skipped (free bulk_match-by-email tier
+#     still runs, since Apollo's own docs say that one is zero-credit).
+# Deliberately NOT gated: apollo_enrich.enrich_phones (phone reveal) and
+# candidate search (search_candidates/search_candidates_by_icp - Apollo people
+# search itself isn't credit-metered in this kit's usage, only the reveal
+# calls are) - the user asked to keep phone/email lookups running.
+# Re-enable by setting PAID_ENRICHMENT_ENABLED=true (or removing it) in .env.
+PAID_ENRICHMENT_ENABLED = os.environ.get("PAID_ENRICHMENT_ENABLED", "true").strip().lower() not in ("false", "0", "no")
 
 # Optional: a shared Account Mapping Sheet configured once for the whole
 # hosted instance, so individual users don't need to upload it every run.
@@ -150,9 +176,19 @@ def require(name: str, value: str):
     return value
 
 
-def exclusion_list_url() -> str:
-    """Direct link to the HubSpot DNU exclusion list's filters view."""
+def exclusion_list_url(list_id: str | None = None) -> str:
+    """Direct link to a HubSpot DNU exclusion list's filters view. Defaults to
+    the prospect-level list."""
+    lid = list_id or HUBSPOT_EXCLUSION_LIST_ID_PROSPECT
     return (
         f"https://{HUBSPOT_APP_SUBDOMAIN}/contacts/{HUBSPOT_PORTAL_ID}"
-        f"/objectLists/{HUBSPOT_EXCLUSION_LIST_ID}/filters"
+        f"/objectLists/{lid}/filters"
     )
+
+
+def exclusion_reference_label() -> str:
+    """Human-readable summary of which DNU list(s) are active, shown on the
+    pre-exclusion confirmation prompt."""
+    if HUBSPOT_EXCLUSION_LIST_ID_COMPANY:
+        return "ABM EXCLSIONS - DNU (prospect-level + company-level lists)"
+    return "ABM EXCLSIONS - DNU (prospect-level list only; company-level not yet configured)"

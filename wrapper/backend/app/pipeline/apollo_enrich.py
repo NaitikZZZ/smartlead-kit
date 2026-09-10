@@ -547,6 +547,8 @@ def count_missing_details(df: pd.DataFrame, domain_col: str = "Domain", email_co
     rows_missing = [(i, row) for i, row in df.iterrows() if _row_missing_details(row)]
     if not rows_missing:
         return 0
+    if not config.PAID_ENRICHMENT_ENABLED:
+        return 0  # tier 2 (paid people/match) never runs while disabled - nothing would be charged
 
     session = requests.Session()
     session.mount("https://", requests.adapters.HTTPAdapter(max_retries=0, pool_maxsize=max_workers))
@@ -626,6 +628,10 @@ def fill_missing_details(df: pd.DataFrame, first_col: str, last_col: str, domain
 
     # Tier 2: paid people/match by name+domain, only for rows still missing
     # something (tier 1 skipped or fell short) that have a domain to query.
+    # Skipped entirely while PAID_ENRICHMENT_ENABLED is false (2026-09-10,
+    # user request) - this tier only exists to backfill LinkedIn/industry/
+    # seniority, not email, so it's cut before spending a credit on it;
+    # cached prior lookups still apply for free.
     tasks = []
     for i, row in out.iterrows():
         if not _row_missing_details(row):
@@ -637,7 +643,8 @@ def fill_missing_details(df: pd.DataFrame, first_col: str, last_col: str, domain
         if key in cache:  # reuse prior paid lookup -> free
             fields_filled += _apply(i, cache[key])
             continue
-        tasks.append((i, row.get(first_col), row.get(last_col), domain, key))
+        if config.PAID_ENRICHMENT_ENABLED:
+            tasks.append((i, row.get(first_col), row.get(last_col), domain, key))
 
     def _one(t):
         i, first, last, domain, key = t
