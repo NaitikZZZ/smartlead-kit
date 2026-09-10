@@ -66,13 +66,14 @@ LOCATION_OPTIONS = REGION_OPTIONS[:-1] + COUNTRY_OPTIONS + ["Global"]  # "Global
 STEP_DEFS = [
     ("source", "Input & Normalization"),
     ("domain", "Domain Resolution"),
-    ("exclusion", "Exclusion Check"),
+    ("exclusion", "Company Exclusion Check"),
     ("discovery", "People Discovery"),
     ("reveal", "Email Reveal & Validation"),
     ("phone", "Mobile Phone"),
     ("outputs", "Output Files & Name"),
     ("associations", "Associations"),
     ("upload", "Preview & Upload"),
+    ("final_exclusion", "Contact Exclusion Check"),
     ("copy_agent", "Copy Agent"),
 ]
 
@@ -1049,10 +1050,16 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
                 domain_stats["already_present"] = already_present
                 domain_stats["resolved"] = resolved_now
                 stats["domain_resolution"] = domain_stats
-                source_note = (
-                    f" ({domain_stats.get('from_apollo', 0)} via Apollo, {domain_stats.get('from_clearbit', 0)} via Clearbit fallback)"
-                    if domain_stats.get("from_clearbit") else ""
-                )
+                source_parts = [
+                    f"{domain_stats.get(key, 0)} via {label}"
+                    for key, label in (
+                        ("from_hubspot", "HubSpot"), ("from_clearbit", "Clearbit"),
+                        ("from_brandfetch", "Brandfetch"), ("from_wikidata", "Wikidata"),
+                        ("from_apollo", "Apollo"),
+                    )
+                    if domain_stats.get(key)
+                ]
+                source_note = f" ({', '.join(source_parts)})" if source_parts else ""
                 _step(stats, "domain", "Domain Resolution", "done",
                       f"Resolved {resolved_now} of {missing_count} missing domain(s){source_note}; {already_present} already had one.",
                       seconds=estimates.estimate_seconds("domain_resolution", missing_count), cost=cost)
@@ -1087,7 +1094,9 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         # already run on incomplete data for these rows.
         still_missing_domain = _blank_domain_mask(df)
         still_missing_count = int(still_missing_domain.sum())
-        if still_missing_count and config.ANTHROPIC_API_KEY:
+        if still_missing_count and not config.PAID_ENRICHMENT_ENABLED:
+            stats["domain_completeness"] = {"skipped": True, "reason": "paid enrichment disabled (PAID_ENRICHMENT_ENABLED=false)", "gaps": still_missing_count}
+        elif still_missing_count and config.ANTHROPIC_API_KEY:
             domain_fill_answer = ask(
                 run_id, "domain_gap_fill_needed", "yes_no",
                 f"{still_missing_count} account(s) still have no domain after resolution. Fill via a "
@@ -1105,23 +1114,32 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
                 stats["domain_completeness"] = {"skipped": True, "reason": "declined by user", "gaps": still_missing_count}
             _update(run_id, stats=dict(stats))
 
-        # ============ Step 3: Exclusion Check (gated) ============
+        # ============ Step 3: Company-Level Exclusion Check (gated) ============
+        # Stage 1 of 2 - see run_confirmed_import() for Stage 2. Company-level
+        # ONLY here (broad: domain/company-name), so it drops whole accounts
+        # you never want to spend enrichment credits on. Deliberately does NOT
+        # also check the prospect-level list here - that one runs alone, late,
+        # right before the actual send, so a single person's meeting/DNC
+        # status never costs the rest of their company a spot in this run.
         exclusion_answer = ask(
             run_id, "exclusion_needed", "yes_no",
-            "Check these accounts against the HubSpot DNU list and drop existing clients?",
+            "Check these accounts against the company-level HubSpot DNU list and drop existing/active-deal accounts?",
             default="yes",
-            context={"step": "exclusion", "reference_url": config.exclusion_list_url(), "reference_label": "ABM EXCLSIONS - DNU"},
+            context={"step": "exclusion",
+                     "reference_url": config.exclusion_list_url(config.HUBSPOT_EXCLUSION_LIST_ID_COMPANY),
+                     "reference_label": "ABM EXCLSIONS Company Level - DNU"},
         )
         if _truthy(exclusion_answer):
-            _update(run_id, stage=RunStage.checking_exclusions, message="Checking against HubSpot DNU list")
-            _step(stats, "exclusion", "Exclusion Check", "running")
+            _update(run_id, stage=RunStage.checking_exclusions, message="Checking against company-level HubSpot DNU list")
+            _step(stats, "exclusion", "Company Exclusion Check", "running")
 
             def _excl_progress(fetched, uniq):
                 _update(run_id, message=f"Building DNU cache from HubSpot list (one-time): {fetched} members, {uniq} domains")
 
             exclusion_domain_col = "Domain" if "Domain" in df.columns else (domain_col or _guess_col(df, ["Domain", "Website"]))
-            df, exclusion_stats = hubspot_exclusion.run_exclusion_check(df, exclusion_domain_col, progress=_excl_progress)
-            exclusion_stats["dnu_list_url"] = config.exclusion_list_url()
+            df, exclusion_stats = hubspot_exclusion.run_exclusion_check(
+                df, exclusion_domain_col, progress=_excl_progress, sources={hubspot_exclusion.SOURCE_COMPANY})
+            exclusion_stats["dnu_list_url"] = config.exclusion_list_url(config.HUBSPOT_EXCLUSION_LIST_ID_COMPANY)
 
             # Capture per-account "why excluded" for the final summary (capped).
             _excl_name_col = resolved_company_col if resolved_company_col in df.columns else company_col
@@ -1134,15 +1152,16 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
                 }
                 for _, r in _ex_df.head(500).iterrows()
             ]
-            _step(stats, "exclusion", "Exclusion Check", "done",
-                  f"{exclusion_stats['excluded']} excluded, {exclusion_stats['ok_to_reach_out']} OK "
-                  f"(of {exclusion_stats['total']}); matched vs {exclusion_stats['dnu_record_count']} DNU records from list {exclusion_stats['dnu_list_id']}.",
+            _step(stats, "exclusion", "Company Exclusion Check", "done",
+                  f"{exclusion_stats['excluded']} account(s) excluded, {exclusion_stats['ok_to_reach_out']} OK "
+                  f"(of {exclusion_stats['total']}); matched vs {exclusion_stats['dnu_record_count']} DNU records from list {exclusion_stats['dnu_list_id']}. "
+                  "Contact-level check (meeting completed/DNC) still runs once, individually, right before the final send.",
                   seconds=estimates.estimate_seconds("exclusion", len(df)))
         else:
             df["Exclusion Status"] = "OK to reach out"
             df["Exclusion Reason"] = "Exclusion check skipped by user"
             exclusion_stats = {"skipped": True, "total": len(df), "excluded": 0, "ok_to_reach_out": len(df)}
-            _step(stats, "exclusion", "Exclusion Check", "skipped", f"Skipped - all {len(df)} treated as OK to reach out.")
+            _step(stats, "exclusion", "Company Exclusion Check", "skipped", f"Skipped - all {len(df)} treated as OK to reach out.")
         stats["exclusion"] = exclusion_stats
         _update(run_id, stats=dict(stats))
 
@@ -1446,7 +1465,9 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
                 gap_mask = gap_mask | col.isna() | (col.astype(str).str.strip() == "")
             gap_count = int(gap_mask.sum())
 
-        if not config.ANTHROPIC_API_KEY:
+        if not config.PAID_ENRICHMENT_ENABLED:
+            stats["completeness"] = {"skipped": True, "reason": "paid enrichment disabled (PAID_ENRICHMENT_ENABLED=false)", "gaps": gap_count}
+        elif not config.ANTHROPIC_API_KEY:
             stats["completeness"] = {"skipped": True, "reason": "ANTHROPIC_API_KEY not configured", "gaps": gap_count}
         elif not completeness_cols or gap_count == 0:
             stats["completeness"] = {"skipped": True, "reason": "no gaps found" if completeness_cols else "no Industry/Employee column present", "gaps": gap_count}
@@ -1482,7 +1503,7 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
 
         file_paths, hubspot_ready_df = outputs.write_outputs(run_dir, accounts_processed, core_df, campaign_title, stats)
         stats["hubspot_ready_count"] = len(hubspot_ready_df)
-        outputs.write_file(run_dir, "SUMMARY.md", outputs.build_summary_markdown(campaign_title, stats, accounts_processed), "text/markdown")
+        outputs.write_file(run_dir, "SUMMARY.md", outputs.build_summary_markdown(campaign_title, stats, accounts_processed, core_df), "text/markdown")
         cc = stats.get("channel_counts", {})
         _step(stats, "outputs", "Output Files & Name", "done",
               f"3 channel files written - email {cc.get('email', 0)}, linkedin {cc.get('linkedin', 0)}, calling {cc.get('calling', 0)}.")
@@ -1585,19 +1606,68 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         traceback.print_exc()
 
 
+def _excluded_identifiers(df: pd.DataFrame) -> tuple[set[str], set[str]]:
+    """Lowercased, stripped (email, LinkedIn URL) sets for rows already
+    marked Excluded - used to keep the HeyReach/Interakt pushes in sync with
+    whoever the contact-level check just dropped from the HubSpot rows."""
+    excluded = df[df["Exclusion Status"] == "Excluded"]
+    emails = set(excluded.get("email", pd.Series(dtype=str)).dropna().astype(str).str.strip().str.lower()) - {""}
+    linkedin = set(excluded.get("hs_linkedin_url", pd.Series(dtype=str)).dropna().astype(str).str.strip().str.lower()) - {""}
+    return emails, linkedin
+
+
+def _drop_excluded_contacts(channel_df: pd.DataFrame, excluded_emails: set[str],
+                            excluded_linkedin: set[str]) -> pd.DataFrame:
+    """Filters a channel-upload dataframe (linkedin_upload.csv/whatsapp_upload.csv)
+    against the same excluded-identifier sets the HubSpot rows were just
+    filtered by, so an excluded prospect can't still go out over LinkedIn or
+    WhatsApp just because those files were built before this final check ran."""
+    if channel_df.empty or not (excluded_emails or excluded_linkedin):
+        return channel_df
+    mask = pd.Series(False, index=channel_df.index)
+    if "email" in channel_df.columns and excluded_emails:
+        mask |= channel_df["email"].astype(str).str.strip().str.lower().isin(excluded_emails)
+    if "linkedin_url" in channel_df.columns and excluded_linkedin:
+        mask |= channel_df["linkedin_url"].astype(str).str.strip().str.lower().isin(excluded_linkedin)
+    return channel_df[~mask].copy()
+
+
 def run_confirmed_import(run_id: str, run_dir: Path):
     df = pd.read_json(io.BytesIO(outputs.read_file(run_dir, "hubspot_ready.json")), orient="records")
+
+    # ============ Stage 2 of 2: Contact-Level Exclusion Check (final gate) ============
+    # See Step 3 above for Stage 1 (company-level, early). This runs once,
+    # right here, right before ANYTHING below goes out (HubSpot, then
+    # HeyReach, then Interakt) - prospect-level ONLY (exact email/LinkedIn),
+    # deliberately never company-level, so this last-moment check can only
+    # ever drop the one person who opted out or had a meeting, never
+    # resurrect a company-wide cut this late in the run.
+    job = get_job(run_id)
+    running_stats = dict(job["stats"])
+    _step(running_stats, "final_exclusion", "Contact Exclusion Check", "running")
+    _update(run_id, message="Final contact-level DNU check before sending", stats=running_stats)
+
+    df, final_excl_stats = hubspot_exclusion.run_exclusion_check(
+        df, None, sources={hubspot_exclusion.SOURCE_PROSPECT})
+    excluded_emails, excluded_linkedin = _excluded_identifiers(df)
+    df = df[df["Exclusion Status"] == "OK to reach out"].copy()
+
+    _step(running_stats, "final_exclusion", "Contact Exclusion Check", "done",
+          f"{final_excl_stats['excluded']} contact(s) excluded right before sending "
+          f"(meeting completed/DNC), {final_excl_stats['ok_to_reach_out']} proceeding.")
+    _update(run_id, stats=running_stats)
+
     # astype(object) first so NaN -> None actually sticks; on a float64 column
     # `.where(..., None)` silently keeps NaN (None can't live in float64), and
     # NaN is not JSON-serializable -> the "Out of range float" upload error.
     rows = df.astype(object).where(pd.notna(df), None).to_dict(orient="records")
 
-    job = get_job(run_id)
     associations = job.get("_associations", [])
     campaign_title = job.get("_campaign_title", f"ABM_WRAPPER_{run_id}")
 
     # Single canonical path: hard-drops blank emails AND always creates a list.
     result = hubspot_import.import_contacts_with_list(rows, campaign_title, associations)
+    result["final_exclusion"] = final_excl_stats
 
     # Push the LinkedIn file to HeyReach (best-effort - never sinks the HubSpot
     # import that already succeeded).
@@ -1607,6 +1677,7 @@ def run_confirmed_import(run_id: str, run_dir: Path):
             li_df = pd.read_csv(io.BytesIO(outputs.read_file(run_dir, "linkedin_upload.csv")))
         except pd.errors.EmptyDataError:
             li_df = pd.DataFrame()
+        li_df = _drop_excluded_contacts(li_df, excluded_emails, excluded_linkedin)
         if not li_df.empty:
             li_df = li_df.where(pd.notna(li_df), None)
             heyreach_result = heyreach.push_leads(li_df.to_dict(orient="records"), campaign_title)
@@ -1620,12 +1691,17 @@ def run_confirmed_import(run_id: str, run_dir: Path):
             wa_df = pd.read_csv(io.BytesIO(outputs.read_file(run_dir, "whatsapp_upload.csv")))
         except pd.errors.EmptyDataError:
             wa_df = pd.DataFrame()
+        wa_df = _drop_excluded_contacts(wa_df, excluded_emails, excluded_linkedin)
         if not wa_df.empty:
             wa_df = wa_df.where(pd.notna(wa_df), None)
             interakt_result = interakt.push_users(wa_df.to_dict(orient="records"), campaign_title)
     result["interakt"] = interakt_result
 
-    running_stats = dict(job["stats"])
+    # Reuses the running_stats from Stage 2 above (not a fresh dict(job["stats"])
+    # snapshot) - job was captured once at the top of this function, and
+    # get_job() returns a shallow copy, so job["stats"] would still be
+    # pointing at the pre-Stage-2 dict and silently drop the "final_exclusion"
+    # step's entry the moment this gets written back.
     _step(running_stats, "copy_agent", "Copy Agent", "running")
     _update(run_id, message="Generating campaign copy", stats=running_stats)
     copy_result = copy_agent.run(df)
@@ -1663,9 +1739,10 @@ def run_confirmed_import(run_id: str, run_dir: Path):
     _update(run_id, stats=final_stats)
 
     accounts_processed = pd.read_csv(io.BytesIO(outputs.read_file(run_dir, "01_accounts_processed.csv")))
+    enriched = pd.read_csv(io.BytesIO(outputs.read_file(run_dir, "02_enriched_contacts.csv")))
     outputs.write_file(
         run_dir, "SUMMARY.md",
-        outputs.build_summary_markdown(campaign_title, final_stats, accounts_processed, import_result=result),
+        outputs.build_summary_markdown(campaign_title, final_stats, accounts_processed, enriched, import_result=result),
         "text/markdown",
     )
     return result

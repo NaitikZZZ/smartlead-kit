@@ -28,7 +28,6 @@ inngest.fast_api.serve(app, inngest_client,
 @app.get("/api/config")
 def get_config():
     resolved_sheet = config.resolve_account_mapping_sheet_path()
-    exclusion_list_url = config.exclusion_list_url()
     return {
         "account_mapping_sheet_configured": bool(resolved_sheet),
         "account_mapping_sheet_file": Path(resolved_sheet).name if resolved_sheet else None,
@@ -38,8 +37,13 @@ def get_config():
         "hubspot_write_configured": bool(config.HUBSPOT_WRITE_TOKEN),
         "interakt_configured": bool(config.INTERAKT_API_KEY),
         "exclusion_list_name": "ABM EXCLSIONS - DNU",
-        "exclusion_list_id": config.HUBSPOT_EXCLUSION_LIST_ID,
-        "exclusion_list_url": exclusion_list_url,
+        "exclusion_list_id_prospect": config.HUBSPOT_EXCLUSION_LIST_ID_PROSPECT,
+        "exclusion_list_id_company": config.HUBSPOT_EXCLUSION_LIST_ID_COMPANY or None,
+        "exclusion_list_url_prospect": config.exclusion_list_url(config.HUBSPOT_EXCLUSION_LIST_ID_PROSPECT),
+        "exclusion_list_url_company": (
+            config.exclusion_list_url(config.HUBSPOT_EXCLUSION_LIST_ID_COMPANY)
+            if config.HUBSPOT_EXCLUSION_LIST_ID_COMPANY else None
+        ),
     }
 
 
