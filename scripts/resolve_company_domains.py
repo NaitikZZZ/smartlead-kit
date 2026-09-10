@@ -68,26 +68,88 @@ CACHE_FIELDS = ['company_key', 'company_name', 'domain', 'linkedin', 'country', 
 # local CSV file above isn't writable/persistent across invocations. Falls
 # back to the CSV file when Redis isn't configured, so this script still runs
 # standalone (e.g. via the manual CLAUDE.md pipeline) without any new setup.
+#
+# Stored as a Redis HASH (one field per company), not a single JSON-blob
+# STRING under one key - confirmed live (2026-09-01): writing the whole
+# ~290k-company cache as one JSON string silently failed (the SET never took;
+# production's key stayed at its pre-write 2,567-company size) once the blob
+# grew large enough, almost certainly Upstash's per-value size cap on a single
+# STRING. A HASH has no such ceiling since each company is its own field,
+# written independently, and reading the whole cache back is one HGETALL.
 _REDIS_URL = os.environ.get('UPSTASH_REDIS_REST_URL')
 _REDIS_TOKEN = os.environ.get('UPSTASH_REDIS_REST_TOKEN')
-_REDIS_KEY = 'cache:company_domain'
+_REDIS_KEY = 'cache:company_domain:hash'
+_REDIS_PIPELINE_BATCH = 500  # companies per HTTP round-trip when writing
 
 
 def _redis_configured():
     return bool(_REDIS_URL and _REDIS_TOKEN)
 
 
-def _redis_get_json(key):
-    r = requests.get(f'{_REDIS_URL}/get/{key}', headers={'Authorization': f'Bearer {_REDIS_TOKEN}'}, timeout=15)
-    r.raise_for_status()
-    raw = r.json().get('result')
-    return json.loads(raw) if raw is not None else None
+def _redis_hgetall(key):
+    """HSCAN in a loop, NOT a single HGETALL - confirmed live: Upstash's REST
+    API hard-caps any single response at 10MB, and this hash's full content
+    is ~71MB at ~288k companies (HGETALL returns the whole hash in one
+    response, blowing past that). Upstash returns the size-limit error as a
+    200 with an error JSON body, not a 4xx, so raise_for_status() never
+    caught it - every load_cache() call was silently getting an empty dict
+    back instead of erroring, which would have made every resolve() call
+    think nothing was ever cached. HSCAN pages through the hash in bounded
+    chunks instead, so no single response can exceed the cap regardless of
+    how large the cache grows."""
+    out = {}
+    cursor = '0'
+    while True:
+        last_exc = None
+        for attempt in range(1, 9):
+            try:
+                r = requests.get(f'{_REDIS_URL}/hscan/{key}/{cursor}', params={'count': 1000},
+                                  headers={'Authorization': f'Bearer {_REDIS_TOKEN}'}, timeout=30)
+                r.raise_for_status()
+                result = r.json().get('result')
+                if result is None:
+                    raise RuntimeError(f"HSCAN failed: {r.text}")
+                last_exc = None
+                break
+            except (requests.exceptions.RequestException, RuntimeError) as e:
+                last_exc = e
+                time.sleep(min(3 * attempt, 20))
+        if last_exc:
+            raise last_exc
+        cursor, flat = result[0], result[1]
+        for i in range(0, len(flat), 2):
+            out[flat[i]] = json.loads(flat[i + 1])
+        if cursor == '0':
+            break
+        time.sleep(0.1)  # space out page requests - reduces the transient-failure rate seen at 1 req/sec
+    return out
 
 
-def _redis_set_json(key, value):
-    r = requests.post(f'{_REDIS_URL}/set/{key}', headers={'Authorization': f'Bearer {_REDIS_TOKEN}'},
-                       data=json.dumps(value).encode('utf-8'), timeout=15)
-    r.raise_for_status()
+def _redis_hset_batch(key, items):
+    """items: list of (field, value_dict) pairs. Batches many HSET commands
+    per HTTP call via Upstash's /pipeline endpoint - one round-trip per 500
+    companies instead of one call per company (290k calls) or one oversized
+    blob (the failure mode this replaced). Each batch is an idempotent HSET,
+    never a delete, so retrying (or re-running the whole push from scratch
+    after a partial failure) is always safe - confirmed needed live: a
+    transient SSL error killed a real push after only 1 of ~577 batches."""
+    for i in range(0, len(items), _REDIS_PIPELINE_BATCH):
+        batch = items[i:i + _REDIS_PIPELINE_BATCH]
+        commands = [['HSET', key, field, json.dumps(value)] for field, value in batch]
+        last_exc = None
+        for attempt in range(1, 6):
+            try:
+                r = requests.post(f'{_REDIS_URL}/pipeline',
+                                   headers={'Authorization': f'Bearer {_REDIS_TOKEN}', 'Content-Type': 'application/json'},
+                                   data=json.dumps(commands).encode('utf-8'), timeout=30)
+                r.raise_for_status()
+                last_exc = None
+                break
+            except requests.exceptions.RequestException as e:
+                last_exc = e
+                time.sleep(3 * attempt)
+        if last_exc:
+            raise last_exc
 
 
 _LEGAL_SUFFIX_RE = re.compile(
@@ -143,7 +205,7 @@ def parse_employee_count(raw):
 
 def load_cache():
     if _redis_configured():
-        return _redis_get_json(_REDIS_KEY) or {}
+        return _redis_hgetall(_REDIS_KEY)
     if not os.path.exists(CACHE_PATH):
         return {}
     with open(CACHE_PATH, newline='', encoding='utf-8') as f:
@@ -151,8 +213,12 @@ def load_cache():
 
 
 def save_cache(cache):
+    """Called everywhere with the full, already-merged cache dict (never a
+    dict with entries removed - nothing in this codebase ever deletes a
+    company), so writing every field via HSET is safe: it only adds/updates,
+    it can never orphan an existing company that HSET wasn't told about."""
     if _redis_configured():
-        _redis_set_json(_REDIS_KEY, cache)
+        _redis_hset_batch(_REDIS_KEY, list(cache.items()))
         return
     with open(CACHE_PATH, 'w', newline='', encoding='utf-8') as f:
         w = csv.DictWriter(f, fieldnames=CACHE_FIELDS)
@@ -224,7 +290,7 @@ def hubspot_search(session, query_name):
             headers={'Authorization': f'Bearer {HUBSPOT_TOKEN}', 'Content-Type': 'application/json'},
             json={
                 'filterGroups': [{'filters': [{'propertyName': 'name', 'operator': 'CONTAINS_TOKEN', 'value': query_name}]}],
-                'properties': ['name', 'domain'],
+                'properties': ['name', 'domain', 'createdate'],
                 'limit': 10,
             },
             timeout=(5, 10),
@@ -237,9 +303,17 @@ def hubspot_search(session, query_name):
 def hubspot_resolve(session, query_candidates):
     """Your own HubSpot Company records - read-only (never writes/updates,
     per this kit's HubSpot rule), free, and the most trustworthy source
-    since it's data your own team already verified. Same exact-name-match
-    philosophy as Clearbit: CONTAINS_TOKEN search casts wide, only a single
-    normalized-exact-name result with a domain is trusted."""
+    since it's data your own team already verified. CONTAINS_TOKEN search
+    casts wide; duplicate company records under the exact same name are
+    common CRM noise (confirmed live: 'Xoxoday' alone has 4 distinct records
+    - xoxoday.com, xooxoday.com, xooday.com, progresswithxoxoday.com - all
+    ending in .com, so a Clearbit-style "lone .com" tiebreak can't
+    disambiguate this either). HubSpot exposes no relevance score the way
+    Brandfetch does, but createdate is a reliable proxy: the real company
+    record is created once, early; accidental duplicates get created later
+    (confirmed: the real xoxoday.com record dates to 2020, all 3 duplicates
+    were created in 2026, two on the same day - a bulk-import artifact, not
+    a coincidence). Oldest-created exact match wins."""
     if not HUBSPOT_TOKEN:
         return None, None
     for q in query_candidates:
@@ -247,8 +321,12 @@ def hubspot_resolve(session, query_candidates):
         qn = norm(q)
         exact = [c for c in results
                  if norm(c.get('properties', {}).get('name', '')) == qn and c.get('properties', {}).get('domain')]
+        if not exact:
+            continue
         if len(exact) == 1:
             return {'domain': exact[0]['properties']['domain'], 'country': '', 'city': ''}, 'HubSpot-exact'
+        oldest = min(exact, key=lambda c: c.get('properties', {}).get('createdate') or '9999')
+        return {'domain': oldest['properties']['domain'], 'country': '', 'city': ''}, 'HubSpot-exact-oldest-record'
     return None, None
 
 
