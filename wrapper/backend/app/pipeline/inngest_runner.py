@@ -2077,47 +2077,58 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             ))
     import_result["interakt"] = interakt_result
 
-    await _set_step(step, "step_copy_agent_running", run_id, "copy_agent", "Copy Agent", "running")
-    await _status(step, "status_generating_copy", run_id, message="Generating campaign copy")
-
-    async def _run_copy_agent():
-        # Reuses the in-memory hubspot_ready_df instead of re-reading
-        # hubspot_ready.json back from Blob (runner.py's run_confirmed_import
-        # had to re-read it, being a separate function call with no access to
-        # this run's local state) - same data, one less Blob round-trip.
-        return _nan_safe(copy_agent.run(hubspot_ready_df))
-
-    copy_result = await step.run("copy_agent_run", _run_copy_agent)
-    import_result["copy_agent"] = {k: v for k, v in copy_result.items() if k != "copy"}
-
-    async def _write_copy_agent_outputs():
-        if copy_result["status"] == "done":
-            json_path = outputs.write_file(run_dir, "10_copy_agent.json", json.dumps(copy_result, indent=2), "application/json")
-            md_path = outputs.write_file(run_dir, "10_COPY_AGENT.md", copy_agent.build_markdown(campaign_title, copy_result), "text/markdown")
-            return [json_path, md_path]
-        return []
-
-    copy_output_files = await step.run("write_copy_agent_outputs", _write_copy_agent_outputs)
-
-    async def _append_copy_agent_output_files():
-        job = run_status.get(run_id)
-        existing = list(job.get("output_files", []))
-        run_status.update(run_id, output_files=existing + copy_output_files)
-        return True
-
-    await step.run("append_copy_agent_output_files", _append_copy_agent_output_files)
-
     hr = heyreach_result.get("status")
     hr_note = f" HeyReach: {heyreach_result.get('pushed', 0)} pushed." if hr == "pushed" else ""
     await _set_step(step, "step_upload_done", run_id, "upload", "Preview & Upload", "done",
                      f"Imported {import_result['total']} contact(s); static list created.{hr_note}")
 
-    if copy_result["status"] == "done":
-        await _set_step(step, "step_copy_agent_done", run_id, "copy_agent", "Copy Agent", "done",
-                         f"5-step email + LinkedIn copy generated for {copy_result['lead_count']} lead(s).")
+    generate_copy = await _ask(
+        step, run_id, "generate_copy_confirm", "yes_no",
+        "Data imported to HubSpot. Generate campaign copy (email + LinkedIn) now?",
+        default="yes", context={"step": "copy_agent"},
+    )
+
+    if _truthy(generate_copy):
+        await _set_step(step, "step_copy_agent_running", run_id, "copy_agent", "Copy Agent", "running")
+        await _status(step, "status_generating_copy", run_id, message="Generating campaign copy")
+
+        async def _run_copy_agent():
+            # Reuses the in-memory hubspot_ready_df instead of re-reading
+            # hubspot_ready.json back from Blob (runner.py's run_confirmed_import
+            # had to re-read it, being a separate function call with no access to
+            # this run's local state) - same data, one less Blob round-trip.
+            return _nan_safe(copy_agent.run(hubspot_ready_df))
+
+        copy_result = await step.run("copy_agent_run", _run_copy_agent)
+        import_result["copy_agent"] = {k: v for k, v in copy_result.items() if k != "copy"}
+
+        async def _write_copy_agent_outputs():
+            if copy_result["status"] == "done":
+                json_path = outputs.write_file(run_dir, "10_copy_agent.json", json.dumps(copy_result, indent=2), "application/json")
+                md_path = outputs.write_file(run_dir, "10_COPY_AGENT.md", copy_agent.build_markdown(campaign_title, copy_result), "text/markdown")
+                return [json_path, md_path]
+            return []
+
+        copy_output_files = await step.run("write_copy_agent_outputs", _write_copy_agent_outputs)
+
+        async def _append_copy_agent_output_files():
+            job = run_status.get(run_id)
+            existing = list(job.get("output_files", []))
+            run_status.update(run_id, output_files=existing + copy_output_files)
+            return True
+
+        await step.run("append_copy_agent_output_files", _append_copy_agent_output_files)
+
+        if copy_result["status"] == "done":
+            await _set_step(step, "step_copy_agent_done", run_id, "copy_agent", "Copy Agent", "done",
+                             f"5-step email + LinkedIn copy generated for {copy_result['lead_count']} lead(s).")
+        else:
+            await _set_step(step, "step_copy_agent_skipped", run_id, "copy_agent", "Copy Agent", "skipped",
+                             copy_result.get("message", copy_result["status"]))
     else:
+        import_result["copy_agent"] = {"status": "skipped", "message": "User opted out of copy generation."}
         await _set_step(step, "step_copy_agent_skipped", run_id, "copy_agent", "Copy Agent", "skipped",
-                         copy_result.get("message", copy_result["status"]))
+                         "Skipped - user opted out of copy generation.")
 
     await _set_stat(step, "stat_hubspot_import", run_id, "hubspot_import", import_result)
 
