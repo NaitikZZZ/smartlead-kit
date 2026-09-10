@@ -87,10 +87,42 @@ def _redis_configured():
 
 
 def _redis_hgetall(key):
-    r = requests.get(f'{_REDIS_URL}/hgetall/{key}', headers={'Authorization': f'Bearer {_REDIS_TOKEN}'}, timeout=30)
-    r.raise_for_status()
-    flat = r.json().get('result') or []
-    return {flat[i]: json.loads(flat[i + 1]) for i in range(0, len(flat), 2)}
+    """HSCAN in a loop, NOT a single HGETALL - confirmed live: Upstash's REST
+    API hard-caps any single response at 10MB, and this hash's full content
+    is ~71MB at ~288k companies (HGETALL returns the whole hash in one
+    response, blowing past that). Upstash returns the size-limit error as a
+    200 with an error JSON body, not a 4xx, so raise_for_status() never
+    caught it - every load_cache() call was silently getting an empty dict
+    back instead of erroring, which would have made every resolve() call
+    think nothing was ever cached. HSCAN pages through the hash in bounded
+    chunks instead, so no single response can exceed the cap regardless of
+    how large the cache grows."""
+    out = {}
+    cursor = '0'
+    while True:
+        last_exc = None
+        for attempt in range(1, 9):
+            try:
+                r = requests.get(f'{_REDIS_URL}/hscan/{key}/{cursor}', params={'count': 1000},
+                                  headers={'Authorization': f'Bearer {_REDIS_TOKEN}'}, timeout=30)
+                r.raise_for_status()
+                result = r.json().get('result')
+                if result is None:
+                    raise RuntimeError(f"HSCAN failed: {r.text}")
+                last_exc = None
+                break
+            except (requests.exceptions.RequestException, RuntimeError) as e:
+                last_exc = e
+                time.sleep(min(3 * attempt, 20))
+        if last_exc:
+            raise last_exc
+        cursor, flat = result[0], result[1]
+        for i in range(0, len(flat), 2):
+            out[flat[i]] = json.loads(flat[i + 1])
+        if cursor == '0':
+            break
+        time.sleep(0.1)  # space out page requests - reduces the transient-failure rate seen at 1 req/sec
+    return out
 
 
 def _redis_hset_batch(key, items):
@@ -258,7 +290,7 @@ def hubspot_search(session, query_name):
             headers={'Authorization': f'Bearer {HUBSPOT_TOKEN}', 'Content-Type': 'application/json'},
             json={
                 'filterGroups': [{'filters': [{'propertyName': 'name', 'operator': 'CONTAINS_TOKEN', 'value': query_name}]}],
-                'properties': ['name', 'domain'],
+                'properties': ['name', 'domain', 'createdate'],
                 'limit': 10,
             },
             timeout=(5, 10),
@@ -271,9 +303,17 @@ def hubspot_search(session, query_name):
 def hubspot_resolve(session, query_candidates):
     """Your own HubSpot Company records - read-only (never writes/updates,
     per this kit's HubSpot rule), free, and the most trustworthy source
-    since it's data your own team already verified. Same exact-name-match
-    philosophy as Clearbit: CONTAINS_TOKEN search casts wide, only a single
-    normalized-exact-name result with a domain is trusted."""
+    since it's data your own team already verified. CONTAINS_TOKEN search
+    casts wide; duplicate company records under the exact same name are
+    common CRM noise (confirmed live: 'Xoxoday' alone has 4 distinct records
+    - xoxoday.com, xooxoday.com, xooday.com, progresswithxoxoday.com - all
+    ending in .com, so a Clearbit-style "lone .com" tiebreak can't
+    disambiguate this either). HubSpot exposes no relevance score the way
+    Brandfetch does, but createdate is a reliable proxy: the real company
+    record is created once, early; accidental duplicates get created later
+    (confirmed: the real xoxoday.com record dates to 2020, all 3 duplicates
+    were created in 2026, two on the same day - a bulk-import artifact, not
+    a coincidence). Oldest-created exact match wins."""
     if not HUBSPOT_TOKEN:
         return None, None
     for q in query_candidates:
@@ -281,8 +321,12 @@ def hubspot_resolve(session, query_candidates):
         qn = norm(q)
         exact = [c for c in results
                  if norm(c.get('properties', {}).get('name', '')) == qn and c.get('properties', {}).get('domain')]
+        if not exact:
+            continue
         if len(exact) == 1:
             return {'domain': exact[0]['properties']['domain'], 'country': '', 'city': ''}, 'HubSpot-exact'
+        oldest = min(exact, key=lambda c: c.get('properties', {}).get('createdate') or '9999')
+        return {'domain': oldest['properties']['domain'], 'country': '', 'city': ''}, 'HubSpot-exact-oldest-record'
     return None, None
 
 
