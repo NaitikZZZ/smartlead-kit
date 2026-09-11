@@ -19,6 +19,9 @@ except ImportError:  # Python <3.11 has no datetime.UTC
     UTC = timezone.utc
 
 from .. import vercel_blob
+from . import web_completeness
+
+EMPLOYEE_BUCKET_ORDER = ["0 - 50", "51 - 200", "201 - 500", "501 - 1000", "1001 - 5000", "5001 - 10000", "10000+", "Unknown"]
 
 SENIORITY_MAP = {"c_suite": "C suite", "vp": "VP", "head": "Head", "director": "Director", "manager": "Manager"}
 
@@ -483,12 +486,16 @@ def build_summary_stats(accounts_processed: pd.DataFrame, enriched: pd.DataFrame
 
     company_col = "Cleaned Company Name" if "Cleaned Company Name" in accounts_processed.columns else next(
         (c for c in accounts_processed.columns if "company" in c.lower()), None)
+    employee_col = web_completeness._find_col(accounts_processed.columns, web_completeness.EMPLOYEE_CANDIDATES)
 
     account_keys = set()
     excluded_keys = set()
     reason_buckets = {"meeting": set(), "lifecycle_dnc": set(), "lead_status_dnc": set(),
                        "farming": set(), "active_deals": set(), "other": set()}
     ok_no_domain_keys, ok_with_domain_keys = set(), set()
+    employee_dist = {"ok_to_reach_out": {b: 0 for b in EMPLOYEE_BUCKET_ORDER},
+                      "excluded": {b: 0 for b in EMPLOYEE_BUCKET_ORDER}}
+    employee_seen = set()
 
     for _, row in accounts_processed.iterrows():
         domain = _norm_key(strip_url_prefix(row.get("Domain"))) if "Domain" in accounts_processed.columns else ""
@@ -497,8 +504,14 @@ def build_summary_stats(accounts_processed: pd.DataFrame, enriched: pd.DataFrame
         if not key:
             continue
         account_keys.add(key)
+        is_excluded = row.get("Exclusion Status") == "Excluded"
 
-        if row.get("Exclusion Status") == "Excluded":
+        if key not in employee_seen:
+            employee_seen.add(key)
+            bucket = bucket_employees(pd.to_numeric(row.get(employee_col), errors="coerce")) if employee_col else None
+            employee_dist["excluded" if is_excluded else "ok_to_reach_out"][bucket or "Unknown"] += 1
+
+        if is_excluded:
             excluded_keys.add(key)
             reason = str(row.get("Exclusion Reason") or "").lower()
             if "meeting completed" in reason:
@@ -578,6 +591,7 @@ def build_summary_stats(accounts_processed: pd.DataFrame, enriched: pd.DataFrame
         "prospects_finalized": prospects_finalized,
         "prospect_channel_matrix": matrix,
         "avg_prospects_per_account": round(prospects_finalized / accounts_finalized, 1) if accounts_finalized else None,
+        "employee_distribution": employee_dist,
     }
 
 
@@ -632,6 +646,16 @@ def build_summary_markdown(campaign_title: str, stats: dict, accounts_processed:
         f"7. Avg prospects per account: **{avg if avg is not None else '-'}**",
         "",
     ]
+
+    emp = funnel["employee_distribution"]
+    lines += [
+        "**Employee size distribution (by account)**",
+        "",
+        "| Employee size | OK to reach out | Excluded |",
+        "|---|---|---|",
+    ]
+    lines += [f"| {b} | {emp['ok_to_reach_out'][b]} | {emp['excluded'][b]} |" for b in EMPLOYEE_BUCKET_ORDER]
+    lines.append("")
 
     norm = stats.get("normalization", {})
     if norm.get("notes"):
