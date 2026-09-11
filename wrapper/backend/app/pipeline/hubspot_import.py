@@ -50,13 +50,30 @@ def _valid_email(v) -> bool:
 _INVALID_EMAIL_RE = re.compile(r"Email address\s+(.+?)\s+is invalid", re.I)
 
 
+def _collapse_escaped_backslashes(s: str) -> str:
+    """A genuinely backslash-containing address (e.g. a typo'd
+    "andrew\\.osborne-hunt@go1.com") comes back from HubSpot at two different
+    escaping depths: once inside the top-level `message` summary, which is
+    itself a JSON-encoded string (so its backslashes are doubled), and once
+    in the `errors` array (single-encoded). Collapse either back to the real
+    address by repeatedly halving doubled backslashes until stable, so both
+    occurrences match the locally-held id regardless of which one HubSpot
+    named."""
+    while "\\\\" in s:
+        s = s.replace("\\\\", "\\")
+    return s
+
+
 def _invalid_emails_from_error(body: str) -> set[str]:
     """Pulls the addresses HubSpot named as invalid out of a 400 body.
 
     HubSpot reports these both in the top-level `message` and in an `errors`
     array, and may name several at once, so parse the raw text rather than
     depending on one shape. Lowercased to match how the inputs are keyed."""
-    return {m.group(1).strip().strip('\\"').lower() for m in _INVALID_EMAIL_RE.finditer(body or "")}
+    return {
+        _collapse_escaped_backslashes(m.group(1).strip().strip('\\"')).lower()
+        for m in _INVALID_EMAIL_RE.finditer(body or "")
+    }
 
 
 def batch_upsert_contacts(rows: list[dict]) -> tuple[list[dict], list[dict]]:
