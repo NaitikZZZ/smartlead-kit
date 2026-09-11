@@ -21,6 +21,18 @@ def _priority_from_project_name(name: str) -> str:
     return m.group(1).upper() if m else "P2"
 
 
+def _poc_token(project_meta: dict, default_poc: str) -> str:
+    """Requestor + campaign owner first names (from the linked HubSpot
+    Project), per docs/campaign-naming-convention.md's 2026-09-11 update.
+    Falls back to default_poc when either name wasn't resolved (missing
+    property, owner lookup failed, or no linked Project at all)."""
+    requestor = (project_meta or {}).get("requestor_name")
+    owner = (project_meta or {}).get("owner_name")
+    if requestor and owner:
+        return f"{requestor}{owner}"
+    return owner or requestor or default_poc.title()
+
+
 def _region_code(df: pd.DataFrame, region_col: str | None) -> str:
     if not region_col or region_col not in df.columns:
         return "ROW"
@@ -36,7 +48,10 @@ def suggest_campaign_title(project_meta: dict, df: pd.DataFrame, region_col: str
     region = _region_code(df, region_col)
     usecase = "CUSTOM-ENRICHMENT"
     channel = "EMAIL"
+    poc = _poc_token(project_meta, default_poc)
     from datetime import datetime
     today = datetime.now()
     start_date = f"{today.day:02d}{today.strftime('%b').upper()}{str(today.year)[-2:]}"
-    return f"{priority}_ABM_{usecase}_{region}_{channel}_{default_poc}_{start_date}"
+    title = f"{priority}_ABM_{usecase}_{region}_{channel}_{poc}_{start_date}"
+    project_id = (project_meta or {}).get("project_id")
+    return f"{title}_{project_id}" if project_id else title

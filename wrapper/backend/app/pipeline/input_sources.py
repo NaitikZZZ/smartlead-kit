@@ -19,7 +19,33 @@ HUBSPOT_PROJECT_PROPERTIES = [
     "campaign_concept", "campaign_copy_link", "campaign_list_link",
     "preexisting_list_link_for_enrichment", "event_campaign_request_type",
     "ideal_customer_profile_icp", "region", "employee_size", "priority_explanation",
+    "requestor", "hubspot_owner_id",
 ]
+
+
+def _resolve_owner_first_name(token: str, owner_id: str | None) -> str | None:
+    """Best-effort HubSpot owner-id -> first-name lookup for the campaign_title
+    POC token. Needs the crm.objects.owners.read scope on the private app -
+    swallow any failure (owner gone, network hiccup) and return None so naming
+    falls back to default_poc, since the suggested title is always
+    human-reviewed before use anyway. Active and archived/inactive owners are
+    mutually-exclusive filters on this endpoint (a former employee's owner
+    record 404s without archived=true), so try both."""
+    if not owner_id:
+        return None
+    headers = {"Authorization": f"Bearer {token}"}
+    for params in ({}, {"archived": "true"}):
+        try:
+            r = requests.get(f"https://api.hubapi.com/crm/v3/owners/{owner_id}",
+                              headers=headers, params=params, timeout=10)
+            if r.status_code == 404:
+                continue
+            r.raise_for_status()
+            first = (r.json().get("firstName") or "").strip()
+            return first.title() if first else None
+        except requests.exceptions.RequestException:
+            return None
+    return None
 
 
 def read_csv_bytes(data: bytes, filename: str) -> pd.DataFrame:
@@ -127,6 +153,8 @@ def fetch_hubspot_project(project_id: str) -> dict:
 
     return {
         "project_id": project_id,
+        "requestor_name": _resolve_owner_first_name(token, props.get("requestor")),
+        "owner_name": _resolve_owner_first_name(token, props.get("hubspot_owner_id")),
         "name": props.get("hs_name", ""),
         "status": props.get("hs_status", ""),
         "icp": props.get("ideal_customer_profile_icp", ""),
