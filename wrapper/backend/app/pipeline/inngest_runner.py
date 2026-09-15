@@ -73,7 +73,7 @@ from .._lazy import Anthropic
 from .. import config, run_status, vercel_blob
 from ..inngest_client import client
 from . import (
-    apollo_enrich, association_resolve, copy_agent, domain_resolution, estimates,
+    apollo_enrich, association_resolve, copy_agent, domain_resolution, dream_accounts, estimates,
     github_pr, heyreach, hubspot_exclusion, hubspot_import, icp_mapper, input_sources,
     interakt, naming, normalize, outputs, web_completeness, web_scrape,
 )
@@ -1859,6 +1859,23 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
 
     await _status(step, "status_assembling_outputs", run_id, stage="assembling_outputs", message="Writing output files")
     await _set_step(step, "step_outputs_running", run_id, "outputs", "Output Files & Name", "running")
+
+    # ============ Dream Account lookup (HubSpot is_fy_24_cam/cam_account) ============
+    # Read-only HubSpot lookup keyed by domain - never blocks the run if it
+    # fails, matching web_completeness's "nice-to-have, not required"
+    # resilience pattern. Covers ALL accounts (OK and Excluded), not just
+    # ok_df, so the summary can flag dream accounts that got excluded too.
+    try:
+        domain_key = (accounts_processed["Domain"].apply(outputs.strip_url_prefix)
+                      if "Domain" in accounts_processed.columns
+                      else pd.Series([None] * len(accounts_processed), index=accounts_processed.index))
+        domain_key = domain_key.apply(lambda v: str(v).strip().lower() if pd.notna(v) and v else "")
+        dream_info, dream_meta = dream_accounts.lookup_dream_accounts(domain_key.tolist())
+        accounts_processed["Is Dream Account 2026"] = domain_key.map(lambda d: dream_info.get(d, {}).get("is_dream_account_2026"))
+        accounts_processed["Dream Account Owner"] = domain_key.map(lambda d: dream_info.get(d, {}).get("owner_name"))
+    except Exception as e:
+        dream_meta = {"error": str(e)}
+    await _set_stat(step, "stat_dream_accounts", run_id, "dream_accounts", dream_meta)
 
     # ============ Fallback: Fill missing emails/phones from raw file (respecting exclusions) ============
     core_df = _fill_missing_from_raw(core_df, accounts_processed)

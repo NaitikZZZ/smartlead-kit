@@ -496,6 +496,10 @@ def build_summary_stats(accounts_processed: pd.DataFrame, enriched: pd.DataFrame
     employee_dist = {"ok_to_reach_out": {b: 0 for b in EMPLOYEE_BUCKET_ORDER},
                       "excluded": {b: 0 for b in EMPLOYEE_BUCKET_ORDER}}
     employee_seen = set()
+    dream_col = "Is Dream Account 2026" if "Is Dream Account 2026" in accounts_processed.columns else None
+    owner_col = "Dream Account Owner" if "Dream Account Owner" in accounts_processed.columns else None
+    dream_totals = {"ok_to_reach_out": 0, "excluded": 0}
+    dream_by_owner: dict[str, dict] = {}
 
     for _, row in accounts_processed.iterrows():
         domain = _norm_key(strip_url_prefix(row.get("Domain"))) if "Domain" in accounts_processed.columns else ""
@@ -505,11 +509,18 @@ def build_summary_stats(accounts_processed: pd.DataFrame, enriched: pd.DataFrame
             continue
         account_keys.add(key)
         is_excluded = row.get("Exclusion Status") == "Excluded"
+        side = "excluded" if is_excluded else "ok_to_reach_out"
 
         if key not in employee_seen:
             employee_seen.add(key)
             bucket = bucket_employees(pd.to_numeric(row.get(employee_col), errors="coerce")) if employee_col else None
-            employee_dist["excluded" if is_excluded else "ok_to_reach_out"][bucket or "Unknown"] += 1
+            employee_dist[side][bucket or "Unknown"] += 1
+
+            if dream_col and bool(row.get(dream_col)):
+                dream_totals[side] += 1
+                owner_name = (_clean_cell(row.get(owner_col)) if owner_col else None) or "Unassigned"
+                entry = dream_by_owner.setdefault(owner_name, {"ok_to_reach_out": 0, "excluded": 0})
+                entry[side] += 1
 
         if is_excluded:
             excluded_keys.add(key)
@@ -592,6 +603,13 @@ def build_summary_stats(accounts_processed: pd.DataFrame, enriched: pd.DataFrame
         "prospect_channel_matrix": matrix,
         "avg_prospects_per_account": round(prospects_finalized / accounts_finalized, 1) if accounts_finalized else None,
         "employee_distribution": employee_dist,
+        "dream_accounts": {
+            "tracked": dream_col is not None,
+            "ok_to_reach_out": dream_totals["ok_to_reach_out"],
+            "excluded": dream_totals["excluded"],
+            "total": dream_totals["ok_to_reach_out"] + dream_totals["excluded"],
+            "by_owner": dream_by_owner,
+        },
     }
 
 
@@ -656,6 +674,38 @@ def build_summary_markdown(campaign_title: str, stats: dict, accounts_processed:
     ]
     lines += [f"| {b} | {emp['ok_to_reach_out'][b]} | {emp['excluded'][b]} |" for b in EMPLOYEE_BUCKET_ORDER]
     lines.append("")
+
+    dream = funnel["dream_accounts"]
+    if dream["tracked"]:
+        d_total, d_ok, d_excl = dream["total"], dream["ok_to_reach_out"], dream["excluded"]
+        accounts_received = funnel["accounts_received"]
+        lines += [
+            "## Dream Accounts (2026)",
+            "",
+            f"- Dream accounts received: **{d_total} of {accounts_received}** ({_pct(d_total, accounts_received)})",
+            f"- Covered (OK to reach out): **{d_ok}** ({_pct(d_ok, d_total)} of dream accounts)",
+            f"- Excluded: **{d_excl}** ({_pct(d_excl, d_total)} of dream accounts)",
+            "",
+        ]
+        if dream["by_owner"]:
+            lines += [
+                "**Dream accounts by owner**",
+                "",
+                "| Owner | OK to reach out | Excluded | Total | % of dream accounts |",
+                "|---|---|---|---|---|",
+            ]
+            for owner, counts in sorted(dream["by_owner"].items(),
+                                         key=lambda kv: -(kv[1]["ok_to_reach_out"] + kv[1]["excluded"])):
+                owner_total = counts["ok_to_reach_out"] + counts["excluded"]
+                lines.append(f"| {owner} | {counts['ok_to_reach_out']} | {counts['excluded']} | {owner_total} | {_pct(owner_total, d_total)} |")
+            lines.append("")
+    else:
+        lines += [
+            "## Dream Accounts (2026)",
+            "",
+            "- Not tracked for this run (HubSpot dream-account lookup didn't run, or failed - see stats.dream_accounts)",
+            "",
+        ]
 
     norm = stats.get("normalization", {})
     if norm.get("notes"):
