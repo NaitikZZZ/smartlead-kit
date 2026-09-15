@@ -29,7 +29,7 @@ from . import (
     input_sources, normalize, domain_resolution, apollo_enrich,
     outputs, github_pr, web_completeness, naming, association_resolve,
     hubspot_lists, hubspot_import, estimates, hubspot_exclusion, heyreach, interakt, web_scrape,
-    icp_mapper, copy_agent,
+    icp_mapper, copy_agent, dream_accounts,
 )
 
 JOBS: dict[str, dict] = {}
@@ -1497,6 +1497,24 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
 
         _update(run_id, stage=RunStage.assembling_outputs, message="Writing output files")
         _step(stats, "outputs", "Output Files & Name", "running")
+
+        # ============ Dream Account lookup (HubSpot is_fy_24_cam/cam_account) ============
+        # Read-only HubSpot lookup keyed by domain - never blocks the run if it
+        # fails (network/auth issue), matching web_completeness's "nice-to-have,
+        # not required" resilience pattern. Covers ALL accounts (OK and
+        # Excluded), not just ok_df, so the summary can flag dream accounts
+        # that got excluded too.
+        try:
+            domain_key = (accounts_processed["Domain"].apply(outputs.strip_url_prefix)
+                          if "Domain" in accounts_processed.columns
+                          else pd.Series([None] * len(accounts_processed), index=accounts_processed.index))
+            domain_key = domain_key.apply(lambda v: str(v).strip().lower() if pd.notna(v) and v else "")
+            dream_info, dream_meta = dream_accounts.lookup_dream_accounts(domain_key.tolist())
+            accounts_processed["Is Dream Account 2026"] = domain_key.map(lambda d: dream_info.get(d, {}).get("is_dream_account_2026"))
+            accounts_processed["Dream Account Owner"] = domain_key.map(lambda d: dream_info.get(d, {}).get("owner_name"))
+            stats["dream_accounts"] = dream_meta
+        except Exception as e:
+            stats["dream_accounts"] = {"error": str(e)}
 
         # ============ Fallback: Fill missing emails/phones from raw file (respecting exclusions) ============
         core_df = _fill_missing_from_raw(core_df, accounts_processed)
