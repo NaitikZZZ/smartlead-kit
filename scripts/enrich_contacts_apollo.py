@@ -33,7 +33,7 @@ import csv
 import sys
 import time
 import requests
-import pandas as pd
+from _lazy import pd
 from dotenv import load_dotenv
 
 load_dotenv()

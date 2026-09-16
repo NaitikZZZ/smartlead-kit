@@ -187,7 +187,7 @@ def main():
         domain = row.get(domain_col)
         apollo_id = row.get('apollo_id') if has_id_col else None
         apollo_id = None if (apollo_id is None or (isinstance(apollo_id, float) and pd.isna(apollo_id))) else apollo_id
-        if pd.isna(domain) or not str(domain).strip():
+        if not apollo_id and (pd.isna(domain) or not str(domain).strip()):
             out_rows[i] = {'Phone Number': '', 'Phone Type': '', 'Phone Confidence': '', 'Phone Note': 'No domain', 'Phone Source': 'Skipped'}
             continue
         key = cache_key(row.get(first_col), row.get(last_col), domain, apollo_id)
