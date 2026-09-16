@@ -1,5 +1,8 @@
 """Assembles the deliverable files for a run:
-  01_accounts_processed.csv   - normalized + domain-resolved + exclusion-checked account list
+  01_accounts_processed.csv   - normalized + domain-resolved + exclusion-checked account list,
+                                including dream-account flags and GTM enrichment (Competitor
+                                Match/Name/Threat/Products, Partner Tech Match, Partner Suggested
+                                Products - see pipeline/gtm_enrichment.py)
   02_enriched_contacts.csv    - full Apollo enrichment (OK-to-reach-out accounts only)
   03_hubspot_import_ready.csv - verified-email subset, mapped to HubSpot properties + campaign_title
   SUMMARY.md                  - human-readable run summary: what happened and why

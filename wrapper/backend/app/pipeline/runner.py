@@ -29,7 +29,7 @@ from . import (
     input_sources, normalize, domain_resolution, apollo_enrich,
     outputs, github_pr, web_completeness, naming, association_resolve,
     hubspot_lists, hubspot_import, estimates, hubspot_exclusion, heyreach, interakt, web_scrape,
-    icp_mapper, copy_agent, dream_accounts,
+    icp_mapper, copy_agent, dream_accounts, gtm_enrichment,
 )
 
 JOBS: dict[str, dict] = {}
@@ -1515,6 +1515,16 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
             stats["dream_accounts"] = dream_meta
         except Exception as e:
             stats["dream_accounts"] = {"error": str(e)}
+
+        # ============ GTM enrichment (competitor match + partner tech match) ============
+        # Read-only against HubSpot's Partner object + the attached competitor
+        # list, never blocks the run if either source is unavailable - same
+        # resilience contract as the dream-account lookup just above.
+        try:
+            accounts_processed, gtm_meta = gtm_enrichment.enrich(accounts_processed, domain_col="Domain", tech_col="technologies")
+            stats["gtm_enrichment"] = gtm_meta
+        except Exception as e:
+            stats["gtm_enrichment"] = {"error": str(e)}
 
         # ============ Fallback: Fill missing emails/phones from raw file (respecting exclusions) ============
         core_df = _fill_missing_from_raw(core_df, accounts_processed)
