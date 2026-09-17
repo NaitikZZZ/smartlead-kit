@@ -127,13 +127,18 @@ def refresh_cache(kinds: list[str] | None = None) -> dict:
 
 
 def list_records(kind: str) -> list[dict]:
-    """Serve the full record list from cache - a Vercel Cron Job (see
-    app/routes/cron.py) is the only thing that rebuilds this now; a real
-    request never fetches inline (removed - an unbounded-duration HubSpot
-    pagination call has no business running inside a request a human is
-    waiting on, or inside a Vercel function's duration limit). A stale cache
-    (past TTL) is still served - the caller (runner.py's associations step)
-    already treats a missing/failed cache as "fall back to manual entry"."""
+    """Serve the full record list for the associations dropdown.
+
+    Projects are fetched live on every call, filtered to the ABM Campaigns
+    pipeline so the result set stays small - a newly-created Project shows up
+    immediately instead of waiting on the daily cron. Partners/events are
+    unfiltered (much larger, slower to paginate) so they still come from the
+    cache a Vercel Cron Job rebuilds (see app/routes/cron.py); a real request
+    never fetches those inline, and a missing/failed cache is treated by the
+    caller (runner.py's associations step) as "fall back to manual entry"."""
+    if kind == "project":
+        return fetch_all_records(kind)
+
     data = _assoc_cache_read(kind)
     if data is None:
         raise RuntimeError(
