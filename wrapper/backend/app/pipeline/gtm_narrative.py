@@ -270,28 +270,22 @@ def research_company(company_name: str, domain: str, signals: dict) -> dict:
     }
 
 
-def enrich(df, domain_col: str = "Domain", company_col: str = "Company",
-           run_id: str | None = None, ask_fn=None):
-    """Adds the 11 gtm_* narrative columns to df (a copy). Returns (df, stats).
-    Never raises - failures are per-company (stats["errors"]) or, for a
-    missing prerequisite, a skip note, matching gtm_enrichment.enrich's
-    contract. `run_id`/`ask_fn` are runner.py's job id and its `ask()`
-    function - pass both to get the cost-safeguard confirmation prompt when
-    the sheet has a lot of uncached companies; omit either to just run
-    without asking (caller has already opted in via the enable toggle)."""
-    if not config.GTM_NARRATIVE_ENRICHMENT_ENABLED:
-        return df, {"skipped": True, "reason": "GTM_NARRATIVE_ENRICHMENT_ENABLED=false", "researched": 0}
-    if domain_col not in df.columns:
-        return df, {"skipped": True, "reason": f"no {domain_col!r} column present", "researched": 0}
+CONFIRM_PROMPT_TEMPLATE = (
+    "{uncached} companies on this sheet don't have a cached GTM profile yet - each needs a live "
+    "Claude + web-search call (real cost, separate from Apollo/HubSpot). {cached} others are already "
+    "cached and free. Run research on all {uncached} now? (No = use only the cached profiles, leave the rest blank.)"
+)
 
-    out = df.copy()
-    for c in NEW_COLUMNS:
-        if c not in out.columns:
-            out[c] = ""
 
-    row_domain = {idx: normalize_domain(row.get(domain_col, "")) for idx, row in out.iterrows()}
+def plan_research(df, domain_col: str = "Domain") -> dict:
+    """Cache-only lookup (no research, no external calls beyond Redis) -
+    lets a caller decide whether to ask for confirmation BEFORE spending
+    anything, using its own ask mechanism (sync for runner.py, async
+    step.wait_for_event for inngest_runner.py). Returns
+    {row_domain, cached, uncached, cache_configured} - feed straight into
+    run_research() once the go/no-go decision (if any) is made."""
+    row_domain = {idx: normalize_domain(row.get(domain_col, "")) for idx, row in df.iterrows()}
     cache_ok = redis_cache.is_configured()
-
     unique_domains = sorted({d for d in row_domain.values() if d})
     cached: dict[str, dict] = {}
     uncached: list[str] = []
@@ -301,30 +295,31 @@ def enrich(df, domain_col: str = "Domain", company_col: str = "Company",
             cached[d] = hit
         else:
             uncached.append(d)
+    return {"row_domain": row_domain, "cached": cached, "uncached": uncached, "cache_configured": cache_ok}
+
+
+def run_research(df, plan: dict, company_col: str = "Company") -> tuple:
+    """Does the actual per-company research for plan['uncached'] (empty list
+    if the caller declined/skipped the confirmation) and fills in the 11
+    gtm_* columns for every row plan['cached'] or freshly-researched covers.
+    Returns (df, stats). Never raises - failures are per-company
+    (stats['errors']), matching gtm_enrichment.enrich's contract."""
+    out = df.copy()
+    for c in NEW_COLUMNS:
+        if c not in out.columns:
+            out[c] = ""
+
+    row_domain = plan["row_domain"]
+    cached = plan["cached"]
+    uncached = plan["uncached"]
+    cache_ok = plan["cache_configured"]
 
     stats = {
         "skipped": False, "cache_configured": cache_ok,
-        "total_accounts": len(out), "unique_domains": len(unique_domains),
+        "total_accounts": len(out), "unique_domains": len(cached) + len(uncached),
         "cache_hits": len(cached), "needs_research": len(uncached),
         "researched": 0, "declined": False, "errors": [],
     }
-
-    if uncached and len(uncached) > config.GTM_NARRATIVE_CONFIRM_THRESHOLD:
-        if run_id and ask_fn:
-            answer = ask_fn(
-                run_id, "gtm_narrative_confirm", "yes_no",
-                f"{len(uncached)} companies on this sheet don't have a cached GTM profile yet - each needs a "
-                f"live Claude + web-search call (real cost, separate from Apollo/HubSpot). {len(cached)} others "
-                f"are already cached and free. Run research on all {len(uncached)} now? "
-                f"(No = use only the cached profiles, leave the rest blank.)",
-                default="yes",
-                context={"step": "gtm_narrative", "needs_research": len(uncached), "cached": len(cached)},
-            )
-            if not _truthy(answer):
-                stats["declined"] = True
-                uncached = []
-        # else: no interactive loop available to this caller - proceed, since
-        # the caller already opted in by leaving the enable toggle on.
 
     fresh: dict[str, dict] = {}
     for d in uncached:
@@ -353,4 +348,44 @@ def enrich(df, domain_col: str = "Domain", company_col: str = "Company",
                 out.at[idx, col] = profile[col]
 
     stats["errors"] = stats["errors"][:10]
+    return out, stats
+
+
+def enrich(df, domain_col: str = "Domain", company_col: str = "Company",
+           run_id: str | None = None, ask_fn=None):
+    """Sync convenience wrapper around plan_research()/run_research() for a
+    caller with a synchronous ask() (runner.py's legacy engine). Adds the 11
+    gtm_* narrative columns to df (a copy). Returns (df, stats). `run_id`/
+    `ask_fn` are runner.py's job id and its `ask()` function - pass both to
+    get the cost-safeguard confirmation prompt when the sheet has a lot of
+    uncached companies; omit either to just run without asking (caller has
+    already opted in via the enable toggle).
+
+    inngest_runner.py (the actual live engine for CSV/campaign_idea runs)
+    does NOT use this wrapper - it calls plan_research()/run_research()
+    directly so the confirmation can go through its own async `_ask()`
+    (step.wait_for_event), which this sync function can't call into."""
+    if not config.GTM_NARRATIVE_ENRICHMENT_ENABLED:
+        return df, {"skipped": True, "reason": "GTM_NARRATIVE_ENRICHMENT_ENABLED=false", "researched": 0}
+    if domain_col not in df.columns:
+        return df, {"skipped": True, "reason": f"no {domain_col!r} column present", "researched": 0}
+
+    plan = plan_research(df, domain_col)
+    declined = False
+    if plan["uncached"] and len(plan["uncached"]) > config.GTM_NARRATIVE_CONFIRM_THRESHOLD:
+        if run_id and ask_fn:
+            answer = ask_fn(
+                run_id, "gtm_narrative_confirm", "yes_no",
+                CONFIRM_PROMPT_TEMPLATE.format(uncached=len(plan["uncached"]), cached=len(plan["cached"])),
+                default="yes",
+                context={"step": "gtm_narrative", "needs_research": len(plan["uncached"]), "cached": len(plan["cached"])},
+            )
+            if not _truthy(answer):
+                declined = True
+                plan["uncached"] = []
+        # else: no interactive loop available to this caller - proceed, since
+        # the caller already opted in by leaving the enable toggle on.
+
+    out, stats = run_research(df, plan, company_col)
+    stats["declined"] = declined
     return out, stats

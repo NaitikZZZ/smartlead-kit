@@ -74,8 +74,8 @@ from .. import config, run_status, vercel_blob
 from ..inngest_client import client
 from . import (
     apollo_enrich, association_resolve, copy_agent, domain_resolution, dream_accounts, estimates,
-    github_pr, heyreach, hubspot_exclusion, hubspot_import, icp_mapper, input_sources,
-    interakt, naming, normalize, outputs, web_completeness, web_scrape,
+    github_pr, gtm_enrichment, gtm_narrative, heyreach, hubspot_exclusion, hubspot_import, icp_mapper,
+    input_sources, interakt, naming, normalize, outputs, web_completeness, web_scrape,
 )
 from .runner import COUNTRY_OPTIONS, REGION_OPTIONS, _map_existing_contact_columns
 
@@ -1876,6 +1876,52 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
     except Exception as e:
         dream_meta = {"error": str(e)}
     await _set_stat(step, "stat_dream_accounts", run_id, "dream_accounts", dream_meta)
+
+    # ============ GTM enrichment (competitor match + partner tech match) ============
+    # Read-only against HubSpot's Partner object + the attached competitor
+    # list, never blocks the run if either source is unavailable - same
+    # resilience contract as the dream-account lookup just above. Ported
+    # here 2026-09-17 after finding this was only ever wired into the
+    # legacy runner.py engine, which no route calls for CSV/campaign_idea
+    # runs (see routes/runs.py's create_run) - it had never actually run in
+    # production for those input sources.
+    try:
+        accounts_processed, gtm_meta = gtm_enrichment.enrich(accounts_processed, domain_col="Domain", tech_col="technologies")
+    except Exception as e:
+        gtm_meta = {"error": str(e)}
+    await _set_stat(step, "stat_gtm_enrichment", run_id, "gtm_enrichment", gtm_meta)
+
+    # ============ GTM narrative profile (value prop, named partners, workforce, product-to-pitch) ============
+    # Claude + live web search per company, gap-filled with the free signals
+    # gtm_enrichment/dream_accounts just computed above so it never re-derives
+    # what's already on file. Cached per domain - see gtm_narrative.py. The
+    # confirm-before-spending gate uses this engine's own async _ask()
+    # (step.wait_for_event), not gtm_narrative.enrich()'s sync wrapper - see
+    # that module's docstring for why the two engines can't share one path.
+    try:
+        if config.GTM_NARRATIVE_ENRICHMENT_ENABLED:
+            narrative_plan = gtm_narrative.plan_research(accounts_processed, domain_col="Domain")
+            declined = False
+            if narrative_plan["uncached"] and len(narrative_plan["uncached"]) > config.GTM_NARRATIVE_CONFIRM_THRESHOLD:
+                narrative_answer = await _ask(
+                    step, run_id, "gtm_narrative_confirm", "yes_no",
+                    gtm_narrative.CONFIRM_PROMPT_TEMPLATE.format(
+                        uncached=len(narrative_plan["uncached"]), cached=len(narrative_plan["cached"])),
+                    default="yes",
+                    context={"step": "gtm_narrative", "needs_research": len(narrative_plan["uncached"]),
+                             "cached": len(narrative_plan["cached"])},
+                )
+                if not _truthy(narrative_answer):
+                    declined = True
+                    narrative_plan["uncached"] = []
+            accounts_processed, narrative_meta = gtm_narrative.run_research(
+                accounts_processed, narrative_plan, company_col=resolved_company_col)
+            narrative_meta["declined"] = declined
+        else:
+            narrative_meta = {"skipped": True, "reason": "GTM_NARRATIVE_ENRICHMENT_ENABLED=false", "researched": 0}
+    except Exception as e:
+        narrative_meta = {"error": str(e)}
+    await _set_stat(step, "stat_gtm_narrative", run_id, "gtm_narrative", narrative_meta)
 
     # ============ Fallback: Fill missing emails/phones from raw file (respecting exclusions) ============
     core_df = _fill_missing_from_raw(core_df, accounts_processed)
