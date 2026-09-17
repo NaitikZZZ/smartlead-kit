@@ -2006,28 +2006,28 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
     # ============ Associations (multi-select) ============
     await _set_step(step, "step_associations_running", run_id, "associations", "Associations", "running")
 
-    assoc_kinds_answer = await _ask(
-        step, run_id, "association_types", "multi_choice",
-        "Associate these contacts in HubSpot with any of these? (a static list is always created too)",
-        options=["project", "partner", "event"], default="", context={"step": "associations"},
-    )
-    if isinstance(assoc_kinds_answer, list):
-        kinds = [k for k in assoc_kinds_answer if k in ("project", "partner", "event")]
-    else:
-        kinds = [k.strip() for k in str(assoc_kinds_answer).split(",") if k.strip() in ("project", "partner", "event")]
-
     _MANUAL = "Other - enter manually"
-    associations = []
-    for kind in kinds:
-        record_id = None
+    _BACK_KIND = "← Back - redo the previous association"
+    _BACK_TYPES = "← Back - change which types to associate"
+    _ask_n = 0
 
+    async def _ask_step(base_key, *a, **kw):
+        # Every ask needs a step id (and question key) Inngest hasn't seen
+        # before in this run - reusing one would replay the OLD memoized
+        # answer instead of prompting again, which breaks "back"/retry.
+        nonlocal _ask_n
+        _ask_n += 1
+        return await _ask(step, run_id, f"{base_key}_{_ask_n}", *a, **kw)
+
+    async def _resolve_kind(kind: str, allow_back: bool, attempt: int):
+        """Returns ("ok", record_id, live_lookup) | ("back",) | ("restart",)."""
         async def _list_records():
             try:
                 return association_resolve.list_records(kind)
             except Exception:
                 return []
 
-        records = await step.run(f"list_{kind}_records", _list_records)
+        records = await step.run(f"list_{kind}_records_{attempt}", _list_records)
 
         if records:
             option_map = {}
@@ -2039,39 +2039,109 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                 option_map[disp] = rec["id"]
                 options.append(disp)
             options.append(_MANUAL)
-            chosen = await _ask(
-                step, run_id, f"{kind}_pick", "dropdown",
+            if allow_back:
+                options.append(_BACK_KIND)
+            options.append(_BACK_TYPES)
+            chosen = await _ask_step(
+                f"{kind}_pick", "dropdown",
                 f"Select the {kind} to associate these contacts with (type to filter):",
                 options=options, context={"step": "associations", "kind": kind, "count": len(records)},
             )
+            if chosen == _BACK_TYPES:
+                return ("restart",)
+            if chosen == _BACK_KIND:
+                return ("back",)
             if chosen and chosen != _MANUAL and chosen in option_map:
-                record_id = option_map[chosen]
+                return ("ok", option_map[chosen], False)
 
-        # Fallback: no records fetched, or the user chose "Other".
-        if record_id is None:
-            value = await _ask(step, run_id, f"{kind}_value", "text",
-                                f"Enter the {kind} name, URL, or record ID:",
-                                context={"step": "associations", "kind": kind})
+        # Not in the cached dropdown (fetch failed, empty cache, or the user
+        # chose "Other") - resolve live against HubSpot instead of waiting on
+        # the next cron tick.
+        back_hint = " or type 'back' to redo the previous one" if allow_back else ""
+        retry = 0
+        while True:
+            value = await _ask_step(
+                f"{kind}_value", "text",
+                f"Enter the {kind} name, URL, or record ID "
+                f"(type 'restart' to change association types{back_hint}):",
+                context={"step": "associations", "kind": kind},
+            )
+            typed = str(value).strip().lower()
+            if typed == "restart":
+                return ("restart",)
+            if typed == "back" and allow_back:
+                return ("back",)
 
             async def _resolve():
                 return association_resolve.resolve(kind, str(value))
 
-            resolved = await step.run(f"resolve_{kind}", _resolve)
+            retry += 1
+            resolved = await step.run(f"resolve_{kind}_{attempt}_{retry}", _resolve)
             if resolved["status"] == "ambiguous":
                 cands = resolved["candidates"]
-                chosen_name = await _ask(
-                    step, run_id, f"{kind}_disambiguate", "choice",
+                chosen_name = await _ask_step(
+                    f"{kind}_disambiguate", "choice",
                     f"Multiple {kind} records matched {value!r} - which one?",
                     options=[c["name"] or c["id"] for c in cands],
                     context={"step": "associations", "candidates": cands},
                 )
                 match = next((c for c in cands if (c["name"] or c["id"]) == chosen_name), cands[0])
-                record_id = match["id"]
-            elif resolved["status"] == "not_found":
-                raise ValueError(f"No {kind} record found matching {value!r}")
-            else:
-                record_id = resolved["record_id"]
-        associations.append({"kind": kind, "record_id": record_id})
+                return ("ok", match["id"], True)
+            if resolved["status"] == "not_found":
+                # Retry instead of failing the whole run over one typo/miss.
+                await _status(step, f"ask_{kind}_notfound_{attempt}_{retry}", run_id,
+                               message=f"No {kind} found matching {value!r} - try again.")
+                continue
+            return ("ok", resolved["record_id"], True)
+
+    async def _refresh_cache_step(kind: str, attempt: int):
+        # A record resolved outside the cached dropdown means it's new since
+        # the last cron run - self-heal the cache now (a step.run(), so it
+        # survives replay/suspend) instead of making the team wait for the
+        # next scheduled refresh.
+        async def _do():
+            try:
+                association_resolve.refresh_cache([kind])
+            except Exception:
+                pass
+            return True
+
+        await step.run(f"refresh_{kind}_cache_{attempt}", _do)
+
+    kinds: list[str] = []
+    while True:
+        assoc_kinds_answer = await _ask_step(
+            "association_types", "multi_choice",
+            "Associate these contacts in HubSpot with any of these? (a static list is always created too)",
+            options=["project", "partner", "event"], default="", context={"step": "associations"},
+        )
+        if isinstance(assoc_kinds_answer, list):
+            kinds = [k for k in assoc_kinds_answer if k in ("project", "partner", "event")]
+        else:
+            kinds = [k.strip() for k in str(assoc_kinds_answer).split(",") if k.strip() in ("project", "partner", "event")]
+
+        associations = []
+        restart_types = False
+        i = 0
+        attempt_n = 0
+        while i < len(kinds):
+            attempt_n += 1
+            outcome = await _resolve_kind(kinds[i], allow_back=(i > 0), attempt=attempt_n)
+            if outcome[0] == "restart":
+                restart_types = True
+                break
+            if outcome[0] == "back":
+                associations.pop()
+                i -= 1
+                continue
+            _, record_id, live_lookup = outcome
+            associations.append({"kind": kinds[i], "record_id": record_id})
+            if live_lookup:
+                await _refresh_cache_step(kinds[i], attempt_n)
+            i += 1
+
+        if not restart_types:
+            break
 
     await _set_step(
         step, "step_associations_done", run_id, "associations", "Associations", "done",
