@@ -245,8 +245,11 @@ export async function previewProject(projectId: string): Promise<ProjectPreview>
   return r.json();
 }
 
+export class RunNotFoundError extends Error {}
+
 export async function getRun(runId: string): Promise<RunStatus> {
   const r = await fetch(`${API_BASE}/api/runs/${runId}`);
+  if (r.status === 404) throw new RunNotFoundError(`Run ${runId} not found`);
   if (!r.ok) throw new Error("Failed to fetch run status");
   return r.json();
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import "./theme.css";
-import { getConfig, getIcpOptions, getRun, retryRun, fileUrl } from "./lib/api";
+import { getConfig, getIcpOptions, getRun, retryRun, fileUrl, RunNotFoundError } from "./lib/api";
 import type { AppConfig, IcpOptions, RunStatus } from "./lib/types";
 import SourceForm from "./components/SourceForm";
 import StepSidebar from "./components/StepSidebar";
@@ -16,14 +16,77 @@ const REVIEW_STAGES = new Set(["awaiting_import_confirmation", "importing_to_hub
 // after you answer one question the UI never sees the next one appear.
 const POLL_STOP = new Set(["done", "failed", "normalized_stopped"]);
 
+// The active run_id was previously kept only in React state, with nothing
+// backing it - a page reload (or the tab just getting discarded/reopened)
+// wiped it with no way to get back to a run that was paused on a question,
+// including a paid-enrichment confirmation the pipeline can sit on for a
+// long time. Persisting it here lets a reload resume polling the same run.
+const ACTIVE_RUN_ID_KEY = "abm_wrapper_active_run_id";
+
+function readStoredRunId(): string | null {
+  try {
+    return localStorage.getItem(ACTIVE_RUN_ID_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredRunId(id: string | null) {
+  try {
+    if (id) localStorage.setItem(ACTIVE_RUN_ID_KEY, id);
+    else localStorage.removeItem(ACTIVE_RUN_ID_KEY);
+  } catch {
+    // Private browsing / storage disabled - the run just won't survive a
+    // reload, same as before this fix.
+  }
+}
+
+// localStorage only ever helps the one browser that started the run - a
+// teammate who opens the app on their own machine has no way to reach a
+// run that's paused on a question. Putting the run_id in the URL makes it
+// a link anyone can be sent; a manual run_id (SourceForm below) covers the
+// case where only the ID itself was shared (e.g. over Slack).
+function readRunIdFromUrl(): string | null {
+  try {
+    return new URLSearchParams(window.location.search).get("run");
+  } catch {
+    return null;
+  }
+}
+
+function writeRunIdToUrl(id: string | null) {
+  try {
+    const url = new URL(window.location.href);
+    if (id) url.searchParams.set("run", id);
+    else url.searchParams.delete("run");
+    window.history.replaceState(null, "", url.toString());
+  } catch {
+    // no-op
+  }
+}
+
 export default function App() {
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
   const [icpOptions, setIcpOptions] = useState<IcpOptions | null>(null);
-  const [runId, setRunId] = useState<string | null>(null);
+  const [runId, setRunIdState] = useState<string | null>(() => readRunIdFromUrl() || readStoredRunId());
   const [run, setRun] = useState<RunStatus | null>(null);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
+  const [notFoundError, setNotFoundError] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
+
+  const setRunId = useCallback((id: string | null) => {
+    writeStoredRunId(id);
+    if (id) setNotFoundError(null);
+    setRunIdState(id);
+  }, []);
+
+  // Keep the URL in sync so the current run is always shareable as a link,
+  // whether it was just started, resumed from localStorage, or entered
+  // manually.
+  useEffect(() => {
+    writeRunIdToUrl(runId);
+  }, [runId]);
 
   useEffect(() => {
     getConfig().then(setAppConfig).catch(() => setAppConfig(null));
@@ -40,12 +103,22 @@ export default function App() {
         const status = await getRun(id);
         setRun(status);
         if (!POLL_STOP.has(status.stage)) pollRef.current = window.setTimeout(tick, 1200);
-      } catch {
+      } catch (e) {
+        // A run_id resumed from storage can point at something the server no
+        // longer has (expired cache, restarted service) - retrying that
+        // forever would just spin silently. A transient/network error keeps
+        // retrying as before.
+        if (e instanceof RunNotFoundError) {
+          setRunId(null);
+          setRun(null);
+          setNotFoundError(`No run found for ID "${id}" - check it and try again.`);
+          return;
+        }
         pollRef.current = window.setTimeout(tick, 3000);
       }
     }
     tick();
-  }, []);
+  }, [setRunId]);
 
   useEffect(() => {
     if (!runId) return;
@@ -80,7 +153,19 @@ export default function App() {
         <div className="main-head" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
             <h1>{run ? run.message : "New enrichment run"}</h1>
-            {run && <p style={{ fontSize: 13, marginTop: 4 }}>Run {run.run_id}</p>}
+            {run && (
+              <p style={{ fontSize: 13, marginTop: 4, display: "flex", alignItems: "center", gap: 8 }}>
+                Run {run.run_id}
+                <button
+                  className="btn-secondary"
+                  style={{ fontSize: 11, padding: "2px 8px" }}
+                  onClick={() => navigator.clipboard?.writeText(window.location.href)}
+                  title="Copy a link to this run so a teammate can open and answer it"
+                >
+                  Copy link to this run
+                </button>
+              </p>
+            )}
           </div>
           <ConfigBadges appConfig={appConfig} />
         </div>
@@ -89,7 +174,14 @@ export default function App() {
         {run && <ProjectInfo run={run} />}
         {run && !REVIEW_STAGES.has(run.stage) && run.output_files.length > 0 && <MidRunDownloads run={run} />}
 
-        {!runId && <SourceForm onStarted={setRunId} appConfig={appConfig} icpOptions={icpOptions} />}
+        {!runId && (
+          <SourceForm
+            onStarted={setRunId}
+            appConfig={appConfig}
+            icpOptions={icpOptions}
+            resumeError={notFoundError}
+          />
+        )}
 
         {run && run.stage === "awaiting_answer" && run.pending_question && (
           <StepCard

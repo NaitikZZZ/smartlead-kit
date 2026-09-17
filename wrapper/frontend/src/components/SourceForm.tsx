@@ -29,9 +29,15 @@ const HEADER_GUIDE: { h: string; note: string }[] = [
 ];
 
 export default function SourceForm({
-  onStarted, appConfig, icpOptions,
-}: { onStarted: (runId: string) => void; appConfig: AppConfig | null; icpOptions: IcpOptions | null }) {
+  onStarted, appConfig, icpOptions, resumeError,
+}: {
+  onStarted: (runId: string) => void;
+  appConfig: AppConfig | null;
+  icpOptions: IcpOptions | null;
+  resumeError?: string | null;
+}) {
   const [source, setSource] = useState<"csv" | "hubspot_project" | "campaign_idea">("csv");
+  const [resumeId, setResumeId] = useState("");
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [projectId, setProjectId] = useState("");
   const [preview, setPreview] = useState<ProjectPreview | null>(null);
@@ -134,6 +140,32 @@ export default function SourceForm({
 
   return (
     <div className="card" style={{ padding: 24 }}>
+      <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: "1px solid var(--border)" }}>
+        <label style={{ display: "block" }}>
+          <span style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 6, color: "var(--dark-200)" }}>
+            Resuming a run someone shared with you? Paste the run ID
+          </span>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              type="text"
+              value={resumeId}
+              placeholder="e.g. 2c40759c2336"
+              onChange={(e) => setResumeId(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && resumeId.trim()) onStarted(resumeId.trim()); }}
+            />
+            <button
+              className="btn-secondary"
+              style={{ whiteSpace: "nowrap" }}
+              disabled={!resumeId.trim()}
+              onClick={() => onStarted(resumeId.trim())}
+            >
+              Resume
+            </button>
+          </div>
+        </label>
+        {resumeError && <p style={{ color: "var(--red-300)", fontSize: 12, marginTop: 8 }}>{resumeError}</p>}
+      </div>
+
       <h2 style={{ marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
         Where's the data coming from?
         <Tooltip text="Pick a CSV or a HubSpot Project. Names are cleaned automatically; every other step (domain, exclusion, discovery, email, phone, upload) asks you first. Exclusion always checks the HubSpot DNU list." />
