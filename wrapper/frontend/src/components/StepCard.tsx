@@ -15,6 +15,14 @@ export default function StepCard({
   const [sel, setSel] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Answering fires an async Inngest event and returns before the pipeline
+  // has actually advanced - the parent's immediate post-submit refresh() (and
+  // the regular poll) can easily land before that, still showing this same
+  // question. Without this flag the buttons would silently reappear and look
+  // unclicked, which is what was driving people to click Yes/No repeatedly.
+  // `key={question.key}` on this component means a genuinely new question
+  // remounts it (resetting this), so it only masks the stale-refetch window.
+  const [answered, setAnswered] = useState(false);
 
   const fields = question.context?.fields as Record<string, any> | undefined;
   const [formTitles, setFormTitles] = useState<string>(fields?.persona_titles?.default ?? "");
@@ -40,6 +48,7 @@ export default function StepCard({
     setError(null);
     try {
       await answerQuestion(runId, question.key, value);
+      setAnswered(true);
       onAnswered();
     } catch (e: any) {
       setError(e.message || "Failed to submit answer");
@@ -50,6 +59,16 @@ export default function StepCard({
 
   function toggle(opt: string) {
     setMulti((m) => (m.includes(opt) ? m.filter((x) => x !== opt) : [...m, opt]));
+  }
+
+  if (answered) {
+    return (
+      <div className="card" style={{ padding: 24 }}>
+        <h5 style={{ marginBottom: 8 }}>Your input needed</h5>
+        <h3 style={{ marginBottom: 8 }}>{question.prompt}</h3>
+        <p style={{ color: "var(--dark-200)" }}>Got it - moving to the next step. This can take a moment.</p>
+      </div>
+    );
   }
 
   return (
