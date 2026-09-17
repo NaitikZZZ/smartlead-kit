@@ -43,7 +43,7 @@ def refresh_exclusion(authorization: Optional[str] = Header(None)):
 
 
 @router.get("/refresh-associations")
-def refresh_associations(authorization: Optional[str] = Header(None), kinds: str = Query("project,partner,event")):
+def refresh_associations(authorization: Optional[str] = Header(None), kinds: str = Query("partner,event")):
     _verify_cron_secret(authorization)
     kind_list = [k.strip() for k in kinds.split(",") if k.strip() in ("project", "partner", "event")]
     result = association_resolve.refresh_cache(kind_list or None)
