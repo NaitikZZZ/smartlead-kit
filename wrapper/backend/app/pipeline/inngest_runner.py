@@ -635,10 +635,14 @@ async def _add_more_prospects_loop(step: inngest.Step, run_id: str, candidates_d
     # someone reviews it occupies a slot for as long as it sits there, and an
     # unset concurrency config falls back to the account/plan default, which
     # can be low enough (seen as low as 1 during testing) that ONE parked run
-    # blocks every other team member from running anything at all. 10 is a
-    # generous ceiling for what the module docstring already calls a "small
-    # internal team tool" - raise it if the team outgrows this.
-    concurrency=[inngest.Concurrency(limit=10, scope="fn")],
+    # blocks every other team member from running anything at all. Originally
+    # set to 10, but the account's actual plan cap is 5 (confirmed live: every
+    # sync since raising this to 10 failed outright with "higher concurrency
+    # limits (10) than your plan limit of 5" - Inngest rejects the whole sync,
+    # so the app silently kept running on its last successfully-synced,
+    # pre-this-change config instead of ever picking this up). 5 is the actual
+    # ceiling available - raise it only alongside a plan upgrade.
+    concurrency=[inngest.Concurrency(limit=5, scope="fn")],
 )
 async def run_pipeline_slice1(ctx: inngest.Context, step: inngest.Step) -> dict:
     """Thin wrapper so any exception - a bare raise from validation logic, or
