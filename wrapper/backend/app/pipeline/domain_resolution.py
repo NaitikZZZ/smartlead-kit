@@ -27,10 +27,11 @@ def count_uncached(df: pd.DataFrame, company_col: str) -> int:
     below is the accurate pre-run cost estimate (it also free-checks
     Clearbit, which resolves a large share of these for free before Apollo
     is ever touched)."""
-    cache = _rcd.load_cache()
+    names = [str(row.get(company_col, "")).strip() for _, row in df.iterrows()]
+    cache = _rcd.load_cache_for_names(names)
     n = 0
-    for _, row in df.iterrows():
-        key = _rcd.norm(str(row.get(company_col, "")).strip())
+    for name in names:
+        key = _rcd.norm(name)
         if key and key not in cache:
             n += 1
     return n
@@ -43,11 +44,11 @@ def count_needs_apollo(df: pd.DataFrame, company_col: str, max_workers: int = DE
     the "resolve domains?" cost estimate should show - count_uncached alone
     overstates it, since Clearbit resolves a large share of uncached
     companies for free before Apollo is ever called."""
-    cache = _rcd.load_cache()
     names = [str(row.get(company_col, "")).strip() for _, row in df.iterrows()]
     names = [n for n in names if n]
     if not names:
         return 0
+    cache = _rcd.load_cache_for_names(names)
     session = _requests.Session()
     session.mount("https://", _requests.adapters.HTTPAdapter(max_retries=0, pool_maxsize=max_workers))
     with ThreadPoolExecutor(max_workers=min(max_workers, len(names))) as ex:
@@ -59,7 +60,7 @@ def resolve_domains_for_df(df: pd.DataFrame, company_col: str, employee_col: str
                            progress=None, max_workers: int = DEFAULT_WORKERS):
     session = _requests.Session()
     session.mount("https://", _requests.adapters.HTTPAdapter(max_retries=0, pool_maxsize=max_workers))
-    cache = _rcd.load_cache()
+    cache = _rcd.load_cache_for_names(df[company_col])
 
     rows = list(df.iterrows())
     total = len(rows)

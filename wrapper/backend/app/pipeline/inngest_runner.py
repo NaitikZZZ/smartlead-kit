@@ -1388,7 +1388,12 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             domains_df = pd.DataFrame([{"Company": c} for c in names])
 
             async def _resolve():
-                resolved_df, dstats = domain_resolution.resolve_domains_for_df(domains_df, "Company", None)
+                # Blocking, network-bound (Clearbit/Apollo HTTP calls) - must run off
+                # the event loop, same as the CSV path's resolve_domains_for_df call
+                # above, or it freezes the whole single-process server (including
+                # unrelated runs' status polls) for as long as the lookup takes.
+                resolved_df, dstats = await asyncio.to_thread(
+                    domain_resolution.resolve_domains_for_df, domains_df, "Company", None)
                 return _nan_safe({"records": resolved_df.to_dict("records"), "domain_stats": dstats})
 
             resolve_result = await step.run(f"resolve_domains_idea{key_suffix}", _resolve)
@@ -1403,7 +1408,8 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                 # an effect here too (search_candidates only applies it under
                 # select_candidates_per_persona) - previously this path always fell
                 # through to the generic HR-tier ranking regardless of exact_titles.
-                found_df, sstats = apollo_enrich.search_candidates(
+                found_df, sstats = await asyncio.to_thread(
+                    apollo_enrich.search_candidates,
                     resolved_df, "Company", "Domain", person_locations=p_locations,
                     persona_titles=p_titles, max_per_company=config.MAX_CONTACTS_PER_COMPANY_DEFAULT,
                     per_title_cap=(2 if p_titles else None), employee_ranges=p_employee_ranges,
@@ -1422,7 +1428,8 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                              "No target companies yet - searching Apollo by ICP filters only.")
 
             async def _search_icp_only():
-                found_df, sstats = apollo_enrich.search_candidates_by_icp(
+                found_df, sstats = await asyncio.to_thread(
+                    apollo_enrich.search_candidates_by_icp,
                     person_locations=person_locations, persona_titles=persona_titles,
                     employee_ranges=employee_ranges, organization_locations=organization_locations,
                     industries=industries, per_title_cap=(2 if persona_titles else None),
