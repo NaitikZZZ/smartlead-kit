@@ -29,7 +29,7 @@ from . import (
     input_sources, normalize, domain_resolution, apollo_enrich,
     outputs, github_pr, web_completeness, naming, association_resolve,
     hubspot_lists, hubspot_import, estimates, hubspot_exclusion, heyreach, interakt, web_scrape,
-    icp_mapper, copy_agent, dream_accounts, gtm_enrichment,
+    icp_mapper, copy_agent, dream_accounts, gtm_enrichment, gtm_narrative,
 )
 
 JOBS: dict[str, dict] = {}
@@ -1525,6 +1525,20 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
             stats["gtm_enrichment"] = gtm_meta
         except Exception as e:
             stats["gtm_enrichment"] = {"error": str(e)}
+
+        # ============ GTM narrative profile (value prop, named partners, workforce, product-to-pitch) ============
+        # Claude + live web search per company, gap-filled with the free signals
+        # gtm_enrichment/dream_accounts/completeness just computed above so it
+        # never re-derives what's already on file. Cached per domain - see
+        # gtm_narrative.py for the cache-hit/cost-safeguard/backend contract.
+        try:
+            accounts_processed, narrative_meta = gtm_narrative.enrich(
+                accounts_processed, domain_col="Domain", company_col=resolved_company_col,
+                run_id=run_id, ask_fn=ask,
+            )
+            stats["gtm_narrative"] = narrative_meta
+        except Exception as e:
+            stats["gtm_narrative"] = {"error": str(e)}
 
         # ============ Fallback: Fill missing emails/phones from raw file (respecting exclusions) ============
         core_df = _fill_missing_from_raw(core_df, accounts_processed)

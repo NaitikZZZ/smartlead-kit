@@ -108,6 +108,26 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 # Re-enable by setting PAID_ENRICHMENT_ENABLED=true (or removing it) in .env.
 PAID_ENRICHMENT_ENABLED = os.environ.get("PAID_ENRICHMENT_ENABLED", "true").strip().lower() not in ("false", "0", "no")
 
+# GTM narrative account-profile research (value proposition, named partners,
+# workforce composition, product-to-pitch, etc - see pipeline/gtm_narrative.py).
+# An AWS Bedrock backend was built and live-tested here (2026-09-17) as a
+# dedicated, scoped-only-to-this-feature paid tier, but Bedrock's InvokeModel
+# rejects Anthropic's web_search tool outright (confirmed via a real 400 -
+# see gtm_narrative.py's module docstring) - Bedrock doesn't proxy to
+# Anthropic's server-side tool-execution backend. Reverted; this feature uses
+# only the Claude Code CLI (free) and ANTHROPIC_API_KEY (paid) backends below.
+
+# Runs automatically for every account processed (same trigger point as
+# gtm_enrichment.enrich() just above it in runner.py) - separate from
+# PAID_ENRICHMENT_ENABLED (a different, currently-off Apollo-paid-tier
+# concern) since the user explicitly wants this step running by default.
+GTM_NARRATIVE_ENRICHMENT_ENABLED = os.environ.get("GTM_NARRATIVE_ENRICHMENT_ENABLED", "true").strip().lower() not in ("false", "0", "no")
+# If more than this many companies on one sheet aren't already cached, the
+# run pauses and asks before spending a live Claude+web-search call on each
+# one - same cost-conscious spirit as CLAUDE.md Critical Rule #5's 500-lead
+# Apollo threshold, tuned lower since this call is heavier per unit. Adjust freely.
+GTM_NARRATIVE_CONFIRM_THRESHOLD = int(os.environ.get("GTM_NARRATIVE_CONFIRM_THRESHOLD", "50"))
+
 # Optional: a shared Account Mapping Sheet configured once for the whole
 # hosted instance, so individual users don't need to upload it every run.
 # ACCOUNT_MAPPING_SHEET_PATH pins one exact file (goes stale as new copies
