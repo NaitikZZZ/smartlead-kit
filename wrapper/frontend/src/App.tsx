@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import "./theme.css";
-import { getConfig, getIcpOptions, getRun, retryRun, fileUrl } from "./lib/api";
+import { getConfig, getIcpOptions, getRun, retryRun, fileUrl, RunNotFoundError } from "./lib/api";
 import type { AppConfig, IcpOptions, RunStatus } from "./lib/types";
 import SourceForm from "./components/SourceForm";
 import StepSidebar from "./components/StepSidebar";
@@ -16,14 +16,44 @@ const REVIEW_STAGES = new Set(["awaiting_import_confirmation", "importing_to_hub
 // after you answer one question the UI never sees the next one appear.
 const POLL_STOP = new Set(["done", "failed", "normalized_stopped"]);
 
+// The active run_id was previously kept only in React state, with nothing
+// backing it - a page reload (or the tab just getting discarded/reopened)
+// wiped it with no way to get back to a run that was paused on a question,
+// including a paid-enrichment confirmation the pipeline can sit on for a
+// long time. Persisting it here lets a reload resume polling the same run.
+const ACTIVE_RUN_ID_KEY = "abm_wrapper_active_run_id";
+
+function readStoredRunId(): string | null {
+  try {
+    return localStorage.getItem(ACTIVE_RUN_ID_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredRunId(id: string | null) {
+  try {
+    if (id) localStorage.setItem(ACTIVE_RUN_ID_KEY, id);
+    else localStorage.removeItem(ACTIVE_RUN_ID_KEY);
+  } catch {
+    // Private browsing / storage disabled - the run just won't survive a
+    // reload, same as before this fix.
+  }
+}
+
 export default function App() {
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
   const [icpOptions, setIcpOptions] = useState<IcpOptions | null>(null);
-  const [runId, setRunId] = useState<string | null>(null);
+  const [runId, setRunIdState] = useState<string | null>(readStoredRunId);
   const [run, setRun] = useState<RunStatus | null>(null);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
+
+  const setRunId = useCallback((id: string | null) => {
+    writeStoredRunId(id);
+    setRunIdState(id);
+  }, []);
 
   useEffect(() => {
     getConfig().then(setAppConfig).catch(() => setAppConfig(null));
@@ -40,12 +70,21 @@ export default function App() {
         const status = await getRun(id);
         setRun(status);
         if (!POLL_STOP.has(status.stage)) pollRef.current = window.setTimeout(tick, 1200);
-      } catch {
+      } catch (e) {
+        // A run_id resumed from storage can point at something the server no
+        // longer has (expired cache, restarted service) - retrying that
+        // forever would just spin silently. A transient/network error keeps
+        // retrying as before.
+        if (e instanceof RunNotFoundError) {
+          setRunId(null);
+          setRun(null);
+          return;
+        }
         pollRef.current = window.setTimeout(tick, 3000);
       }
     }
     tick();
-  }, []);
+  }, [setRunId]);
 
   useEffect(() => {
     if (!runId) return;
