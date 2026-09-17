@@ -277,6 +277,27 @@ def answer_question(run_id: str, body: AnswerRequest):
             raise HTTPException(400, f"No pending question with key {body.key!r} for this run right now")
         inngest_client.send_sync(inngest.Event(
             name="run/answer", data={"run_id": run_id, "key": body.key, "value": body.value}))
+
+        # send_sync only confirms the event reached Inngest's queue, not that
+        # the paused step function actually resumed and consumed it - without
+        # this wait, a delayed or dropped event looks identical to a no-op
+        # click, since the response (and every poll after it) would just keep
+        # echoing the same "awaiting_answer" question with no sign anything
+        # happened. Poll briefly for the pending question to clear/advance.
+        for _ in range(20):
+            time.sleep(0.25)
+            job = run_status.get(run_id)
+            still_pending = job.get("pending_question")
+            if not still_pending or still_pending["key"] != body.key or job.get("stage") == "failed":
+                break
+        else:
+            raise HTTPException(
+                504,
+                "Answer sent but the run hasn't picked it up yet - Inngest may be delayed. "
+                "Wait a few seconds and try again; if this keeps happening, the event may have been dropped.",
+            )
+        if job.get("stage") == "failed":
+            raise HTTPException(500, job.get("error") or "Run failed after answering")
     else:
         try:
             runner.submit_answer(run_id, body.key, body.value)
