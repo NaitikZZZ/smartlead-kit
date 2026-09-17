@@ -630,6 +630,15 @@ async def _add_more_prospects_loop(step: inngest.Step, run_id: str, candidates_d
 @client.create_function(
     fn_id="run_pipeline_slice1",
     trigger=inngest.TriggerEvent(event="run/start"),
+    # Explicit function-scoped limit (2026-09-17) - without this, a run parked
+    # for hours at "awaiting_import_confirmation" (or any other _ask()) while
+    # someone reviews it occupies a slot for as long as it sits there, and an
+    # unset concurrency config falls back to the account/plan default, which
+    # can be low enough (seen as low as 1 during testing) that ONE parked run
+    # blocks every other team member from running anything at all. 10 is a
+    # generous ceiling for what the module docstring already calls a "small
+    # internal team tool" - raise it if the team outgrows this.
+    concurrency=[inngest.Concurrency(limit=10, scope="fn")],
 )
 async def run_pipeline_slice1(ctx: inngest.Context, step: inngest.Step) -> dict:
     """Thin wrapper so any exception - a bare raise from validation logic, or
