@@ -140,6 +140,24 @@ _INVIS_RE = re.compile("|".join(map(re.escape, INVISIBLE)))
 
 MOJIBAKE_HINTS = ("Ã©", "Ã¨", "Ã¼", "Ã¶", "Ã±", "Ã¡", "Ã³", "Ã­", "â€™", "â€œ", "â€\x9d", "â€“", "Â ")
 
+# A CSV that gets saved/re-opened under the wrong codepage twice (e.g. HubSpot
+# export -> Excel misreads as cp1252 -> re-saved as UTF-8 -> a second tool
+# misreads THAT as cp1252 again) turns each hint above into a second-generation
+# form where the tell-tale substring is no longer contiguous (e.g. "Ã¼"
+# becomes "ÃƒÂ¼" - the "Ã" and "¼" end up separated by "ƒÂ"). Derive those
+# forms mechanically instead of hand-writing more magic strings.
+def _double_encode_hint(h):
+    try:
+        return h.encode("utf-8").decode("cp1252")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return None
+
+
+DOUBLE_MOJIBAKE_HINTS = tuple(
+    h for h in (_double_encode_hint(h) for h in MOJIBAKE_HINTS) if h
+)
+_ALL_MOJIBAKE_HINTS = MOJIBAKE_HINTS + DOUBLE_MOJIBAKE_HINTS
+
 EMOJI_RE = re.compile(
     "[" "\U0001F000-\U0001FAFF" "\U00002600-\U000027BF" "\U0001F1E6-\U0001F1FF"
     "\U00002190-\U000021FF" "\U00002B00-\U00002BFF" "\U0000FE00-\U0000FE0F"
@@ -148,12 +166,18 @@ EMOJI_RE = re.compile(
 
 
 def _fix_mojibake(s):
-    if not s or not any(h in s for h in MOJIBAKE_HINTS):
+    if not s:
         return s
-    try:
-        return s.encode("cp1252", errors="strict").decode("utf-8", errors="strict")
-    except (UnicodeEncodeError, UnicodeDecodeError):
-        return s
+    # Bounded at 2 rounds: one for the common single mis-encoding, one more
+    # for a list that got round-tripped through the wrong codepage twice.
+    for _ in range(2):
+        if not any(h in s for h in _ALL_MOJIBAKE_HINTS):
+            break
+        try:
+            s = s.encode("cp1252", errors="strict").decode("utf-8", errors="strict")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            break
+    return s
 
 
 def clean_text(s):
