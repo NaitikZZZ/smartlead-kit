@@ -50,6 +50,7 @@ import json
 import time
 import requests
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -430,8 +431,17 @@ def wikidata_resolve(session, query_candidates):
 
 
 def try_free_tiers(session, query_candidates):
-    """Ordered cheapest/most-trustworthy first: HubSpot (your own verified
-    data) -> Clearbit (confident branch only) -> Brandfetch -> Wikidata.
+    """Priority order for which result wins is HubSpot (your own verified
+    data) -> Clearbit (confident branch only) -> Brandfetch -> Wikidata, but
+    all four are fired concurrently rather than tried one at a time. A
+    company that no tier can resolve (common - it's exactly the case this
+    gate exists to price) used to pay the full sum of all four timeouts
+    sequentially; confirmed live via the deployed ABM Wrapper that this made
+    a single ask-before-Apollo-spend step take 60+ seconds for a handful of
+    companies. Running them concurrently caps it at the slowest single tier
+    instead, with the exact same priority selection applied once every call
+    has returned - the resolved domain/source for any given company is
+    unchanged, only the wall-clock cost of finding out nothing matched.
     Returns (result_dict_or_None, source_or_None, cb_best, cb_source) - the
     last two are Clearbit's raw weak-guess result (if any), always computed
     since resolve() needs it later as a last-resort fallback after Apollo
@@ -442,19 +452,26 @@ def try_free_tiers(session, query_candidates):
     possibly-drifting copy of it - that drift is exactly what caused the old
     Clearbit-only estimate to overstate cost before this file's own
     docstring/comments flagged it."""
-    hubspot_result, hubspot_source = hubspot_resolve(session, query_candidates)
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        hubspot_future = ex.submit(hubspot_resolve, session, query_candidates)
+        clearbit_future = ex.submit(clearbit_resolve, session, query_candidates, norm(query_candidates[-1]))
+        brandfetch_future = ex.submit(brandfetch_resolve, session, query_candidates)
+        wikidata_future = ex.submit(wikidata_resolve, session, query_candidates)
+
+        hubspot_result, hubspot_source = hubspot_future.result()
+        cb_best, cb_source, _ = clearbit_future.result()
+        brandfetch_result, brandfetch_source = brandfetch_future.result()
+        wikidata_result, wikidata_source = wikidata_future.result()
+
     if hubspot_result:
         return hubspot_result, hubspot_source, None, None
 
-    cb_best, cb_source, _ = clearbit_resolve(session, query_candidates, norm(query_candidates[-1]))
     if cb_best and cb_source != 'Clearbit-exact-top-ranked':
         return {'domain': cb_best.get('domain', ''), 'country': '', 'city': ''}, cb_source, cb_best, cb_source
 
-    brandfetch_result, brandfetch_source = brandfetch_resolve(session, query_candidates)
     if brandfetch_result:
         return brandfetch_result, brandfetch_source, cb_best, cb_source
 
-    wikidata_result, wikidata_source = wikidata_resolve(session, query_candidates)
     if wikidata_result:
         return wikidata_result, wikidata_source, cb_best, cb_source
 
