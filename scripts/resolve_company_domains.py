@@ -55,6 +55,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 APOLLO_KEY = os.environ.get('APOLLO_API_KEY')
+# Cost-control kill switch (2026-09-10, user request: Apollo credit spend was
+# running high). When false, resolve() never falls through to the paid Apollo
+# org-search tier (step 6+ in the docstring above) - it stops at the free
+# tiers (cache/HubSpot/Clearbit/Brandfetch/Wikidata) and returns Unresolved
+# (or Clearbit's weak guess) instead of spending a credit. Re-enable by
+# setting PAID_ENRICHMENT_ENABLED=true (or unsetting it) in .env.
+PAID_ENRICHMENT_ENABLED = os.environ.get('PAID_ENRICHMENT_ENABLED', 'true').strip().lower() not in ('false', '0', 'no')
 # Two different .env conventions exist in this repo (root .env uses
 # HUBSPOT_API_KEY, wrapper/backend/.env uses HUBSPOT_PRIVATE_APP_TOKEN) since
 # this script runs standalone under both - accept either.
@@ -153,6 +160,43 @@ def _redis_hset_batch(key, items):
             raise last_exc
 
 
+def _redis_hmget(key, fields):
+    """Targeted read of specific hash fields via Upstash's HMGET, sent
+    through the same /pipeline POST endpoint _redis_hset_batch already uses
+    for writes - unlike _redis_hgetall's full-hash HSCAN (which pages through
+    the entire ~290k-company cache, several minutes, no matter how few
+    companies the caller actually needs), this costs a fixed few round trips
+    that scale with how many fields are requested, not with cache size."""
+    if not fields:
+        return {}
+    out = {}
+    unique_fields = list(dict.fromkeys(fields))
+    for i in range(0, len(unique_fields), _REDIS_PIPELINE_BATCH):
+        batch = unique_fields[i:i + _REDIS_PIPELINE_BATCH]
+        commands = [['HMGET', key] + batch]
+        last_exc = None
+        for attempt in range(1, 9):
+            try:
+                r = requests.post(f'{_REDIS_URL}/pipeline',
+                                   headers={'Authorization': f'Bearer {_REDIS_TOKEN}', 'Content-Type': 'application/json'},
+                                   data=json.dumps(commands).encode('utf-8'), timeout=30)
+                r.raise_for_status()
+                result = r.json()[0].get('result')
+                if result is None:
+                    raise RuntimeError(f"HMGET failed: {r.text}")
+                last_exc = None
+                break
+            except (requests.exceptions.RequestException, RuntimeError, IndexError, KeyError) as e:
+                last_exc = e
+                time.sleep(min(3 * attempt, 20))
+        if last_exc:
+            raise last_exc
+        for field, value in zip(batch, result):
+            if value is not None:
+                out[field] = json.loads(value)
+    return out
+
+
 _LEGAL_SUFFIX_RE = re.compile(
     r'[,]?\s*\(?\b(incorporated|corporation|company|limited|pte\.?\s*ltd\.?|pty\.?\s*ltd\.?|'
     r'p\.?\s*ltd\.?|inc\.?|llc\.?|ltd\.?|corp\.?|plc\.?|gmbh\.?|co\.?|'
@@ -211,6 +255,29 @@ def load_cache():
         return {}
     with open(CACHE_PATH, newline='', encoding='utf-8') as f:
         return {row['company_key']: row for row in csv.DictReader(f)}
+
+
+def load_cache_for_names(names):
+    """Targeted cache load, scoped to just the given company names - both the
+    full-name key and the pre-'/'-slash key resolve() checks. Use this
+    instead of load_cache() whenever the caller already knows which specific
+    companies it needs (the normal case: resolving a list of a handful to a
+    few hundred companies), so it doesn't pay for pulling the entire
+    ~290k-company Redis cache first (see _redis_hgetall's docstring - that
+    full scan alone can take several minutes, unrelated to how many
+    companies are actually being resolved). Falls back to load_cache()
+    verbatim when Redis isn't configured, since the local CSV file is
+    already read whole in one fast local file op either way."""
+    if not _redis_configured():
+        return load_cache()
+    keys = set()
+    for name in names:
+        full_name = str(name).strip()
+        if not full_name:
+            continue
+        keys.add(norm(full_name))
+        keys.add(norm(full_name.split('/')[0].strip()))
+    return _redis_hmget(_REDIS_KEY, sorted(keys))
 
 
 def save_cache(cache):
@@ -518,6 +585,8 @@ def estimate_needs_apollo(session, cache, company_name):
     key = norm(str(company_name).strip())
     if key in cache:
         return False
+    if not PAID_ENRICHMENT_ENABLED:
+        return False  # Apollo tier is disabled - resolve() will never spend a credit on this
     query_candidates = build_query_candidates(company_name)
     best, source, _cb_best, _cb_source = try_free_tiers(session, query_candidates)
     return best is None
@@ -552,6 +621,16 @@ def resolve(session, cache, company_name, employee_raw):
             'country': free_result.get('country', ''), 'city': free_result.get('city', ''),
             'source': free_source, 'candidates': [],
         }
+
+    if not PAID_ENRICHMENT_ENABLED:
+        # Apollo org search is disabled - fall back to Clearbit's weak guess
+        # if it had one, otherwise Unresolved. Never spend a credit here.
+        if cb_best:
+            return {
+                'domain': cb_best.get('domain', ''), 'linkedin': '', 'country': '', 'city': '',
+                'source': cb_source, 'candidates': [],
+            }
+        return {'domain': '', 'linkedin': '', 'country': '', 'city': '', 'source': 'Unresolved - paid enrichment disabled', 'candidates': []}
 
     accounts, qn, query_name = [], norm(full_name), full_name
     for q in query_candidates:
@@ -634,7 +713,7 @@ def main():
     df = pd.read_csv(input_csv)
     companies = df[[company_col, employee_col]].drop_duplicates(subset=[company_col])
 
-    cache = load_cache()
+    cache = load_cache_for_names(companies[company_col])
     session = requests.Session()
     session.mount('https://', requests.adapters.HTTPAdapter(max_retries=0))
 
