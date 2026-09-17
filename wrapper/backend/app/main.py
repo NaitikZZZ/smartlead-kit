@@ -36,6 +36,8 @@ def get_config():
         "hubspot_read_configured": bool(config.HUBSPOT_READ_TOKEN),
         "hubspot_write_configured": bool(config.HUBSPOT_WRITE_TOKEN),
         "interakt_configured": bool(config.INTERAKT_API_KEY),
+        "anthropic_configured": bool(config.ANTHROPIC_API_KEY),
+        "gtm_narrative_enrichment_enabled": config.GTM_NARRATIVE_ENRICHMENT_ENABLED,
         "exclusion_list_name": "ABM EXCLSIONS - DNU",
         "exclusion_list_id_prospect": config.HUBSPOT_EXCLUSION_LIST_ID_PROSPECT,
         "exclusion_list_id_company": config.HUBSPOT_EXCLUSION_LIST_ID_COMPANY or None,
