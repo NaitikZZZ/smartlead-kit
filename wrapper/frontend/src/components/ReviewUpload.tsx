@@ -37,6 +37,12 @@ const EXCLUDED_PAGE_SIZE = 50;
 export default function ReviewUpload({ run, onImported }: { run: RunStatus; onImported: () => void }) {
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Same race as StepCard's `answered` flag: confirmImport() fires an async
+  // Inngest event and returns before the HubSpot/HeyReach write actually
+  // starts, so the immediate post-confirm refresh (and the regular poll) can
+  // land before run.stage flips to "done" - without this the button would
+  // reappear looking unclicked, inviting a second click on a live write.
+  const [confirmed, setConfirmed] = useState(false);
   const [preview, setPreview] = useState<string[][] | null>(null);
   const [excludedPage, setExcludedPage] = useState(0);
 
@@ -60,6 +66,7 @@ export default function ReviewUpload({ run, onImported }: { run: RunStatus; onIm
     setError(null);
     try {
       await confirmImport(run.run_id);
+      setConfirmed(true);
       onImported();
     } catch (e: any) {
       setError(e.message || "Import failed");
@@ -260,13 +267,19 @@ export default function ReviewUpload({ run, onImported }: { run: RunStatus; onIm
         </div>
       )}
 
-      {!imported && (
+      {!imported && !confirmed && (
         <>
           {error && <p style={{ color: "var(--red-300)", marginTop: 16 }}>{error}</p>}
           <button className="btn-danger-confirm" style={{ marginTop: 20 }} disabled={importing} onClick={doImport}>
             {importing ? "Uploading to HubSpot..." : `Confirm & upload ${counts.email ?? 0} email contact(s) to HubSpot`}
           </button>
         </>
+      )}
+
+      {!imported && confirmed && (
+        <p style={{ marginTop: 20, color: "var(--dark-200)" }}>
+          Confirmed - uploading to HubSpot now. This can take a moment, the page will update automatically.
+        </p>
       )}
 
       {/* Downloads - at the very end */}
