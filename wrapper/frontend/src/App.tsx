@@ -41,19 +41,52 @@ function writeStoredRunId(id: string | null) {
   }
 }
 
+// localStorage only ever helps the one browser that started the run - a
+// teammate who opens the app on their own machine has no way to reach a
+// run that's paused on a question. Putting the run_id in the URL makes it
+// a link anyone can be sent; a manual run_id (SourceForm below) covers the
+// case where only the ID itself was shared (e.g. over Slack).
+function readRunIdFromUrl(): string | null {
+  try {
+    return new URLSearchParams(window.location.search).get("run");
+  } catch {
+    return null;
+  }
+}
+
+function writeRunIdToUrl(id: string | null) {
+  try {
+    const url = new URL(window.location.href);
+    if (id) url.searchParams.set("run", id);
+    else url.searchParams.delete("run");
+    window.history.replaceState(null, "", url.toString());
+  } catch {
+    // no-op
+  }
+}
+
 export default function App() {
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
   const [icpOptions, setIcpOptions] = useState<IcpOptions | null>(null);
-  const [runId, setRunIdState] = useState<string | null>(readStoredRunId);
+  const [runId, setRunIdState] = useState<string | null>(() => readRunIdFromUrl() || readStoredRunId());
   const [run, setRun] = useState<RunStatus | null>(null);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
+  const [notFoundError, setNotFoundError] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
 
   const setRunId = useCallback((id: string | null) => {
     writeStoredRunId(id);
+    if (id) setNotFoundError(null);
     setRunIdState(id);
   }, []);
+
+  // Keep the URL in sync so the current run is always shareable as a link,
+  // whether it was just started, resumed from localStorage, or entered
+  // manually.
+  useEffect(() => {
+    writeRunIdToUrl(runId);
+  }, [runId]);
 
   useEffect(() => {
     getConfig().then(setAppConfig).catch(() => setAppConfig(null));
@@ -78,6 +111,7 @@ export default function App() {
         if (e instanceof RunNotFoundError) {
           setRunId(null);
           setRun(null);
+          setNotFoundError(`No run found for ID "${id}" - check it and try again.`);
           return;
         }
         pollRef.current = window.setTimeout(tick, 3000);
@@ -119,7 +153,27 @@ export default function App() {
         <div className="main-head" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
             <h1>{run ? run.message : "New enrichment run"}</h1>
-            {run && <p style={{ fontSize: 13, marginTop: 4 }}>Run {run.run_id}</p>}
+            {run && (
+              <p style={{ fontSize: 13, marginTop: 4, display: "flex", alignItems: "center", gap: 8 }}>
+                Run {run.run_id}
+                <button
+                  className="btn-secondary"
+                  style={{ fontSize: 11, padding: "2px 8px" }}
+                  onClick={() => navigator.clipboard?.writeText(window.location.href)}
+                  title="Copy a link to this run so a teammate can open and answer it"
+                >
+                  Copy link to this run
+                </button>
+                <button
+                  className="btn-secondary"
+                  style={{ fontSize: 11, padding: "2px 8px" }}
+                  onClick={() => { setRunId(null); setRun(null); }}
+                  title="Forget this run and go back to a blank form - the run itself keeps going, this only clears what this browser resumes"
+                >
+                  Start new run
+                </button>
+              </p>
+            )}
           </div>
           <ConfigBadges appConfig={appConfig} />
         </div>
@@ -128,7 +182,14 @@ export default function App() {
         {run && <ProjectInfo run={run} />}
         {run && !REVIEW_STAGES.has(run.stage) && run.output_files.length > 0 && <MidRunDownloads run={run} />}
 
-        {!runId && <SourceForm onStarted={setRunId} appConfig={appConfig} icpOptions={icpOptions} />}
+        {!runId && (
+          <SourceForm
+            onStarted={setRunId}
+            appConfig={appConfig}
+            icpOptions={icpOptions}
+            resumeError={notFoundError}
+          />
+        )}
 
         {run && run.stage === "awaiting_answer" && run.pending_question && (
           <StepCard
