@@ -2295,11 +2295,12 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
     # Scoped HubSpot write exception: this is the run's true final point -
     # associations and the HubSpot/HeyReach/Interakt/Copy Agent results are
     # all settled - so it's the right moment to post the run's summary to
-    # the linked Project record, if any. Builds the same final-summary
+    # every linked Project/Partner/Event record, if any (each present
+    # association gets its own copy). Builds the same final-summary
     # markdown runner.py's run_confirmed_import writes to SUMMARY.md (note
     # body only, not re-persisted here - this engine's own SUMMARY.md write,
     # above, predates associations/import and isn't rewritten post-import).
-    # No-ops when there's no "project" association, and never raises.
+    # No-ops when there are no such associations, and never raises.
     async def _post_hubspot_project_note():
         final_stats = {**run_status.get(run_id).get("stats", {}), "hubspot_import": import_result}
         summary_markdown = outputs.build_summary_markdown(

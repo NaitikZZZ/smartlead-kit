@@ -1851,8 +1851,9 @@ def run_confirmed_import(run_id: str, run_dir: Path):
 
     # Scoped HubSpot write exception: this is the run's final summary (the
     # one the frontend lets the user download), so it's also the right
-    # moment to post it to the linked Project record, if any. No-ops when
-    # there's no "project" association, and never raises.
+    # moment to post it to every linked Project/Partner/Event record, if
+    # any - each present association gets its own copy. No-ops when there
+    # are none, and never raises.
     hubspot_project_note.post_summary_note(associations, summary_markdown)
 
     return result
