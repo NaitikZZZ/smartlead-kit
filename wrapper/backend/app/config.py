@@ -128,6 +128,14 @@ GTM_NARRATIVE_ENRICHMENT_ENABLED = os.environ.get("GTM_NARRATIVE_ENRICHMENT_ENAB
 # Apollo threshold, tuned lower since this call is heavier per unit. Adjust freely.
 GTM_NARRATIVE_CONFIRM_THRESHOLD = int(os.environ.get("GTM_NARRATIVE_CONFIRM_THRESHOLD", "50"))
 
+# Copy Agent (Claude-generated email + LinkedIn copy, the final pipeline step).
+# Off by default (2026-09-18): the user found the "generate copy now?" prompt
+# and the generation itself too slow to sit through on every run. When False,
+# inngest_runner.py skips the question and the step outright instead of
+# asking - the run ends at HubSpot import. Not deleted: re-enable per run by
+# setting COPY_AGENT_ENABLED=true (or removing it) in .env once needed again.
+COPY_AGENT_ENABLED = os.environ.get("COPY_AGENT_ENABLED", "false").strip().lower() not in ("false", "0", "no")
+
 # Optional: a shared Account Mapping Sheet configured once for the whole
 # hosted instance, so individual users don't need to upload it every run.
 # ACCOUNT_MAPPING_SHEET_PATH pins one exact file (goes stale as new copies

@@ -2235,11 +2235,14 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
     await _set_step(step, "step_upload_done", run_id, "upload", "Preview & Upload", "done",
                      f"Imported {import_result['total']} contact(s); static list created.{hr_note}")
 
-    generate_copy = await _ask(
-        step, run_id, "generate_copy_confirm", "yes_no",
-        "Data imported to HubSpot. Generate campaign copy (email + LinkedIn) now?",
-        default="yes", context={"step": "copy_agent"},
-    )
+    if not config.COPY_AGENT_ENABLED:
+        generate_copy = "no"
+    else:
+        generate_copy = await _ask(
+            step, run_id, "generate_copy_confirm", "yes_no",
+            "Data imported to HubSpot. Generate campaign copy (email + LinkedIn) now?",
+            default="yes", context={"step": "copy_agent"},
+        )
 
     if _truthy(generate_copy):
         await _set_step(step, "step_copy_agent_running", run_id, "copy_agent", "Copy Agent", "running")
@@ -2278,6 +2281,10 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         else:
             await _set_step(step, "step_copy_agent_skipped", run_id, "copy_agent", "Copy Agent", "skipped",
                              copy_result.get("message", copy_result["status"]))
+    elif not config.COPY_AGENT_ENABLED:
+        import_result["copy_agent"] = {"status": "skipped", "message": "Copy Agent is disabled by default (COPY_AGENT_ENABLED=false)."}
+        await _set_step(step, "step_copy_agent_skipped", run_id, "copy_agent", "Copy Agent", "skipped",
+                         "Skipped - Copy Agent is disabled by default.")
     else:
         import_result["copy_agent"] = {"status": "skipped", "message": "User opted out of copy generation."}
         await _set_step(step, "step_copy_agent_skipped", run_id, "copy_agent", "Copy Agent", "skipped",
