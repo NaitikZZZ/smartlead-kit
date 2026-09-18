@@ -49,6 +49,29 @@ def _valid_email(v) -> bool:
 
 _INVALID_EMAIL_RE = re.compile(r"Email address\s+(.+?)\s+is invalid", re.I)
 
+_EMAIL_TOKEN_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def _split_multi_email_rows(rows: list[dict]) -> list[dict]:
+    """A source list sometimes crams several addresses into one `email` cell
+    (e.g. "a@x.com / info@x.com", seen live from a business-card-scan import -
+    HubSpot then 400s the whole compound string as invalid rather than
+    accepting any part of it). Extract every address-shaped token out of the
+    cell and fan the row out into one copy per address, so each real email
+    still gets a contact instead of the whole row silently dropping. A row
+    with exactly one address (the common case) passes through with its email
+    normalized to just that token; a row with none is left as-is so the
+    existing _valid_email guard drops it as before."""
+    out = []
+    for r in rows:
+        tokens = _EMAIL_TOKEN_RE.findall(str(r.get("email") or ""))
+        if not tokens:
+            out.append(r)
+            continue
+        for t in tokens:
+            out.append({**r, "email": t})
+    return out
+
 
 def _collapse_escaped_backslashes(s: str) -> str:
     """A genuinely backslash-containing address (e.g. a typo'd
@@ -88,7 +111,7 @@ def batch_upsert_contacts(rows: list[dict]) -> tuple[list[dict], list[dict]]:
     # "400 Client Error: Bad Request" with no HubSpot message).
     inputs = []
     seen_emails = set()
-    for r in rows:
+    for r in _split_multi_email_rows(rows):
         if not _valid_email(r.get("email")):
             continue
         email = str(r["email"]).strip().lower()
