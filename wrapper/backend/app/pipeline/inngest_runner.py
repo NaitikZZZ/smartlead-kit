@@ -74,8 +74,8 @@ from .. import config, run_status, vercel_blob
 from ..inngest_client import client
 from . import (
     apollo_enrich, association_resolve, copy_agent, domain_resolution, dream_accounts, estimates,
-    github_pr, gtm_enrichment, gtm_narrative, heyreach, hubspot_exclusion, hubspot_import, icp_mapper,
-    input_sources, interakt, naming, normalize, outputs, web_completeness, web_scrape,
+    github_pr, gtm_enrichment, gtm_narrative, heyreach, hubspot_exclusion, hubspot_import, hubspot_project_note,
+    icp_mapper, input_sources, interakt, naming, normalize, outputs, web_completeness, web_scrape,
 )
 from .runner import COUNTRY_OPTIONS, REGION_OPTIONS, _map_existing_contact_columns
 
@@ -2291,6 +2291,23 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                          "Skipped - user opted out of copy generation.")
 
     await _set_stat(step, "stat_hubspot_import", run_id, "hubspot_import", import_result)
+
+    # Scoped HubSpot write exception: this is the run's true final point -
+    # associations and the HubSpot/HeyReach/Interakt/Copy Agent results are
+    # all settled - so it's the right moment to post the run's summary to
+    # the linked Project record, if any. Builds the same final-summary
+    # markdown runner.py's run_confirmed_import writes to SUMMARY.md (note
+    # body only, not re-persisted here - this engine's own SUMMARY.md write,
+    # above, predates associations/import and isn't rewritten post-import).
+    # No-ops when there's no "project" association, and never raises.
+    async def _post_hubspot_project_note():
+        final_stats = {**run_status.get(run_id).get("stats", {}), "hubspot_import": import_result}
+        summary_markdown = outputs.build_summary_markdown(
+            campaign_title, final_stats, accounts_processed, core_df, import_result=import_result)
+        hubspot_project_note.post_summary_note(associations, summary_markdown)
+        return True
+
+    await step.run("post_hubspot_project_note", _post_hubspot_project_note)
 
     await _status(step, "status_final_done", run_id, stage="done", message="Imported to HubSpot",
                   hubspot_list_url=import_result["list"]["list_url"])

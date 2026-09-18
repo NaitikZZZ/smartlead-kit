@@ -29,7 +29,7 @@ from . import (
     input_sources, normalize, domain_resolution, apollo_enrich,
     outputs, github_pr, web_completeness, naming, association_resolve,
     hubspot_lists, hubspot_import, estimates, hubspot_exclusion, heyreach, interakt, web_scrape,
-    icp_mapper, copy_agent, dream_accounts, gtm_enrichment, gtm_narrative,
+    icp_mapper, copy_agent, dream_accounts, gtm_enrichment, gtm_narrative, hubspot_project_note,
 )
 
 JOBS: dict[str, dict] = {}
@@ -1846,9 +1846,13 @@ def run_confirmed_import(run_id: str, run_dir: Path):
 
     accounts_processed = pd.read_csv(io.BytesIO(outputs.read_file(run_dir, "01_accounts_processed.csv")))
     enriched = pd.read_csv(io.BytesIO(outputs.read_file(run_dir, "02_enriched_contacts.csv")))
-    outputs.write_file(
-        run_dir, "SUMMARY.md",
-        outputs.build_summary_markdown(campaign_title, final_stats, accounts_processed, enriched, import_result=result),
-        "text/markdown",
-    )
+    summary_markdown = outputs.build_summary_markdown(campaign_title, final_stats, accounts_processed, enriched, import_result=result)
+    outputs.write_file(run_dir, "SUMMARY.md", summary_markdown, "text/markdown")
+
+    # Scoped HubSpot write exception: this is the run's final summary (the
+    # one the frontend lets the user download), so it's also the right
+    # moment to post it to the linked Project record, if any. No-ops when
+    # there's no "project" association, and never raises.
+    hubspot_project_note.post_summary_note(associations, summary_markdown)
+
     return result
