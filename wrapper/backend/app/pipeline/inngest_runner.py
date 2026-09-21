@@ -73,7 +73,7 @@ from .._lazy import Anthropic
 from .. import config, run_status, vercel_blob
 from ..inngest_client import client
 from . import (
-    apollo_enrich, association_resolve, copy_agent, domain_resolution, dream_accounts, estimates,
+    apollo_enrich, association_resolve, competitor_exclusion, copy_agent, domain_resolution, dream_accounts, estimates,
     github_pr, gtm_enrichment, gtm_narrative, heyreach, hubspot_exclusion, hubspot_import, hubspot_project_note,
     icp_mapper, input_sources, interakt, naming, normalize, outputs, web_completeness, web_scrape,
 )
@@ -1146,6 +1146,52 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             await _set_step(step, "step_exclusion_skipped", run_id, "exclusion", "Company Exclusion Check", "skipped",
                              f"Skipped - all {len(df)} treated as OK to reach out.")
             await _set_stat(step, "stat_exclusion_skipped", run_id, "exclusion", exclusion_stats)
+
+        # ============ Competitor Exclusion (gated, default yes) ============
+        # Same slot/purpose as the company-level DNU check above - drop whole
+        # accounts before enrichment spend - but against the static Xoxoday
+        # competitor list (reference/xoxoday-competitors.csv, see
+        # competitor_exclusion.py) instead of HubSpot. Rows already Excluded
+        # above are left alone; this only evaluates rows still "OK to reach out".
+        competitor_answer = await _ask(
+            step, run_id, "competitor_exclusion_needed", "yes_no",
+            "Remove competitors from this list?",
+            default="yes",
+            context={"step": "exclusion"},
+        )
+        if _truthy(competitor_answer):
+            await _status(step, "status_checking_competitors", run_id, message="Checking against Xoxoday competitor list")
+            competitor_domain_col = "Domain" if "Domain" in df.columns else (domain_col or _guess_col(df, ["Domain", "Website"]))
+            comp_name_col = resolved_company_col if resolved_company_col in df.columns else company_col
+            df, competitor_stats = await asyncio.to_thread(
+                competitor_exclusion.run_exclusion_check, df, competitor_domain_col, comp_name_col,
+            )
+            comp_df = df[(df["Exclusion Status"] == "Excluded") & (df["Exclusion Reason"].str.contains("competitor", case=False, na=False))]
+            competitor_stats["excluded_rows"] = [
+                {
+                    "company": "" if pd.isna(r.get(comp_name_col)) else str(r.get(comp_name_col)),
+                    "reason": str(r.get("Exclusion Reason", "")),
+                }
+                for _, r in comp_df.head(500).iterrows()
+            ]
+            await _set_step(
+                step, "step_competitor_exclusion_done", run_id, "exclusion", "Company Exclusion Check", "done",
+                f"{exclusion_stats.get('excluded', 0)} account(s) excluded (HubSpot DNU) + "
+                f"{competitor_stats['excluded']} competitor account(s) excluded "
+                f"(of {competitor_stats['total']} checked against {competitor_stats.get('competitor_count', 0)} known competitors).",
+            )
+            # keep the persisted "exclusion" stat's aggregate counts (read by
+            # CostBar/ReviewOutputs as "the" OK/excluded funnel numbers) in sync
+            # now that this second gate can drop more rows - otherwise they'd
+            # keep showing the pre-competitor-check count while every
+            # downstream step already operates on the smaller set.
+            exclusion_stats["excluded"] = exclusion_stats.get("excluded", 0) + competitor_stats["excluded"]
+            exclusion_stats["ok_to_reach_out"] = competitor_stats["ok_to_reach_out"]
+            await _set_stat(step, "stat_competitor_exclusion_checked", run_id, "competitor_exclusion", competitor_stats)
+            await _set_stat(step, "stat_exclusion_resync", run_id, "exclusion", exclusion_stats)
+        else:
+            competitor_stats = {"skipped": True, "reason": "declined by user", "total": len(df), "excluded": 0}
+            await _set_stat(step, "stat_competitor_exclusion_skipped", run_id, "competitor_exclusion", competitor_stats)
 
         accounts_processed = df.copy()
 
