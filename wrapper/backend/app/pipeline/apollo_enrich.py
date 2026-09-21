@@ -392,8 +392,10 @@ def enrich_candidates(candidates_df: pd.DataFrame, full_dump: bool = False, prog
         aid = str(row["apollo_id"])
         if aid in cache:  # already revealed before -> free
             result_map[idx] = _apply_row(cache[aid], row.get("Company"), row.get("Domain"))
-        else:
+        elif config.PAID_ENRICHMENT_ENABLED:
             tasks.append((idx, row, aid))
+        # else: paid enrichment disabled (2026-09-21 credit pause) - uncached
+        # candidates are left out of the result instead of paying for a reveal.
 
     def _one(t):
         idx, row, aid = t
@@ -446,7 +448,7 @@ def enrich_existing_contacts(df: pd.DataFrame, first_col: str, last_col: str, do
         out["email"] = out["email"].where(out["email"].notna() & (out["email"].astype(str).str.strip() != ""), out[email_col])
 
     notes: dict = {}
-    already_had = skipped = from_cache = 0
+    already_had = skipped = from_cache = paid_disabled = 0
     tasks = []
     for i, row in out.iterrows():
         forced = i in force_idx
@@ -468,6 +470,10 @@ def enrich_existing_contacts(df: pd.DataFrame, first_col: str, last_col: str, do
                 out.at[i, "email"] = c["email"]
                 from_cache += 1
             notes[i] = f"{c.get('note', 'OK')} (cache)"
+            continue
+        if not config.PAID_ENRICHMENT_ENABLED:
+            paid_disabled += 1
+            notes[i] = "Skipped - paid enrichment disabled (PAID_ENRICHMENT_ENABLED=false)"
             continue
         tasks.append((i, row.get(first_col), row.get(last_col), domain, key, forced))
 
@@ -494,7 +500,8 @@ def enrich_existing_contacts(df: pd.DataFrame, first_col: str, last_col: str, do
     out["Email Fill Note"] = [notes.get(i, "Lookup error") for i in out.index]
     return out, {
         "already_had_email": already_had, "filled": filled + from_cache, "filled_new": filled,
-        "from_cache": from_cache, "skipped_no_domain": skipped, "paid_lookups": len(tasks),
+        "from_cache": from_cache, "skipped_no_domain": skipped, "skipped_paid_disabled": paid_disabled,
+        "paid_lookups": len(tasks),
         "job_changes_refreshed": len([1 for t in tasks if t[5]]), "total": len(out),
     }
 
@@ -725,6 +732,8 @@ def count_uncached_phones(df: pd.DataFrame, first_col: str, last_col: str, domai
     cache and have a domain). Cached contacts - including 'no phone on file' -
     are free. force_idx (job changes) always count as a paid lookup."""
     force_idx = force_idx or set()
+    if not config.PAID_ENRICHMENT_ENABLED:
+        return 0
     cache = _phone.load_cache()
     n = 0
     for i, row in df.iterrows():
@@ -755,6 +764,8 @@ def enrich_phones(df: pd.DataFrame, first_col: str, last_col: str, domain_col: s
         if key in cache and i not in force_idx:  # job changes bypass the cache
             c = cache[key]
             out_rows[i] = {"Phone Number": c["phone_number"], "Phone Type": c["phone_type"], "Phone Confidence": c["phone_confidence"], "Phone Note": c["note"], "Phone Source": "Cache"}
+        elif not config.PAID_ENRICHMENT_ENABLED:
+            out_rows[i] = {"Phone Number": "", "Phone Type": "", "Phone Confidence": "", "Phone Note": "Skipped - paid enrichment disabled (PAID_ENRICHMENT_ENABLED=false)", "Phone Source": "Skipped"}
         else:
             need_lookup.append((i, row, key))
 

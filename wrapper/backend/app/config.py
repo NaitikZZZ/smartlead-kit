@@ -101,11 +101,17 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 #   - apollo_enrich.enrich_candidates / enrich_existing_contacts / the paid
 #     tier of fill_missing_details: skipped (free bulk_match-by-email tier
 #     still runs, since Apollo's own docs say that one is zero-credit).
-# Deliberately NOT gated: apollo_enrich.enrich_phones (phone reveal) and
-# candidate search (search_candidates/search_candidates_by_icp - Apollo people
-# search itself isn't credit-metered in this kit's usage, only the reveal
-# calls are) - the user asked to keep phone/email lookups running.
-# Re-enable by setting PAID_ENRICHMENT_ENABLED=true (or removing it) in .env.
+#   - apollo_enrich.enrich_phones (phone reveal): as of 2026-09-21, also
+#     skipped - cache hits still serve for free, uncached contacts get a
+#     "paid enrichment disabled" note instead of a live reveal. This reverses
+#     the 2026-08-10 decision below to deliberately keep phone/email reveal
+#     running; the user is out of Apollo credits and wants every paid call
+#     paused until they explicitly ask to resume ("use apollo").
+# Apollo people search itself (search_candidates/search_candidates_by_icp) is
+# NOT gated - it isn't credit-metered in this kit's usage, only the reveal
+# calls are, so free search keeps running.
+# Re-enable by setting PAID_ENRICHMENT_ENABLED=true (or removing it) in .env
+# - or just tell Claude Code "use apollo" and it will flip this back.
 PAID_ENRICHMENT_ENABLED = os.environ.get("PAID_ENRICHMENT_ENABLED", "true").strip().lower() not in ("false", "0", "no")
 
 # GTM narrative account-profile research (value proposition, named partners,
