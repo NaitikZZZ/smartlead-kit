@@ -73,6 +73,43 @@ def _user_payload(row: dict, campaign_title: str) -> dict | None:
     return payload
 
 
+def check_template(name: str) -> dict:
+    """Look up an existing Interakt template by name and report its approval
+    status. Interakt's public API has no endpoint to submit a NEW template for
+    WABA approval (confirmed against scripts/interakt_send_template.py, the
+    only other caller of this read-only endpoint) - that has to happen by hand
+    in the Interakt dashboard. So Copy Push's Interakt leg can only ever
+    check readiness, never "push" a template into existence. Never raises."""
+    if not is_configured():
+        return {"status": "not_configured", "message": "INTERAKT_API_KEY not set"}
+    try:
+        r = requests.get(f"{BASE}/track/organization/templates", headers=_headers(),
+                         params={"offset": 0, "template_name": name}, timeout=15)
+        if not r.ok:
+            return {"status": "error", "message": f"{r.status_code} {r.text[:300]}"}
+        templates = (r.json().get("results") or {}).get("templates", [])
+        match = next((t for t in templates if t.get("name") == name), None)
+        if not match:
+            return {
+                "status": "not_found", "template_name": name,
+                "message": f"No template named '{name}' found in Interakt. It needs to be created and "
+                           "submitted for WABA approval in the Interakt dashboard first - this can't be "
+                           "done via API. Re-check once it's been submitted.",
+            }
+        approved = str(match.get("approval_status", "")).lower() in ("approved", "active")
+        return {
+            "status": "approved" if approved else "pending_approval",
+            "template_name": name, "approval_status": match.get("approval_status"),
+            "category": match.get("category"),
+            "message": ("Template is approved and ready - sending it is a separate, explicit action "
+                        "(never automatic).") if approved else
+                       f"Template exists but isn't approved yet (status: {match.get('approval_status')}). "
+                       "Wait for WABA approval before sending.",
+        }
+    except Exception as e:
+        return {"status": "error", "message": f"Interakt template check failed: {e}"}
+
+
 def push_users(whatsapp_rows: list[dict], campaign_title: str) -> dict:
     """Tracks each WhatsApp-eligible contact as an Interakt user. Returns a
     status dict. Never raises into the caller - an Interakt failure shouldn't

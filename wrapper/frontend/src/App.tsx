@@ -9,6 +9,7 @@ import CostBar from "./components/CostBar";
 import ReviewUpload from "./components/ReviewUpload";
 import ActivityLog from "./components/ActivityLog";
 import Tooltip from "./components/Tooltip";
+import CopyPush from "./components/CopyPush";
 
 const REVIEW_STAGES = new Set(["awaiting_import_confirmation", "importing_to_hubspot", "done"]);
 // Only stop polling at truly terminal states. We must KEEP polling through
@@ -65,6 +66,11 @@ function writeRunIdToUrl(id: string | null) {
   }
 }
 
+// "menu" asks Enrich+Push vs Push-only before anything starts (CLAUDE.md Step
+// -1, re-enabled 2026-10-12); skipped when resuming an already-started run
+// via URL/localStorage, since that choice was already made.
+type Flow = "menu" | "data" | "copy";
+
 export default function App() {
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
   const [icpOptions, setIcpOptions] = useState<IcpOptions | null>(null);
@@ -73,6 +79,8 @@ export default function App() {
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   const [notFoundError, setNotFoundError] = useState<string | null>(null);
+  const [flow, setFlow] = useState<Flow>(() => (readRunIdFromUrl() || readStoredRunId() ? "data" : "menu"));
+  const [copyPushSourceRunId, setCopyPushSourceRunId] = useState<string | undefined>(undefined);
   const pollRef = useRef<number | null>(null);
 
   const setRunId = useCallback((id: string | null) => {
@@ -145,6 +153,32 @@ export default function App() {
     }
   }
 
+  if (flow === "menu") {
+    return (
+      <div className="app-shell">
+        <main className="main">
+          <FlowChooser
+            onChooseData={() => setFlow("data")}
+            onChoosePushOnly={() => { setCopyPushSourceRunId(undefined); setFlow("copy"); }}
+          />
+        </main>
+      </div>
+    );
+  }
+
+  if (flow === "copy") {
+    return (
+      <div className="app-shell">
+        <main className="main">
+          <CopyPush
+            sourceRunId={copyPushSourceRunId}
+            onDone={() => { setCopyPushSourceRunId(undefined); setFlow("menu"); }}
+          />
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       <StepSidebar run={run} />
@@ -167,7 +201,7 @@ export default function App() {
                 <button
                   className="btn-secondary"
                   style={{ fontSize: 11, padding: "2px 8px" }}
-                  onClick={() => { setRunId(null); setRun(null); }}
+                  onClick={() => { setRunId(null); setRun(null); setFlow("menu"); }}
                   title="Forget this run and go back to a blank form - the run itself keeps going, this only clears what this browser resumes"
                 >
                   Start new run
@@ -214,7 +248,7 @@ export default function App() {
           <div className="card" style={{ padding: 24 }}>
             <h3>Normalization done</h3>
             <p style={{ marginTop: 8 }}>{run.message}</p>
-            <button className="btn-secondary" style={{ marginTop: 16 }} onClick={() => { setRunId(null); setRun(null); }}>
+            <button className="btn-secondary" style={{ marginTop: 16 }} onClick={() => { setRunId(null); setRun(null); setFlow("menu"); }}>
               Start a new run
             </button>
           </div>
@@ -229,7 +263,7 @@ export default function App() {
               <button className="btn-primary" disabled={retrying} onClick={handleRetry}>
                 {retrying ? "Retrying..." : "Retry"}
               </button>
-              <button className="btn-secondary" onClick={() => { setRunId(null); setRun(null); }}>
+              <button className="btn-secondary" onClick={() => { setRunId(null); setRun(null); setFlow("menu"); }}>
                 Start a new run
               </button>
             </div>
@@ -237,13 +271,49 @@ export default function App() {
         )}
 
         {run && run.stage === "done" && (
-          <button className="btn-secondary" style={{ marginTop: 20 }} onClick={() => { setRunId(null); setRun(null); }}>
-            Start a new run
-          </button>
+          <div style={{ marginTop: 20, display: "flex", gap: 12, alignItems: "center" }}>
+            <button className="btn-secondary" onClick={() => { setRunId(null); setRun(null); setFlow("menu"); }}>
+              Start a new run
+            </button>
+            <button
+              className="btn-primary"
+              onClick={() => { setCopyPushSourceRunId(run.run_id); setFlow("copy"); }}
+              title="Push already-written copy to Smartlead/HeyReach/Interakt for this campaign - reuses the HeyReach list just created above"
+            >
+              Push copies to these platforms now?
+            </button>
+          </div>
         )}
 
         {run && <ActivityLog run={run} />}
       </main>
+    </div>
+  );
+}
+
+function FlowChooser({ onChooseData, onChoosePushOnly }: { onChooseData: () => void; onChoosePushOnly: () => void }) {
+  return (
+    <div>
+      <h1 style={{ marginBottom: 6 }}>What do you want to do?</h1>
+      <p style={{ marginBottom: 24 }}>Pick one - you can always push copy separately later from a finished run's results page.</p>
+      <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+        <div className="card" style={{ padding: 20, flex: "1 1 320px", display: "flex", flexDirection: "column" }}>
+          <h3 style={{ marginBottom: 8 }}>Enrich + Push</h3>
+          <p style={{ fontSize: 13, color: "var(--dark-200)", flex: 1 }}>
+            Bring your own list. Enriches, segments, checks exclusions, and pushes contacts to HubSpot + HeyReach + Interakt.
+            Push copy to the same platforms as an optional last step.
+          </p>
+          <button className="btn-primary" style={{ marginTop: 16 }} onClick={onChooseData}>Enrich + Push</button>
+        </div>
+        <div className="card" style={{ padding: 20, flex: "1 1 320px", display: "flex", flexDirection: "column" }}>
+          <h3 style={{ marginBottom: 8 }}>Push copy only</h3>
+          <p style={{ fontSize: 13, color: "var(--dark-200)", flex: 1 }}>
+            Your list and copy are already done. Push the copy - email, LinkedIn, or WhatsApp - into a campaign.
+            No contact or lead data in this flow.
+          </p>
+          <button className="btn-primary" style={{ marginTop: 16 }} onClick={onChoosePushOnly}>Push copy only</button>
+        </div>
+      </div>
     </div>
   );
 }
