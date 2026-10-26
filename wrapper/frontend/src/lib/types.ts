@@ -123,6 +123,9 @@ export interface AppConfig {
   exclusion_list_name?: string;
   exclusion_list_id?: string;
   exclusion_list_url?: string;
+  exclusion_list_url_company?: string | null;
+  exclusion_list_url_prospect?: string;
+  competitor_list_url?: string;
 }
 
 // Reference data for the campaign-idea wizard - fetched once before any run

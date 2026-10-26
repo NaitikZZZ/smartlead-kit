@@ -41,6 +41,7 @@ def get_config():
         "exclusion_list_name": "ABM EXCLSIONS - DNU",
         "exclusion_list_id_prospect": config.HUBSPOT_EXCLUSION_LIST_ID_PROSPECT,
         "exclusion_list_id_company": config.HUBSPOT_EXCLUSION_LIST_ID_COMPANY or None,
+        "competitor_list_url": config.COMPETITOR_LIST_URL,
         "exclusion_list_url_prospect": config.exclusion_list_url(config.HUBSPOT_EXCLUSION_LIST_ID_PROSPECT),
         "exclusion_list_url_company": (
             config.exclusion_list_url(config.HUBSPOT_EXCLUSION_LIST_ID_COMPANY)

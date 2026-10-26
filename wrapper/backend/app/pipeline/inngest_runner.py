@@ -1157,7 +1157,9 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             step, run_id, "competitor_exclusion_needed", "yes_no",
             "Remove competitors from this list?",
             default="yes",
-            context={"step": "exclusion"},
+            context={"step": "exclusion",
+                     "reference_url": config.COMPETITOR_LIST_URL,
+                     "reference_label": "Xoxoday competitor list"},
         )
         if _truthy(competitor_answer):
             await _status(step, "status_checking_competitors", run_id, message="Checking against Xoxoday competitor list")
@@ -1192,6 +1194,18 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         else:
             competitor_stats = {"skipped": True, "reason": "declined by user", "total": len(df), "excluded": 0}
             await _set_stat(step, "stat_competitor_exclusion_skipped", run_id, "competitor_exclusion", competitor_stats)
+
+        # Prospect-level choice. Only recorded here; the check itself still
+        # runs late, in runner.run_confirmed_import (Stage 2).
+        prospect_answer = await _ask(
+            step, run_id, "prospect_exclusion_needed", "yes_no",
+            "Check individual contacts against the prospect-level HubSpot DNU list (meeting completed / DNC) before sending?",
+            default="yes",
+            context={"step": "exclusion",
+                     "reference_url": config.exclusion_list_url(config.HUBSPOT_EXCLUSION_LIST_ID_PROSPECT),
+                     "reference_label": "ABM EXCLSIONS Prospect Level - DNU"},
+        )
+        await _set_stat(step, "stat_prospect_exclusion_choice", run_id, "prospect_exclusion_enabled", _truthy(prospect_answer))
 
         accounts_processed = df.copy()
 
@@ -1518,7 +1532,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         # awaiting_import_confirmation -> runner.run_confirmed_import terminal
         # path as the CSV flow (confirmed by tracing this function), so Stage
         # 2's prospect-level check (exact email/LinkedIn) already covers this
-        # entry point too - no separate prospect-level gate needed here.
+        # entry point too; the prospect-level question is asked right after this block.
         exclusion_answer = await _ask(
             step, run_id, "exclusion_needed_idea", "yes_no",
             "Check these candidates against the company-level HubSpot DNU list and drop existing/active-deal accounts?",
@@ -1548,6 +1562,16 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             await _set_step(step, "step_exclusion_skipped_idea", run_id, "exclusion", "Company Exclusion Check", "skipped",
                              "Skipped by user.")
             await _set_stat(step, "stat_exclusion_skipped_idea", run_id, "exclusion", {"skipped": True})
+
+        prospect_answer = await _ask(
+            step, run_id, "prospect_exclusion_needed_idea", "yes_no",
+            "Check individual contacts against the prospect-level HubSpot DNU list (meeting completed / DNC) before sending?",
+            default="yes",
+            context={"step": "exclusion",
+                     "reference_url": config.exclusion_list_url(config.HUBSPOT_EXCLUSION_LIST_ID_PROSPECT),
+                     "reference_label": "ABM EXCLSIONS Prospect Level - DNU"},
+        )
+        await _set_stat(step, "stat_prospect_exclusion_choice_idea", run_id, "prospect_exclusion_enabled", _truthy(prospect_answer))
 
         # Populate every variable the rest of the pipeline (Email Reveal onward) depends on.
         company_col = "Company"
