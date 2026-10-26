@@ -116,6 +116,160 @@ def add_leads(list_id: int, leads: list[dict]) -> dict:
     return {"added": added, "updated": updated, "failed": failed}
 
 
+_REQUIRED_COPY_KEYS = {"dm1_connected", "dm1_not_connected", "dm2", "dm3", "dm4"}
+
+
+def list_senders() -> list[dict]:
+    """Available LinkedIn sender accounts in this HeyReach workspace - needed
+    to pick sender_ids for push_campaign_copy(). GetAll paginates (response
+    has "totalCount"/"items") and defaults to a 10-item page when no
+    limit/offset is sent - confirmed live 2026-10-12: a bare {} body silently
+    returned 10 of 44 real accounts. 100 is the documented per-page max, so
+    this loops rather than assuming one page covers every workspace."""
+    accounts, offset = [], 0
+    while True:
+        r = requests.post(f"{BASE}/li_account/GetAll", headers=_headers(),
+                          json={"offset": offset, "limit": 100}, timeout=30)
+        _raise_with_body(r)
+        body = r.json() if r.content else {}
+        page = body.get("items", []) if isinstance(body, dict) else (body or [])
+        accounts.extend(page)
+        total = body.get("totalCount") if isinstance(body, dict) else None
+        offset += len(page)
+        if not page or (total is not None and offset >= total):
+            break
+    return accounts
+
+
+def create_campaign(name: str, list_id: int, sender_ids: list[int]) -> int:
+    """Confirmed against HeyReach's own published docs (heyreach.io/blog/campaign-api,
+    checked 2026-10-12) - scripts/17_heyreach_push_campaign.py's guess that
+    {"name": ...} alone was enough was wrong: linkedInUserListId and
+    linkedInAccountIds (1-100 items) are both REQUIRED on Create, not
+    attachable afterward. Response is {"campaignId": ...}. Creates in DRAFT
+    status; StartCampaign (not called here) is a separate, explicit step."""
+    r = requests.post(f"{BASE}/campaign/Create", headers=_headers(), json={
+        "name": name, "linkedInUserListId": list_id, "linkedInAccountIds": sender_ids,
+    }, timeout=30)
+    _raise_with_body(r)
+    body = r.json() if r.content else {}
+    cid = body.get("campaignId") or body.get("id")
+    if not cid:
+        raise ValueError(f"HeyReach campaign create: no campaignId in response - {str(body)[:500]}")
+    return cid
+
+
+def update_schedule(campaign_id: int, timezone="Asia/Kolkata", start_hour="09:00:00", end_hour="17:00:00",
+                     days=("mon", "tue", "wed", "thu", "fri")) -> None:
+    """Confirmed shape (heyreach.io/blog/campaign-api, checked 2026-10-12):
+    UpdateCampaignScheduleApiDto nests the actual schedule fields under a
+    "schedule" object - they are NOT flat alongside campaignId, which is what
+    scripts/17_heyreach_push_campaign.py's unverified guess had sent."""
+    day_fields = {
+        "mon": "enabledMonday", "tue": "enabledTuesday", "wed": "enabledWednesday",
+        "thu": "enabledThursday", "fri": "enabledFriday", "sat": "enabledSaturday", "sun": "enabledSunday",
+    }
+    enabled = {field: False for field in day_fields.values()}
+    for d in days:
+        enabled[day_fields[d]] = True
+    r = requests.post(f"{BASE}/campaign/UpdateSchedule", headers=_headers(), json={
+        "campaignId": campaign_id,
+        "schedule": {"dailyStartTime": start_hour, "dailyEndTime": end_hour, "timeZoneId": timezone, **enabled},
+    }, timeout=15)
+    _raise_with_body(r)
+
+
+def update_accounts(campaign_id: int, sender_ids: list[int]) -> None:
+    """Not called automatically by push_campaign_copy() - sender_ids are
+    required directly on create_campaign() now (confirmed required field),
+    so this is only for changing senders on an existing campaign later."""
+    r = requests.post(f"{BASE}/campaign/UpdateAccounts", headers=_headers(),
+                      json={"campaignId": campaign_id, "linkedInAccountIds": sender_ids}, timeout=30)
+    _raise_with_body(r)
+
+
+def _dm(copy: dict, key: str, delay: int, unit: str, external_ref: str, conditional: dict, unconditional: dict) -> dict:
+    return {
+        "nodeType": "MESSAGE", "actionDelay": delay, "actionDelayUnit": unit,
+        "payload": {"messages": [copy[key]["message"]], "fallbackMessage": copy[key]["fallback"]},
+        "externalReference": external_ref, "conditionalNode": conditional, "unconditionalNode": unconditional,
+    }
+
+
+def _end(delay: int, unit: str = "DAY") -> dict:
+    return {"nodeType": "END", "actionDelay": delay, "actionDelayUnit": unit}
+
+
+def _dm2_onward(copy: dict, dm2_delay_days: int) -> dict:
+    dm4 = _dm(copy, "dm4", 3, "DAY", "dm4", _end(1), _end(15))
+    view_profile_2 = {"nodeType": "VIEW_PROFILE", "actionDelay": 1, "actionDelayUnit": "DAY",
+                       "externalReference": "view-profile-2", "unconditionalNode": dm4}
+    dm3 = _dm(copy, "dm3", 7, "DAY", "dm3", _end(1), view_profile_2)
+    return _dm(copy, "dm2", dm2_delay_days, "DAY", "dm2", _end(1), dm3)
+
+
+def build_sequence(copy: dict) -> dict:
+    """The validated default from docs/heyreach-default-workflow.md:
+    CHECK_IS_CONNECTION entry, no open-profile/InMail branch (that extension
+    is documented there as an unvalidated draft - not built here)."""
+    connected_branch = _dm(copy, "dm1_connected", 3, "HOUR", "dm1-connected", _end(1), _dm2_onward(copy, 5))
+    connection_request = {
+        "nodeType": "CONNECTION_REQUEST", "actionDelay": 1, "actionDelayUnit": "DAY",
+        "externalReference": "connect", "payload": {"messages": [], "toBeWithdrawnAfterDays": 30},
+        "conditionalNode": _dm(copy, "dm1_not_connected", 1, "DAY", "dm1-not-connected", _end(1), _dm2_onward(copy, 6)),
+        "unconditionalNode": _end(50),
+    }
+    like_post = {
+        "nodeType": "LIKE_POST", "actionDelay": 3, "actionDelayUnit": "HOUR",
+        "externalReference": "like-post",
+        "payload": {"reactionType": "LIKE", "randomReaction": True, "reactBefore": "MONTH1", "skipDelayIfCannotLike": True},
+        "unconditionalNode": connection_request,
+    }
+    not_connected_branch = {"nodeType": "VIEW_PROFILE", "actionDelay": 3, "actionDelayUnit": "HOUR",
+                            "externalReference": "view-profile-1", "unconditionalNode": like_post}
+    return {"nodeType": "CHECK_IS_CONNECTION", "actionDelay": 0, "externalReference": "entry",
+            "conditionalNode": connected_branch, "unconditionalNode": not_connected_branch}
+
+
+def update_sequence(campaign_id: int, copy: dict) -> None:
+    r = requests.post(f"{BASE}/campaign/UpdateSequence", headers=_headers(),
+                      json={"campaignId": campaign_id, "sequence": build_sequence(copy)}, timeout=30)
+    _raise_with_body(r)
+
+
+def push_campaign_copy(campaign_name: str, list_id: int, copy: dict, sender_ids: list[int] | None = None) -> dict:
+    """Create a DRAFT HeyReach campaign with the real DM cadence (the
+    validated two-branch structure, not the unvalidated open-profile draft -
+    see build_sequence's docstring) and attach it to list_id. Never raises.
+
+    sender_ids is REQUIRED by HeyReach's own API (linkedInAccountIds, 1-100
+    items, confirmed via heyreach.io/blog/campaign-api) - there's no way to
+    create a campaign without at least one sender account, so this returns
+    "needs_sender_accounts" rather than attempting a call that's guaranteed
+    to fail, until region-matched sender selection is defined."""
+    if not is_configured():
+        return {"status": "not_configured", "message": "HEYREACH_API_KEY not set"}
+    if not sender_ids:
+        return {"status": "needs_sender_accounts",
+                "message": "HeyReach requires at least one sender LinkedIn account to create a campaign - "
+                           "none selected yet. Use heyreach.list_senders() (GetAll) to see available accounts."}
+    missing = _REQUIRED_COPY_KEYS - copy.keys()
+    if missing:
+        return {"status": "error", "message": f"copy is missing required slot(s): {', '.join(sorted(missing))}"}
+    try:
+        cid = create_campaign(campaign_name, list_id, sender_ids)
+        update_schedule(cid)
+        update_sequence(cid, copy)
+        return {
+            "status": "pushed", "campaign_id": cid, "campaign_name": campaign_name, "list_id": list_id,
+            "note": "Campaign created DRAFT with cadence, list, and senders attached. Review in the HeyReach UI, then start manually.",
+        }
+    except requests.HTTPError as e:
+        return {"status": "error", "message": str(e), "raw_response": e.response.text[:1000] if e.response is not None else None}
+    except Exception as e:
+        return {"status": "error", "message": f"HeyReach campaign push failed: {e}"}
+
+
 def push_leads(linkedin_rows: list[dict], list_name: str) -> dict:
     """Create a HeyReach list and add the LinkedIn contacts. Returns a status
     dict. Never raises into the caller - a HeyReach failure shouldn't sink the

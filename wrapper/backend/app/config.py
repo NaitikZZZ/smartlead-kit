@@ -26,6 +26,13 @@ HUBSPOT_READ_TOKEN = os.environ.get("HUBSPOT_PRIVATE_APP_TOKEN", "")
 HUBSPOT_WRITE_TOKEN = os.environ.get("HUBSPOT_WRITE_TOKEN", "")
 HEYREACH_API_KEY = os.environ.get("HEYREACH_API_KEY", "")
 INTERAKT_API_KEY = os.environ.get("INTERAKT_API_KEY", "")
+SMARTLEAD_API_KEY = os.environ.get("SMARTLEAD_API_KEY", "")
+
+# Regions where a WhatsApp/Interakt leg is standing-rule-eligible (CLAUDE.md,
+# 2026-10-12): India + Philippines + Indonesia. Copy Push warns rather than
+# blocks when Interakt is selected outside these - a soft guardrail, not a
+# hard stop, since the user can confirm they mean it.
+COPY_PUSH_WHATSAPP_REGIONS = {"IND", "PHL", "IDN"}
 
 # Upstash Redis (REST API) - replaces the local file-based caches below so
 # they survive across serverless invocations (Vercel's filesystem is
