@@ -1175,7 +1175,9 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
             run_id, "competitor_exclusion_needed", "yes_no",
             "Remove competitors from this list?",
             default="yes",
-            context={"step": "exclusion"},
+            context={"step": "exclusion",
+                     "reference_url": config.COMPETITOR_LIST_URL,
+                     "reference_label": "Xoxoday competitor list"},
         )
         if _truthy(competitor_answer):
             _update(run_id, message="Checking against Xoxoday competitor list")
@@ -1205,6 +1207,20 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
             competitor_stats = {"skipped": True, "reason": "declined by user", "total": len(df), "excluded": 0}
         stats["competitor_exclusion"] = competitor_stats
         stats["exclusion"] = exclusion_stats
+
+        # ============ Step 3c: Prospect-level exclusion choice (gated, default yes) ============
+        # Only records the choice; the check itself still runs late, right
+        # before the send (run_confirmed_import), so one person's DNC/meeting
+        # status never costs their colleagues a spot or enrichment credits.
+        prospect_answer = ask(
+            run_id, "prospect_exclusion_needed", "yes_no",
+            "Check individual contacts against the prospect-level HubSpot DNU list (meeting completed / DNC) before sending?",
+            default="yes",
+            context={"step": "exclusion",
+                     "reference_url": config.exclusion_list_url(config.HUBSPOT_EXCLUSION_LIST_ID_PROSPECT),
+                     "reference_label": "ABM EXCLSIONS Prospect Level - DNU"},
+        )
+        stats["prospect_exclusion_enabled"] = _truthy(prospect_answer)
         _update(run_id, stats=dict(stats))
 
         accounts_processed = df.copy()
@@ -1795,8 +1811,13 @@ def run_confirmed_import(run_id: str, run_dir: Path):
     _step(running_stats, "final_exclusion", "Contact Exclusion Check", "running")
     _update(run_id, message="Final contact-level DNU check before sending", stats=running_stats)
 
-    df, final_excl_stats = hubspot_exclusion.run_exclusion_check(
-        df, None, sources={hubspot_exclusion.SOURCE_PROSPECT})
+    if running_stats.get("prospect_exclusion_enabled", True):
+        df, final_excl_stats = hubspot_exclusion.run_exclusion_check(
+            df, None, sources={hubspot_exclusion.SOURCE_PROSPECT})
+    else:
+        df["Exclusion Status"] = "OK to reach out"
+        df["Exclusion Reason"] = "Prospect-level exclusion skipped by user"
+        final_excl_stats = {"skipped": True, "total": len(df), "excluded": 0, "ok_to_reach_out": len(df)}
     excluded_emails, excluded_linkedin = _excluded_identifiers(df)
     df = df[df["Exclusion Status"] == "OK to reach out"].copy()
 

@@ -220,6 +220,12 @@ def exclusion_list_url(list_id: str | None = None) -> str:
     )
 
 
+COMPETITOR_LIST_URL = os.environ.get(
+    "COMPETITOR_LIST_URL",
+    "https://github.com/NaitikZZZ/smartlead-kit/blob/main/reference/xoxoday-competitors.csv",
+)
+
+
 def exclusion_reference_label() -> str:
     """Human-readable summary of which DNU list(s) are active, shown on the
     pre-exclusion confirmation prompt."""

@@ -318,17 +318,29 @@ export default function SourceForm({
         <CampaignIdeaWizard icpOptions={icpOptions} onStarted={onStarted} />
       )}
 
-      <p style={{ marginTop: 16, fontSize: 12, color: "var(--dark-200)" }}>
-        <span className="tag-success">Exclusion</span> runs automatically against{" "}
-        {appConfig?.exclusion_list_url ? (
-          <a href={appConfig.exclusion_list_url} target="_blank" rel="noreferrer">
-            {appConfig.exclusion_list_name || "the HubSpot DNU list"} ↗
-          </a>
-        ) : (
-          <strong>{appConfig?.exclusion_list_name || "the HubSpot DNU list"}</strong>
-        )}{" "}
-        (matched by email domain). You'll confirm before it runs.
-      </p>
+      <div style={{ marginTop: 16, fontSize: 12, color: "var(--dark-200)" }}>
+        <span className="tag-success">Exclusions</span> - you'll be asked to confirm each before it runs:
+        <ul style={{ margin: "6px 0 0 18px" }}>
+          <li>
+            Company level:{" "}
+            {appConfig?.exclusion_list_url_company ? (
+              <a href={appConfig.exclusion_list_url_company} target="_blank" rel="noreferrer">HubSpot DNU list ↗</a>
+            ) : "HubSpot DNU list"}{" "}(matched by domain / company name)
+          </li>
+          <li>
+            Competitors:{" "}
+            {appConfig?.competitor_list_url ? (
+              <a href={appConfig.competitor_list_url} target="_blank" rel="noreferrer">Xoxoday competitor list ↗</a>
+            ) : "Xoxoday competitor list"}
+          </li>
+          <li>
+            Prospect level:{" "}
+            {appConfig?.exclusion_list_url_prospect ? (
+              <a href={appConfig.exclusion_list_url_prospect} target="_blank" rel="noreferrer">HubSpot DNU list ↗</a>
+            ) : "HubSpot DNU list"}{" "}(exact email / LinkedIn, checked right before sending)
+          </li>
+        </ul>
+      </div>
 
       {source === "csv" && (
         <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
