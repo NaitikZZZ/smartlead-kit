@@ -74,7 +74,20 @@ def _post_and_associate(project_id: str, summary_markdown: str) -> str:
     return note_id
 
 
-def post_summary_note(associations: list[dict] | None, summary_markdown: str) -> str | None:
+def _attribution(run_by: str | None, import_by: str | None) -> str:
+    """Leading line of the note naming who ran the pipeline (and, if
+    different, who confirmed the HubSpot import), so a CRM reader can tell
+    which teammate did it - the API token itself belongs to one account."""
+    if not run_by:
+        return ""
+    line = f"Run by {run_by}"
+    if import_by and import_by != run_by:
+        line += f" | HubSpot import confirmed by {import_by}"
+    return line + "\n"
+
+
+def post_summary_note(associations: list[dict] | None, summary_markdown: str,
+                      run_by: str | None = None, import_by: str | None = None) -> str | None:
     """No-ops (returns None) unless this run has a resolved "project"
     association - "partner"/"event" associations never get a note. Otherwise
     posts one note carrying the run's final summary and associates it to
@@ -83,7 +96,7 @@ def post_summary_note(associations: list[dict] | None, summary_markdown: str) ->
     if not project_id:
         return None
     try:
-        note_id = _post_and_associate(project_id, summary_markdown)
+        note_id = _post_and_associate(project_id, _attribution(run_by, import_by) + summary_markdown)
         logger.info(f"Posted HubSpot summary note {note_id} to Project {project_id}")
         return note_id
     except Exception as e:

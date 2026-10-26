@@ -1,10 +1,11 @@
 from pathlib import Path
 
 import inngest.fast_api
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import config
+from . import audit, config
+from .auth import Actor, require_admin, require_user
 from .inngest_client import client as inngest_client
 from .inngest_functions import connectivity_test, wait_test, refresh_exclusion_cache
 from .pipeline.inngest_runner import run_pipeline_slice1
@@ -23,6 +24,16 @@ app.include_router(runs.router)
 app.include_router(cron.router)
 inngest.fast_api.serve(app, inngest_client,
                        [connectivity_test, wait_test, run_pipeline_slice1, refresh_exclusion_cache])
+
+
+@app.get("/api/auth/me")
+def auth_me(actor: Actor = Depends(require_user)):
+    return {"name": actor.name, "is_admin": bool(config.ADMIN_NAME) and actor.name == config.ADMIN_NAME}
+
+
+@app.get("/api/admin/audit")
+def admin_audit(limit: int = 200, _: Actor = Depends(require_admin)):
+    return {"entries": audit.recent(limit)}
 
 
 @app.get("/api/config")

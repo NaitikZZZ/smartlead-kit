@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { RunStatus } from "../lib/types";
-import { confirmImport, fileUrl } from "../lib/api";
+import { confirmImport, downloadProps } from "../lib/api";
 
 export default function ReviewOutputs({ run, onImported }: { run: RunStatus; onImported: () => void }) {
   const [checked, setChecked] = useState(false);
@@ -59,7 +59,7 @@ export default function ReviewOutputs({ run, onImported }: { run: RunStatus; onI
 
         <div style={{ marginTop: 20, display: "flex", gap: 12, flexWrap: "wrap" }}>
           {run.output_files.map((f) => (
-            <a key={f} href={fileUrl(run.run_id, f)} className="btn-secondary" style={{ textDecoration: "none", fontSize: 13 }}>
+            <a key={f} {...downloadProps(run.run_id, f)} className="btn-secondary" style={{ textDecoration: "none", fontSize: 13 }}>
               ⬇ {f}
             </a>
           ))}

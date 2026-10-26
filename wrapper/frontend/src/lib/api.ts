@@ -8,14 +8,58 @@ import type { AppConfig, IcpOptions, RunStatus, WizardTargeting } from "./types"
 // itself at build time, so this no longer depends on Vercel config at all.
 const API_BASE = import.meta.env.VITE_API_BASE ?? (import.meta.env.PROD ? "" : "http://localhost:8731");
 
+const PASSWORD_KEY = "abm_app_password";
+
+export function getStoredPassword(): string | null {
+  try {
+    return window.localStorage.getItem(PASSWORD_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredPassword(pw: string | null) {
+  try {
+    if (pw) window.localStorage.setItem(PASSWORD_KEY, pw);
+    else window.localStorage.removeItem(PASSWORD_KEY);
+  } catch {
+    // no-op
+  }
+}
+
+/** fetch() for our own backend: adds the per-person password header, and on a
+ * 401 clears the stored password and tells the app to show the login screen. */
+export async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  const pw = getStoredPassword();
+  if (pw) headers.set("X-App-Password", pw);
+  const r = await fetch(url, { ...init, headers });
+  if (r.status === 401 && pw) {
+    setStoredPassword(null);
+    window.dispatchEvent(new Event("abm-unauthorized"));
+  }
+  return r;
+}
+
+export interface Me {
+  name: string;
+  is_admin: boolean;
+}
+
+/** Returns null if the stored password is missing or rejected. */
+export async function getMe(): Promise<Me | null> {
+  const r = await apiFetch(`${API_BASE}/api/auth/me`);
+  return r.ok ? r.json() : null;
+}
+
 export async function getConfig(): Promise<AppConfig> {
-  const r = await fetch(`${API_BASE}/api/config`);
+  const r = await apiFetch(`${API_BASE}/api/config`);
   if (!r.ok) throw new Error("Failed to load server config");
   return r.json();
 }
 
 export async function getIcpOptions(): Promise<IcpOptions> {
-  const r = await fetch(`${API_BASE}/api/runs/icp-options`);
+  const r = await apiFetch(`${API_BASE}/api/runs/icp-options`);
   if (!r.ok) throw new Error("Failed to load ICP reference data");
   return r.json();
 }
@@ -30,7 +74,7 @@ export interface IcpMapping {
 
 export async function getIcpMapping(product: string, useCase: string): Promise<IcpMapping> {
   const params = new URLSearchParams({ product, use_case: useCase });
-  const r = await fetch(`${API_BASE}/api/runs/icp-mapping?${params.toString()}`);
+  const r = await apiFetch(`${API_BASE}/api/runs/icp-mapping?${params.toString()}`);
   if (!r.ok) throw new Error("Failed to load ICP mapping");
   return r.json();
 }
@@ -54,7 +98,7 @@ export interface UploadedCsv {
 async function fetchWithRetry(url: string, init: RequestInit, label: string, retries = 3): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
     try {
-      return await fetch(url, init);
+      return await (url.startsWith(`${API_BASE}/api`) ? apiFetch(url, init) : fetch(url, init));
     } catch (e) {
       if (attempt >= retries) {
         throw new Error(`Network error ${label} - check your connection and try again.`);
@@ -218,7 +262,7 @@ export async function startRun(params: StartRunParams): Promise<RunStatus> {
   if (params.csvFile) fd.append("csv_file", params.csvFile);
   if (params.mappingSheetFile) fd.append("mapping_sheet_file", params.mappingSheetFile);
 
-  const r = await fetch(`${API_BASE}/api/runs`, { method: "POST", body: fd });
+  const r = await apiFetch(`${API_BASE}/api/runs`, { method: "POST", body: fd });
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
     throw new Error(body.detail || `Failed to start run (${r.status})`);
@@ -233,7 +277,7 @@ export interface ProjectPreview {
 }
 
 export async function previewProject(projectId: string): Promise<ProjectPreview> {
-  const r = await fetch(`${API_BASE}/api/runs/project-preview`, {
+  const r = await apiFetch(`${API_BASE}/api/runs/project-preview`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ project_id: projectId }),
@@ -248,14 +292,14 @@ export async function previewProject(projectId: string): Promise<ProjectPreview>
 export class RunNotFoundError extends Error {}
 
 export async function getRun(runId: string): Promise<RunStatus> {
-  const r = await fetch(`${API_BASE}/api/runs/${runId}`);
+  const r = await apiFetch(`${API_BASE}/api/runs/${runId}`);
   if (r.status === 404) throw new RunNotFoundError(`Run ${runId} not found`);
   if (!r.ok) throw new Error("Failed to fetch run status");
   return r.json();
 }
 
 export async function answerQuestion(runId: string, key: string, value: any): Promise<RunStatus> {
-  const r = await fetch(`${API_BASE}/api/runs/${runId}/answer`, {
+  const r = await apiFetch(`${API_BASE}/api/runs/${runId}/answer`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ key, value }),
@@ -268,7 +312,7 @@ export async function answerQuestion(runId: string, key: string, value: any): Pr
 }
 
 export async function retryRun(runId: string): Promise<RunStatus> {
-  const r = await fetch(`${API_BASE}/api/runs/${runId}/retry`, { method: "POST" });
+  const r = await apiFetch(`${API_BASE}/api/runs/${runId}/retry`, { method: "POST" });
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
     throw new Error(body.detail || `Failed to retry run (${r.status})`);
@@ -280,8 +324,28 @@ export function fileUrl(runId: string, filename: string): string {
   return `${API_BASE}/api/runs/${runId}/files/${filename}`;
 }
 
+/** A plain <a href> can't send the password header, so downloads fetch the
+ * file with it and save the blob. Spread onto an <a>: {...downloadProps(...)}. */
+export function downloadProps(runId: string, filename: string) {
+  return {
+    href: "#",
+    onClick: async (e: { preventDefault: () => void }) => {
+      e.preventDefault();
+      const r = await apiFetch(fileUrl(runId, filename));
+      if (!r.ok) return;
+      const name = /filename="([^"]+)"/.exec(r.headers.get("Content-Disposition") ?? "")?.[1] ?? filename;
+      const url = URL.createObjectURL(await r.blob());
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+  };
+}
+
 export async function confirmImport(runId: string) {
-  const r = await fetch(`${API_BASE}/api/runs/${runId}/import`, {
+  const r = await apiFetch(`${API_BASE}/api/runs/${runId}/import`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ confirm: true }),
