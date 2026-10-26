@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import "./theme.css";
-import { getConfig, getIcpOptions, getRun, retryRun, fileUrl, RunNotFoundError } from "./lib/api";
+import { downloadProps, getConfig, getIcpOptions, getMe, getRun, retryRun, setStoredPassword, RunNotFoundError } from "./lib/api";
 import type { AppConfig, IcpOptions, RunStatus } from "./lib/types";
 import SourceForm from "./components/SourceForm";
 import StepSidebar from "./components/StepSidebar";
@@ -65,7 +65,7 @@ function writeRunIdToUrl(id: string | null) {
   }
 }
 
-export default function App() {
+function AppInner() {
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
   const [icpOptions, setIcpOptions] = useState<IcpOptions | null>(null);
   const [runId, setRunIdState] = useState<string | null>(() => readRunIdFromUrl() || readStoredRunId());
@@ -257,7 +257,7 @@ function MidRunDownloads({ run }: { run: RunStatus }) {
       </p>
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
         {run.output_files.map((f) => (
-          <a key={f} href={fileUrl(run.run_id, f)} className="btn-secondary" style={{ textDecoration: "none", fontSize: 13 }}>
+          <a key={f} {...downloadProps(run.run_id, f)} className="btn-secondary" style={{ textDecoration: "none", fontSize: 13 }}>
             ⬇ {f}
           </a>
         ))}
@@ -309,5 +309,67 @@ function ConfigBadges({ appConfig }: { appConfig: AppConfig | null }) {
         </Tooltip>
       ))}
     </div>
+  );
+}
+
+/** Login gate: the backend rejects every API call without a valid per-person
+ * password, and the name it maps to is stamped on the audit log and the
+ * HubSpot note. */
+export default function App() {
+  const [userName, setUserName] = useState<string | null>(null);
+  const [checking, setChecking] = useState(true);
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getMe().then((me) => setUserName(me?.name ?? null)).catch(() => setUserName(null)).finally(() => setChecking(false));
+    const onUnauthorized = () => setUserName(null);
+    window.addEventListener("abm-unauthorized", onUnauthorized);
+    return () => window.removeEventListener("abm-unauthorized", onUnauthorized);
+  }, []);
+
+  async function login(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setStoredPassword(password.trim());
+    const me = await getMe().catch(() => null);
+    if (me) {
+      setUserName(me.name);
+      setPassword("");
+    } else {
+      setStoredPassword(null);
+      setError("Invalid password");
+    }
+  }
+
+  if (checking) return null;
+  if (!userName) {
+    return (
+      <div className="app-shell">
+        <main className="main">
+          <form className="card" style={{ padding: 24, maxWidth: 360, margin: "80px auto" }} onSubmit={login}>
+            <h2 style={{ marginTop: 0 }}>Sign in</h2>
+            <p style={{ fontSize: 13, color: "var(--dark-200)" }}>
+              Enter your personal password. Your name is recorded on everything you run.
+            </p>
+            <input
+              type="password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)}
+              placeholder="Password" style={{ width: "100%", marginBottom: 12 }}
+            />
+            {error && <p style={{ color: "var(--red-300)", fontSize: 13 }}>{error}</p>}
+            <button className="btn-primary" type="submit" disabled={!password.trim()}>Sign in</button>
+          </form>
+        </main>
+      </div>
+    );
+  }
+  return (
+    <>
+      <div style={{ position: "fixed", top: 8, right: 12, fontSize: 12, color: "var(--dark-200)", zIndex: 10 }}>
+        Signed in as {userName} ·{" "}
+        <a href="#" onClick={(e) => { e.preventDefault(); setStoredPassword(null); setUserName(null); }}>Sign out</a>
+      </div>
+      <AppInner />
+    </>
   );
 }

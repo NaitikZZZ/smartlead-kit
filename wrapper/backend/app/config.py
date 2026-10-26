@@ -43,6 +43,12 @@ BLOB_READ_WRITE_TOKEN = os.environ.get("BLOB_READ_WRITE_TOKEN", "")
 # to a cron route can never trigger a rebuild by accident.
 CRON_SECRET = os.environ.get("CRON_SECRET", "")
 
+# Per-person logins (see app/auth.py): JSON of {sha256_hex_of_password: "Name"}.
+# Generate with scripts/generate_user_passwords.py. ADMIN_NAME is the one name
+# allowed to read /api/admin/audit.
+APP_USERS = os.environ.get("APP_USERS", "")
+ADMIN_NAME = os.environ.get("ADMIN_NAME", "")
+
 # Inngest - durable workflow engine replacing the in-memory JOBS dict +
 # blocked-thread ask/answer mechanism in runner.py (see app/inngest_client.py).
 INNGEST_EVENT_KEY = os.environ.get("INNGEST_EVENT_KEY", "")

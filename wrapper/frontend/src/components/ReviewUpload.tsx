@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { CostInfo, RunStatus, StepInfo } from "../lib/types";
-import { confirmImport, fileUrl } from "../lib/api";
+import { apiFetch, confirmImport, downloadProps, fileUrl } from "../lib/api";
 import { costByOp } from "./CostBar";
 import Tooltip from "./Tooltip";
 
@@ -55,7 +55,7 @@ export default function ReviewUpload({ run, onImported }: { run: RunStatus; onIm
   const excludedRows = (excl.excluded_rows ?? []) as { company: string; domain: string; reason: string }[];
 
   useEffect(() => {
-    fetch(fileUrl(run.run_id, "email_upload.csv"))
+    apiFetch(fileUrl(run.run_id, "email_upload.csv"))
       .then((r) => (r.ok ? r.text() : ""))
       .then((t) => setPreview(t ? parseCsv(t, 6) : []))
       .catch(() => setPreview([]));
@@ -292,12 +292,12 @@ export default function ReviewUpload({ run, onImported }: { run: RunStatus; onIm
               <span style={{ color: "var(--dark-200)", fontWeight: 400 }}>({counts[ch.key] ?? 0})</span>
               <Tooltip text={ch.note} />
             </div>
-            <a className="btn-secondary" href={fileUrl(run.run_id, ch.file)} style={{ textDecoration: "none" }}>Download</a>
+            <a className="btn-secondary" {...downloadProps(run.run_id, ch.file)} style={{ textDecoration: "none" }}>Download</a>
           </div>
         ))}
         <a
           className="btn-secondary"
-          href={fileUrl(run.run_id, "SUMMARY.md")}
+          {...downloadProps(run.run_id, "SUMMARY.md")}
           style={{ textDecoration: "none", fontSize: 12, marginTop: 12, display: "inline-block" }}
         >
           Download run summary (includes full exclusion list)

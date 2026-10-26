@@ -12,15 +12,16 @@ from typing import Optional
 import base64
 
 import inngest
-from fastapi import APIRouter, Body, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 
-from .. import config, redis_cache, run_status, vercel_blob
+from .. import audit, config, redis_cache, run_status, vercel_blob
+from ..auth import Actor, require_user
 from ..inngest_client import client as inngest_client
 from ..models import AnswerRequest, ImportConfirmRequest, PendingQuestion, RunStatus
 from ..pipeline import runner, input_sources, outputs, icp_mapper
 
-router = APIRouter(prefix="/api/runs", tags=["runs"])
+router = APIRouter(prefix="/api/runs", tags=["runs"], dependencies=[Depends(require_user)])
 
 
 def _engine_for(run_id: str) -> Optional[str]:
@@ -145,6 +146,7 @@ async def create_run(
     csv_blob_pathname: Optional[str] = Form(None),  # set instead of csv_file when the browser already uploaded direct-to-Blob
     run_id: Optional[str] = Form(None),  # the run_id /upload-token minted, so the pathname it scoped the token to still matches
     mapping_sheet_file: Optional[UploadFile] = File(None),  # accepted for request-shape compat, unused (confirmed-dead feature)
+    actor: Actor = Depends(require_user),
 ):
     # Two upload paths: the browser either pre-uploaded straight to Blob (large
     # files - passes csv_blob_pathname + run_id) or streamed the file through
@@ -184,6 +186,7 @@ async def create_run(
     event_data = {
         "run_id": run_id, "input_source": input_source,
         "company_col": company_col, "domain_col": domain_col, "employee_col": employee_col,
+        "run_by": actor.name,
     }
     if pre_uploaded:
         event_data["csv_blob_pathname"] = csv_blob_pathname
@@ -210,6 +213,8 @@ async def create_run(
     # retry_run() below.
     run_status.update(run_id, _event_data=event_data)
     inngest_client.send_sync(inngest.Event(name="run/start", data=event_data))
+    audit.log(actor.name, "start_run", ip=actor.ip, run_id=run_id, input_source=input_source,
+              filename=csv_filename, hubspot_project_id=hubspot_project_id)
     return _to_status(run_id, "inngest")
 
 
@@ -308,7 +313,7 @@ def answer_question(run_id: str, body: AnswerRequest):
 
 
 @router.post("/{run_id}/retry", response_model=RunStatus)
-def retry_run(run_id: str):
+def retry_run(run_id: str, actor: Actor = Depends(require_user)):
     """Re-sends the original run/start event for a failed run, e.g. after a
     transient upstream error (Vercel Blob, Apollo, etc.) killed it outright -
     see vercel_blob.put()'s own retry-with-backoff for the narrower case that
@@ -332,6 +337,7 @@ def retry_run(run_id: str):
     run_status.init(run_id)
     run_status.update(run_id, _event_data=event_data)
     inngest_client.send_sync(inngest.Event(name="run/start", data=event_data))
+    audit.log(actor.name, "retry_run", ip=actor.ip, run_id=run_id)
     return _to_status(run_id, "inngest")
 
 
@@ -368,7 +374,7 @@ def download_file(run_id: str, filename: str):
 
 
 @router.post("/{run_id}/import")
-def confirm_import(run_id: str, body: ImportConfirmRequest):
+def confirm_import(run_id: str, body: ImportConfirmRequest, actor: Actor = Depends(require_user)):
     if not body.confirm:
         raise HTTPException(400, "confirm must be true to run this - this writes to HubSpot")
 
@@ -385,6 +391,9 @@ def confirm_import(run_id: str, body: ImportConfirmRequest):
         # GET /{run_id} poll loop, same as every other paused-then-resumed
         # step - the HubSpot import itself runs in the background via Inngest,
         # not inline in this request.
+        run_status.update(run_id, _import_by=actor.name)  # read by the HubSpot note step
+        audit.log(actor.name, "confirm_hubspot_import", ip=actor.ip, run_id=run_id,
+                  campaign_title=(job.get("stats") or {}).get("campaign_title"))
         inngest_client.send_sync(inngest.Event(
             name="run/answer", data={"run_id": run_id, "key": "confirm_import", "value": True}))
         return {"status": "confirmed", "run_id": run_id}

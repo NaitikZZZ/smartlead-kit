@@ -70,7 +70,7 @@ import inngest
 from .._lazy import pd
 from .._lazy import Anthropic
 
-from .. import config, run_status, vercel_blob
+from .. import audit, config, run_status, vercel_blob
 from ..inngest_client import client
 from . import (
     apollo_enrich, association_resolve, competitor_exclusion, copy_agent, domain_resolution, dream_accounts, estimates,
@@ -677,7 +677,8 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
 
     async def _init():
         run_status.init(run_id)
-        run_status.update(run_id, stage="reading_input", message="Reading input source")
+        run_status.update(run_id, stage="reading_input", message="Reading input source",
+                          _run_by=data.get("run_by"))
         return True
 
     await step.run("init_status", _init)
@@ -2374,7 +2375,12 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         final_stats = {**run_status.get(run_id).get("stats", {}), "hubspot_import": import_result}
         summary_markdown = outputs.build_summary_markdown(
             campaign_title, final_stats, accounts_processed, core_df, import_result=import_result)
-        hubspot_project_note.post_summary_note(associations, summary_markdown)
+        job = run_status.get(run_id)
+        note_id = hubspot_project_note.post_summary_note(
+            associations, summary_markdown, run_by=job.get("_run_by"), import_by=job.get("_import_by"))
+        audit.log(job.get("_import_by") or job.get("_run_by") or "unknown", "hubspot_import_done", run_id=run_id,
+                  campaign_title=campaign_title, note_id=note_id,
+                  import_result={k: v for k, v in (import_result or {}).items() if isinstance(v, (int, str, bool))})
         return True
 
     await step.run("post_hubspot_project_note", _post_hubspot_project_note)
