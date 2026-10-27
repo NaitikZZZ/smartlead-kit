@@ -1849,7 +1849,8 @@ def run_confirmed_import(run_id: str, run_dir: Path):
         li_df = _drop_excluded_contacts(li_df, excluded_emails, excluded_linkedin)
         if not li_df.empty:
             li_df = li_df.where(pd.notna(li_df), None)
-            heyreach_result = heyreach.push_leads(li_df.to_dict(orient="records"), campaign_title)
+            heyreach_result = heyreach.push_leads(li_df.to_dict(orient="records"), campaign_title,
+                                                   job.get("_import_by") or job.get("_run_by"))
     result["heyreach"] = heyreach_result
 
     # Push the WhatsApp file to Interakt (best-effort - never sinks the HubSpot

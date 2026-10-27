@@ -10,6 +10,8 @@ LinkedIn file becomes a HeyReach list, ready to attach to a campaign in HeyReach
 """
 from __future__ import annotations
 
+import os
+
 from .._lazy import pd
 import requests
 
@@ -36,7 +38,17 @@ def is_configured() -> bool:
     return bool(config.HEYREACH_API_KEY)
 
 
-def _headers():
+def workspace_for(user: str | None) -> str | None:
+    """HeyReach workspace for a logged-in teammate, or None for the main one."""
+    return config.HEYREACH_USER_WORKSPACES.get(" ".join((user or "").lower().split()))
+
+
+def _headers(user: str | None = None):
+    ws = workspace_for(user)
+    if ws:
+        name = f"HEYREACH_KEY_{ws}"
+        return {"X-API-KEY": config.require(name, os.environ.get(name, "")),
+                "Content-Type": "application/json"}
     return {"X-API-KEY": config.require("HEYREACH_API_KEY", config.HEYREACH_API_KEY),
             "Content-Type": "application/json"}
 
@@ -92,9 +104,9 @@ def _lead(row: dict) -> dict | None:
     return lead
 
 
-def create_list(name: str) -> int:
+def create_list(name: str, user: str | None = None) -> int:
     name = name[:_LIST_NAME_MAX] if len(name) > _LIST_NAME_MAX else name
-    r = requests.post(f"{BASE}/list/CreateEmptyList", headers=_headers(),
+    r = requests.post(f"{BASE}/list/CreateEmptyList", headers=_headers(user),
                       json={"name": name, "type": "USER_LIST"}, timeout=30)
     _raise_with_body(r)
     body = r.json() if r.content else {}
@@ -102,11 +114,11 @@ def create_list(name: str) -> int:
     return body.get("id") or body.get("listId") or body
 
 
-def add_leads(list_id: int, leads: list[dict]) -> dict:
+def add_leads(list_id: int, leads: list[dict], user: str | None = None) -> dict:
     added = updated = failed = 0
     for i in range(0, len(leads), _ADD_BATCH):
         chunk = leads[i:i + _ADD_BATCH]
-        r = requests.post(f"{BASE}/list/AddLeadsToListV2", headers=_headers(),
+        r = requests.post(f"{BASE}/list/AddLeadsToListV2", headers=_headers(user),
                           json={"listId": list_id, "leads": chunk}, timeout=60)
         _raise_with_body(r)
         body = r.json() if r.content else {}
@@ -116,10 +128,11 @@ def add_leads(list_id: int, leads: list[dict]) -> dict:
     return {"added": added, "updated": updated, "failed": failed}
 
 
-def push_leads(linkedin_rows: list[dict], list_name: str) -> dict:
+def push_leads(linkedin_rows: list[dict], list_name: str, user: str | None = None) -> dict:
     """Create a HeyReach list and add the LinkedIn contacts. Returns a status
     dict. Never raises into the caller - a HeyReach failure shouldn't sink the
-    HubSpot import that already succeeded."""
+    HubSpot import that already succeeded. `user` is the logged-in teammate;
+    the list lands in their HeyReach workspace (see config.HEYREACH_USER_WORKSPACES)."""
     if not is_configured():
         return {"status": "not_configured", "pushed": 0, "eligible": len(linkedin_rows),
                 "message": "HEYREACH_API_KEY not set - LinkedIn CSV is downloadable for manual import."}
@@ -131,9 +144,10 @@ def push_leads(linkedin_rows: list[dict], list_name: str) -> dict:
 
     try:
         actual_name = list_name[:_LIST_NAME_MAX] if len(list_name) > _LIST_NAME_MAX else list_name
-        list_id = create_list(actual_name)
-        counts = add_leads(list_id, leads)
+        list_id = create_list(actual_name, user)
+        counts = add_leads(list_id, leads, user)
         return {"status": "pushed", "list_id": list_id, "list_name": actual_name,
+                "workspace": workspace_for(user) or "MAIN",
                 "eligible": len(linkedin_rows), "pushed": counts["added"] + counts["updated"], **counts}
     except Exception as e:
         return {"status": "error", "pushed": 0, "eligible": len(linkedin_rows),

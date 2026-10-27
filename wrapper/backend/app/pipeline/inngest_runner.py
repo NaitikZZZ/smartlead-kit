@@ -2276,7 +2276,9 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                 li_df = pd.DataFrame()
             if not li_df.empty:
                 li_df = li_df.where(pd.notna(li_df), None)
-                return _nan_safe(heyreach.push_leads(li_df.to_dict(orient="records"), campaign_title))
+                hr_job = run_status.get(run_id)
+                return _nan_safe(heyreach.push_leads(li_df.to_dict(orient="records"), campaign_title,
+                                                     hr_job.get("_import_by") or hr_job.get("_run_by")))
         return {"status": "skipped"}
 
     heyreach_result = await step.run("heyreach_push", _push_heyreach)

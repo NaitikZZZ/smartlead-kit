@@ -25,6 +25,15 @@ APOLLO_API_KEY = os.environ.get("APOLLO_API_KEY", "")
 HUBSPOT_READ_TOKEN = os.environ.get("HUBSPOT_PRIVATE_APP_TOKEN", "")
 HUBSPOT_WRITE_TOKEN = os.environ.get("HUBSPOT_WRITE_TOKEN", "")
 HEYREACH_API_KEY = os.environ.get("HEYREACH_API_KEY", "")
+# Logged-in teammate (full name as in APP_USERS, lowercase) -> HeyReach workspace.
+# Their imports use that workspace's key (HEYREACH_KEY_<WORKSPACE>); anyone not
+# listed uses HEYREACH_API_KEY (the main Xoxoday workspace).
+HEYREACH_USER_WORKSPACES = {
+    "vansh shukla": "GCC", "nanda prem": "SEA", "avipsa biswal": "API",
+    "mujamil pasha": "AFRICA",
+    "yash handa": "US", "ganesh rumaal": "US", "dheeraj vithalkar": "US",
+    "kartik jataria": "US",
+}
 INTERAKT_API_KEY = os.environ.get("INTERAKT_API_KEY", "")
 
 # Upstash Redis (REST API) - replaces the local file-based caches below so
