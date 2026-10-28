@@ -29,7 +29,8 @@ HEYREACH_API_KEY = os.environ.get("HEYREACH_API_KEY", "")
 # Their imports use that workspace's key (HEYREACH_KEY_<WORKSPACE>); anyone not
 # listed uses HEYREACH_API_KEY (the main Xoxoday workspace).
 HEYREACH_USER_WORKSPACES = {
-    "vansh shukla": "GCC", "nanda prem": "SEA", "avipsa biswal": "API",
+    "vansh shukla": "GCC", "rajesh erri": "GCC", "nusrat ali": "GCC",
+    "nanda prem": "SEA", "avipsa biswal": "API",
     "mujamil pasha": "AFRICA",
     "yash handa": "US", "ganesh rumaal": "US", "dheeraj vithalkar": "US",
     "kartik jataria": "US",
