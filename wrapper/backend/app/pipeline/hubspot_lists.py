@@ -36,7 +36,9 @@ def _find_list_id_by_exact_name(list_name: str) -> str | None:
     return None
 
 
-def create_list_with_contacts(list_name: str, contact_ids: list[str]) -> dict:
+def create_list(list_name: str) -> str:
+    """Creates the static list (or reuses the one already holding this exact
+    name) and returns its id."""
     create_resp = request_with_retry(
         "POST", "https://api.hubapi.com/crm/v3/lists",
         headers=_headers(),
@@ -53,15 +55,26 @@ def create_list_with_contacts(list_name: str, contact_ids: list[str]) -> dict:
     else:
         _raise_with_body(create_resp)
         list_id = create_resp.json()["list"]["listId"]
+    return list_id
 
+
+def add_members(list_id: str, contact_ids: list[str]) -> None:
+    """Idempotent: adding an id already in the list is a no-op."""
+    add_resp = request_with_retry(
+        "PUT", f"https://api.hubapi.com/crm/v3/lists/{list_id}/memberships/add",
+        headers=_headers(),
+        json=contact_ids,
+        timeout=30,
+    )
+    _raise_with_body(add_resp)
+
+
+def list_url(list_id: str) -> str:
+    return f"https://{config.HUBSPOT_APP_SUBDOMAIN}/contacts/{config.HUBSPOT_PORTAL_ID}/objectLists/{list_id}"
+
+
+def create_list_with_contacts(list_name: str, contact_ids: list[str]) -> dict:
+    list_id = create_list(list_name)
     if contact_ids:
-        add_resp = request_with_retry(
-            "PUT", f"https://api.hubapi.com/crm/v3/lists/{list_id}/memberships/add",
-            headers=_headers(),
-            json=contact_ids,
-            timeout=30,
-        )
-        _raise_with_body(add_resp)
-
-    list_url = f"https://{config.HUBSPOT_APP_SUBDOMAIN}/contacts/{config.HUBSPOT_PORTAL_ID}/objectLists/{list_id}"
-    return {"list_id": list_id, "list_url": list_url, "members_added": len(contact_ids)}
+        add_members(list_id, contact_ids)
+    return {"list_id": list_id, "list_url": list_url(list_id), "members_added": len(contact_ids)}

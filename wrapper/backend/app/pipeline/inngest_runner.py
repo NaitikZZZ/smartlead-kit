@@ -65,6 +65,7 @@ import io
 import json
 import math
 import re
+import time
 
 import inngest
 from .._lazy import pd
@@ -78,6 +79,8 @@ from . import (
     icp_mapper, input_sources, interakt, naming, normalize, outputs, web_completeness, web_scrape,
 )
 from .runner import COUNTRY_OPTIONS, REGION_OPTIONS, _map_existing_contact_columns
+
+_timing_log = hubspot_import.logger  # "import_timing" logger, handler set up in hubspot_import
 
 
 def _guess_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
@@ -625,6 +628,52 @@ async def _add_more_prospects_loop(step: inngest.Step, run_id: str, candidates_d
                          {"candidates_found": total_found})
 
     return candidates_df, persona_titles, person_locations, employee_ranges
+
+
+async def _import_hubspot_and_interakt(ctx: inngest.Context, step: inngest.Step, campaign_title: str,
+                                        rows: list[dict], associations: list[dict], wa_rows: list[dict]):
+    """The confirmed import's two independent writes, run as parallel lanes so
+    total time is the slower lane, not the sum. Returns (import_result,
+    interakt_result). Inside a lane, steps run in order; the lanes only overlap.
+
+    HubSpot lane: one step per IMPORT_CHUNK_SIZE contacts (each under the 300s
+    function limit, a retry only redoes that chunk), all into the SAME static
+    list, created once in its own step. prepare_import/split_chunks are pure and
+    deterministic, so recomputing them on each replay yields identical chunks.
+    Upserts, list adds and associations are idempotent, so a retried chunk is safe.
+
+    Interakt lane: one memoized step per PUSH_CHUNK_SIZE contacts. This used to
+    be bare code, which Inngest re-ran in full on EVERY later replay, re-pushing
+    every WhatsApp contact each time. push_users blocks (requests), so it runs
+    via asyncio.to_thread to keep the event loop free."""
+    import_inputs, dropped_blank = hubspot_import.prepare_import(rows)
+
+    async def _hubspot_lane():
+        async def _create_list():
+            return _nan_safe(await asyncio.to_thread(hubspot_import.create_import_list, campaign_title))
+
+        hs_list = await step.run("hubspot_create_list", _create_list)
+        chunk_results = []
+        for n, chunk in enumerate(hubspot_import.split_chunks(import_inputs)):
+            async def _import_chunk(chunk=chunk):
+                return _nan_safe(await asyncio.to_thread(
+                    hubspot_import.import_chunk, chunk, hs_list["list_id"], associations))
+
+            chunk_results.append(await step.run(f"hubspot_import_chunk_{n}", _import_chunk))
+        return hubspot_import.build_result(dropped_blank, hs_list, chunk_results, associations)
+
+    async def _interakt_lane():
+        if not wa_rows:
+            return {"status": "skipped"}
+        parts = []
+        for n in range(0, len(wa_rows), interakt.PUSH_CHUNK_SIZE):
+            async def _push_wa(rows_chunk=wa_rows[n:n + interakt.PUSH_CHUNK_SIZE]):
+                return _nan_safe(await asyncio.to_thread(interakt.push_users, rows_chunk, campaign_title))
+
+            parts.append(await step.run(f"interakt_push_{n // interakt.PUSH_CHUNK_SIZE}", _push_wa))
+        return interakt.merge_results(parts)
+
+    return await ctx.group.parallel((_hubspot_lane, _interakt_lane))
 
 
 @client.create_function(
@@ -2284,13 +2333,28 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
     # ============ Confirmed import: HubSpot write + HeyReach push + Copy Agent ============
     await _status(step, "status_importing", run_id, stage="importing_to_hubspot", message="Importing to HubSpot")
 
-    async def _do_import():
-        rows = hubspot_ready_df.astype(object).where(pd.notna(hubspot_ready_df), None).to_dict(orient="records")
-        return _nan_safe(hubspot_import.import_contacts_with_list(rows, campaign_title, associations))
+    rows = hubspot_ready_df.astype(object).where(pd.notna(hubspot_ready_df), None).to_dict(orient="records")
+    wa_rows = []
+    if outputs.file_exists(run_dir, "whatsapp_upload.csv"):
+        try:
+            wa_df = pd.read_csv(io.BytesIO(outputs.read_file(run_dir, "whatsapp_upload.csv")))
+        except pd.errors.EmptyDataError:
+            wa_df = pd.DataFrame()
+        if not wa_df.empty:
+            wa_rows = wa_df.where(pd.notna(wa_df), None).to_dict(orient="records")
 
-    import_result = await step.run("hubspot_import", _do_import)
+    # HubSpot and Interakt are independent, so they run as two parallel lanes.
+    import_result, interakt_result = await _import_hubspot_and_interakt(
+        ctx, step, campaign_title, rows, associations, wa_rows)
 
     async def _push_heyreach():
+        t0 = time.monotonic()
+        try:
+            return await _push_heyreach_inner()
+        finally:
+            _timing_log.info("run %s import step 'heyreach_push': %.1fs", run_id, time.monotonic() - t0)
+
+    async def _push_heyreach_inner():
         if outputs.file_exists(run_dir, "linkedin_upload.csv"):
             try:
                 li_df = pd.read_csv(io.BytesIO(outputs.read_file(run_dir, "linkedin_upload.csv")))
@@ -2306,23 +2370,6 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
     heyreach_result = await step.run("heyreach_push", _push_heyreach)
     import_result["heyreach"] = heyreach_result
 
-    # Deliberately NOT wrapped in step.run() - same event-loop-blocking pattern
-    # as reveal_phones etc. above: push_users makes a sequential blocking
-    # requests.post per WhatsApp-eligible contact (no batch endpoint), which
-    # can run for minutes on a large sheet. The return value itself is a small
-    # stats dict (not a DataFrame), so output_too_large doesn't apply here -
-    # but the blocking-the-event-loop hazard does.
-    interakt_result = {"status": "skipped"}
-    if outputs.file_exists(run_dir, "whatsapp_upload.csv"):
-        try:
-            wa_df = pd.read_csv(io.BytesIO(outputs.read_file(run_dir, "whatsapp_upload.csv")))
-        except pd.errors.EmptyDataError:
-            wa_df = pd.DataFrame()
-        if not wa_df.empty:
-            wa_df = wa_df.where(pd.notna(wa_df), None)
-            interakt_result = _nan_safe(await asyncio.to_thread(
-                interakt.push_users, wa_df.to_dict(orient="records"), campaign_title,
-            ))
     import_result["interakt"] = interakt_result
 
     hr = heyreach_result.get("status")
