@@ -224,7 +224,7 @@ function AppInner() {
           <div className="card" style={{ padding: 24 }}>
             <h3>Stopped after exclusion</h3>
             <p style={{ marginTop: 8 }}>{run.message}</p>
-            <button className="btn-secondary" style={{ marginTop: 16 }} onClick={() => { setRunId(null); setRun(null); setFlow("menu"); }}>
+            <button className="btn-secondary" style={{ marginTop: 16 }} onClick={() => { setRunId(null); setRun(null); }}>
               Start a new run
             </button>
           </div>
