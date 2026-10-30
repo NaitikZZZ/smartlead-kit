@@ -12,11 +12,13 @@ CSV or Excel file:
   - Swaps an initials-only First Name (e.g. "S." or "KMG") with a usable name
     sitting in the other slot, so personalization doesn't address someone as
     "Hi S.,".
-  - Repairs mojibake (cp1252/utf-8 mix-ups) and strips invisible/smart-quote
-    characters that scrape tools leave behind.
+  - Repairs mojibake (cp1252/utf-8 mix-ups, via ftfy) and strips invisible/
+    smart-quote characters that scrape tools leave behind.
   - Strips LinkedIn-scrape pipe noise ("A2MP | Africa Minerals... | LinkedIn"),
-    "a company of X" / "a subsidiary of Y" descriptors, and [DUPE]/[TEST]-style
-    quality markers from company names.
+    "a company of X" / "a subsidiary of Y" descriptors, [DUPE]/[TEST]-style
+    quality markers, a self-duplicated name in parens ("Acme (Acme)"), and a
+    parenthetical glued directly onto the name with no space ("bacardi(sanya)")
+    from company names.
   - Strips legal-entity suffixes (Pvt Ltd, LLC, Inc, Corp, GmbH, Sdn Bhd, ...)
     from company names and proper-cases what's left, while preserving short
     ALL-CAPS acronyms (IBM, HDFC, HR) and known brand casing (eBay, PayPal).
@@ -34,6 +36,8 @@ import re
 import sys
 import unicodedata
 from pathlib import Path
+
+import ftfy
 
 
 class _LazyPandas:
@@ -138,26 +142,6 @@ INVISIBLE = {
 }
 _INVIS_RE = re.compile("|".join(map(re.escape, INVISIBLE)))
 
-MOJIBAKE_HINTS = ("Ã©", "Ã¨", "Ã¼", "Ã¶", "Ã±", "Ã¡", "Ã³", "Ã­", "â€™", "â€œ", "â€\x9d", "â€“", "Â ")
-
-# A CSV that gets saved/re-opened under the wrong codepage twice (e.g. HubSpot
-# export -> Excel misreads as cp1252 -> re-saved as UTF-8 -> a second tool
-# misreads THAT as cp1252 again) turns each hint above into a second-generation
-# form where the tell-tale substring is no longer contiguous (e.g. "Ã¼"
-# becomes "ÃƒÂ¼" - the "Ã" and "¼" end up separated by "ƒÂ"). Derive those
-# forms mechanically instead of hand-writing more magic strings.
-def _double_encode_hint(h):
-    try:
-        return h.encode("utf-8").decode("cp1252")
-    except (UnicodeEncodeError, UnicodeDecodeError):
-        return None
-
-
-DOUBLE_MOJIBAKE_HINTS = tuple(
-    h for h in (_double_encode_hint(h) for h in MOJIBAKE_HINTS) if h
-)
-_ALL_MOJIBAKE_HINTS = MOJIBAKE_HINTS + DOUBLE_MOJIBAKE_HINTS
-
 EMOJI_RE = re.compile(
     "[" "\U0001F000-\U0001FAFF" "\U00002600-\U000027BF" "\U0001F1E6-\U0001F1FF"
     "\U00002190-\U000021FF" "\U00002B00-\U00002BFF" "\U0000FE00-\U0000FE0F"
@@ -166,18 +150,16 @@ EMOJI_RE = re.compile(
 
 
 def _fix_mojibake(s):
+    """Repair cp1252/utf-8 mix-ups via ftfy instead of a hand-maintained list
+    of hint substrings -- the hint list missed common cases (macron/caron
+    letters, trademark symbols, emoji, em/en dashes) and, worse, left
+    unrepaired bytes for proper_case_name() to then mangle further."""
     if not s:
         return s
-    # Bounded at 2 rounds: one for the common single mis-encoding, one more
-    # for a list that got round-tripped through the wrong codepage twice.
-    for _ in range(2):
-        if not any(h in s for h in _ALL_MOJIBAKE_HINTS):
-            break
-        try:
-            s = s.encode("cp1252", errors="strict").decode("utf-8", errors="strict")
-        except (UnicodeEncodeError, UnicodeDecodeError):
-            break
-    return s
+    try:
+        return ftfy.fix_text(s)
+    except Exception:
+        return s
 
 
 def clean_text(s):
@@ -385,6 +367,31 @@ _QUALITY_MARKER_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# A trailing parenthetical glued directly onto the name with no space before
+# it ("bacardi(sanya)", "capgemini technology services india limited(femina)")
+# is reliably scrape/dedup noise, not a real annotation -- a genuine aside
+# ("LyondellBasell Industries (LYB)") always has a space before the "(" in
+# practice. Confirmed with the user on 2026-09-21: drop it outright rather
+# than trying to judge whether the parenthetical content looks meaningful.
+_GLUED_PAREN_RE = re.compile(r"\S(\([^)]*\))\s*$")
+
+# "Mikhail Consulting Group (Mikhail Consulting Group)" -- an exact repeat of
+# the whole name inside its own parens. Collapse to the outer copy regardless
+# of spacing; unlike _GLUED_PAREN_RE this doesn't care whether the "(" is
+# glued on, since a self-duplicate is never a legitimate annotation.
+_SELF_DUP_PAREN_RE = re.compile(r"^(.*\S)\s*\((.*)\)\s*$")
+
+
+def _strip_redundant_parenthetical(text):
+    m = _SELF_DUP_PAREN_RE.match(text)
+    if m and m.group(1).strip().lower() == m.group(2).strip().lower():
+        return m.group(1).strip()
+    m = _GLUED_PAREN_RE.search(text)
+    if m:
+        return (text[: m.start(1)]).strip()
+    return text
+
+
 # Short words that are real words, not acronyms. When an ALL-CAPS company name
 # is re-cased, any short token NOT in this set is assumed to be an acronym and
 # kept uppercase, so "FMFE, CPA" survives but "VODAFONE IDEA" -> "Vodafone Idea"
@@ -478,6 +485,8 @@ def clean_company_name(value, suffixes):
     if _DESCRIPTOR_RE.search(text):
         text = _DESCRIPTOR_RE.sub(" ", text)
 
+    text = _strip_redundant_parenthetical(text)
+
     # Remove commas before suffixes, e.g. "Acme, Inc." -> "Acme Inc."
     text = text.replace(",", " ")
     text = re.sub(r"\s+", " ", text).strip()
@@ -508,15 +517,21 @@ def clean_company_name(value, suffixes):
     # (GreenLeaf) -- a word with more than one uppercase letter that ISN'T
     # all-caps is almost always deliberate stylization, not a typo.
     def cap_word(word):
-        low = word.lower().strip(".,&-'")
+        # Bracketing punctuation ("(LYB)") isn't part of the word itself for
+        # the acronym/brand checks below -- test against the bare core so a
+        # real acronym in parens survives instead of being lowercased.
+        core = word.strip("()[]{}")
+        prefix = word[: len(word) - len(word.lstrip("()[]{}"))]
+        suffix = word[len(prefix) + len(core):]
+        low = core.lower().strip(".,&-'")
         if low in BRAND_CASE:
-            return BRAND_CASE[low]
-        upper_count = sum(1 for c in word if c.isupper())
-        if word.isupper() and 1 < len(word) <= 4 and word.isalpha() and low not in COMMON_SHORT_WORDS:
-            return word
-        if upper_count > 1 and not word.isupper() and word.isalpha():
-            return word
-        return proper_case_name(word)
+            return prefix + BRAND_CASE[low] + suffix
+        upper_count = sum(1 for c in core if c.isupper())
+        if core.isupper() and 1 < len(core) <= 4 and core.isalpha() and low not in COMMON_SHORT_WORDS:
+            return prefix + core + suffix
+        if upper_count > 1 and not core.isupper() and core.isalpha():
+            return prefix + core + suffix
+        return prefix + proper_case_name(core) + suffix
 
     return " ".join(cap_word(w) for w in text.split())
 
