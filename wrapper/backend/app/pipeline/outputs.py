@@ -823,6 +823,20 @@ def build_summary_markdown(campaign_title: str, stats: dict, accounts_processed:
     return "\n".join(lines)
 
 
+def write_exclusion_split(run_dir: Path, df: pd.DataFrame) -> tuple[list[str], int, int]:
+    """Writes the account list split by exclusion result, so it is downloadable
+    right after the exclusion checks (e.g. to enrich the remaining accounts in
+    another tool). Returns (file refs, remaining count, excluded count)."""
+    status = df["Exclusion Status"] if "Exclusion Status" in df.columns else pd.Series("OK to reach out", index=df.index)
+    remaining = df[status == "OK to reach out"]
+    excluded = df[status == "Excluded"]
+    refs = [
+        write_file(run_dir, "accounts_remaining.csv", remaining.to_csv(index=False), "text/csv"),
+        write_file(run_dir, "accounts_excluded.csv", excluded.to_csv(index=False), "text/csv"),
+    ]
+    return refs, len(remaining), len(excluded)
+
+
 def write_outputs(run_dir: Path, accounts_processed: pd.DataFrame, enriched: pd.DataFrame, campaign_title: str, stats: dict):
     run_dir.mkdir(parents=True, exist_ok=True)
 

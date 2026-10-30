@@ -14,7 +14,7 @@ const REVIEW_STAGES = new Set(["awaiting_import_confirmation", "importing_to_hub
 // Only stop polling at truly terminal states. We must KEEP polling through
 // "awaiting_answer" and the processing stages between questions - otherwise
 // after you answer one question the UI never sees the next one appear.
-const POLL_STOP = new Set(["done", "failed", "normalized_stopped"]);
+const POLL_STOP = new Set(["done", "failed", "normalized_stopped", "exclusion_stopped"]);
 
 // The active run_id was previously kept only in React state, with nothing
 // backing it - a page reload (or the tab just getting discarded/reopened)
@@ -200,7 +200,7 @@ function AppInner() {
           />
         )}
 
-        {run && !REVIEW_STAGES.has(run.stage) && run.stage !== "failed" && run.stage !== "normalized_stopped" &&
+        {run && !REVIEW_STAGES.has(run.stage) && run.stage !== "failed" && run.stage !== "normalized_stopped" && run.stage !== "exclusion_stopped" &&
           !(run.stage === "awaiting_answer" && run.pending_question) && (
             <div className="card" style={{ padding: 24 }}>
               <h3>{run.message}</h3>
@@ -215,6 +215,16 @@ function AppInner() {
             <h3>Normalization done</h3>
             <p style={{ marginTop: 8 }}>{run.message}</p>
             <button className="btn-secondary" style={{ marginTop: 16 }} onClick={() => { setRunId(null); setRun(null); }}>
+              Start a new run
+            </button>
+          </div>
+        )}
+
+        {run && run.stage === "exclusion_stopped" && (
+          <div className="card" style={{ padding: 24 }}>
+            <h3>Stopped after exclusion</h3>
+            <p style={{ marginTop: 8 }}>{run.message}</p>
+            <button className="btn-secondary" style={{ marginTop: 16 }} onClick={() => { setRunId(null); setRun(null); setFlow("menu"); }}>
               Start a new run
             </button>
           </div>
