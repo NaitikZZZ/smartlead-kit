@@ -129,23 +129,22 @@ def refresh_cache(kinds: list[str] | None = None) -> dict:
 def list_records(kind: str) -> list[dict]:
     """Serve the full record list for the associations dropdown.
 
-    Projects are fetched live on every call, filtered to the ABM Campaigns
-    pipeline so the result set stays small - a newly-created Project shows up
-    immediately instead of waiting on the daily cron. Partners/events are
-    unfiltered (much larger, slower to paginate) so they still come from the
-    cache a Vercel Cron Job rebuilds (see app/routes/cron.py); a real request
-    never fetches those inline, and a missing/failed cache is treated by the
-    caller (runner.py's associations step) as "fall back to manual entry"."""
-    if kind == "project":
-        return fetch_all_records(kind)
-
-    data = _assoc_cache_read(kind)
-    if data is None:
-        raise RuntimeError(
-            f"{kind} dropdown cache has never been built - the cron (app/routes/cron.py) "
-            "populates it; wait for the next run or trigger it manually."
-        )
-    return data["records"]
+    Always fetched live so a record created minutes ago shows up immediately.
+    The daily cron cache (see app/routes/cron.py) is only the fallback if the
+    live fetch fails; with neither available the caller (runner.py's
+    associations step) falls back to manual record ID entry."""
+    try:
+        records = fetch_all_records(kind)
+    except Exception:
+        data = _assoc_cache_read(kind)
+        if data is None:
+            raise
+        return data["records"]
+    try:
+        _assoc_cache_write(kind, {"built_at": datetime.now(UTC).isoformat(), "records": records})
+    except Exception:
+        pass
+    return records
 
 
 def _extract_id_from_url(value: str) -> str | None:
