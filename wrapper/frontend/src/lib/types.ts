@@ -6,6 +6,7 @@ export type RunStage =
   | "reading_input"
   | "normalizing"
   | "normalized_stopped"
+  | "exclusion_stopped"
   | "checking_completeness"
   | "resolving_domains"
   | "checking_exclusions"
@@ -39,6 +40,7 @@ export const STAGE_LABELS: Record<RunStage, string> = {
   reading_input: "Reading input",
   normalizing: "Normalizing names & companies",
   normalized_stopped: "Normalization done",
+  exclusion_stopped: "Stopped after exclusion",
   checking_completeness: "Checking sheet completeness",
   resolving_domains: "Resolving domains",
   checking_exclusions: "Checking exclusions",

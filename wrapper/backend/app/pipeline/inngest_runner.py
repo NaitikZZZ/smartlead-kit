@@ -1196,6 +1196,28 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
             competitor_stats = {"skipped": True, "reason": "declined by user", "total": len(df), "excluded": 0}
             await _set_stat(step, "stat_competitor_exclusion_skipped", run_id, "competitor_exclusion", competitor_stats)
 
+        # Make the remaining/excluded account lists downloadable right now, and
+        # let the user stop here (e.g. to enrich the remaining accounts elsewhere).
+        split_files, remaining_count, excluded_count = await asyncio.to_thread(
+            outputs.write_exclusion_split, run_dir, df)
+
+        async def _append_split_output_files():
+            job = run_status.get(run_id)
+            run_status.update(run_id, output_files=list(job.get("output_files", [])) + split_files)
+            return True
+
+        await step.run("append_exclusion_split_files", _append_split_output_files)
+        stop_answer = await _ask(
+            step, run_id, "stop_after_exclusion", "yes_no",
+            f"{remaining_count} account(s) remain after exclusion ({excluded_count} excluded). "
+            "Files are ready to download. Stop here, without finding people or enriching?",
+            default="no", context={"step": "exclusion"},
+        )
+        if _truthy(stop_answer):
+            await _status(step, "status_exclusion_stopped", run_id, stage="exclusion_stopped",
+                           message=f"Stopped after exclusion: {remaining_count} remaining, {excluded_count} excluded. Download the files below.")
+            return {"run_id": run_id, "rows": len(df), "stopped": "after_exclusion"}
+
         # Prospect-level choice. Only recorded here; the check itself still
         # runs late, in runner.run_confirmed_import (Stage 2).
         prospect_answer = await _ask(

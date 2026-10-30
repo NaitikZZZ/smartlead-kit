@@ -15,6 +15,7 @@ class RunStage(str, Enum):
     reading_input = "reading_input"
     normalizing = "normalizing"
     normalized_stopped = "normalized_stopped"
+    exclusion_stopped = "exclusion_stopped"
     checking_completeness = "checking_completeness"
     resolving_domains = "resolving_domains"
     checking_exclusions = "checking_exclusions"

@@ -1208,6 +1208,22 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         stats["competitor_exclusion"] = competitor_stats
         stats["exclusion"] = exclusion_stats
 
+        # Make the remaining/excluded account lists downloadable right now, and
+        # let the user stop here (e.g. to enrich the remaining accounts elsewhere).
+        split_files, remaining_count, excluded_count = outputs.write_exclusion_split(run_dir, df)
+        job_so_far = get_job(run_id)
+        _update(run_id, output_files=list(job_so_far.get("output_files", [])) + split_files)
+        stop_answer = ask(
+            run_id, "stop_after_exclusion", "yes_no",
+            f"{remaining_count} account(s) remain after exclusion ({excluded_count} excluded). "
+            "Files are ready to download. Stop here, without finding people or enriching?",
+            default="no", context={"step": "exclusion"},
+        )
+        if _truthy(stop_answer):
+            _update(run_id, stage=RunStage.exclusion_stopped, stats=dict(stats),
+                    message=f"Stopped after exclusion: {remaining_count} remaining, {excluded_count} excluded. Download the files below.")
+            return
+
         # ============ Step 3c: Prospect-level exclusion choice (gated, default yes) ============
         # Only records the choice; the check itself still runs late, right
         # before the send (run_confirmed_import), so one person's DNC/meeting
