@@ -1704,6 +1704,15 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
                     return ("back",)
                 if chosen and chosen != _MANUAL and chosen in option_map:
                     return ("ok", option_map[chosen], False)
+                # Record ID / URL pasted into the card's "not in the list?" field
+                # (project created after the cache was built, etc.).
+                typed_id = str(chosen or "").strip()
+                if typed_id and typed_id not in option_map and typed_id != _MANUAL and (
+                    typed_id.isdigit() or "/record/" in typed_id
+                ):
+                    resolved = association_resolve.resolve(kind, typed_id)
+                    if resolved["status"] == "resolved":
+                        return ("ok", resolved["record_id"], True)
 
             # Not in the cached dropdown (fetch failed, empty cache, or the
             # user chose "Other") - resolve live against HubSpot instead of

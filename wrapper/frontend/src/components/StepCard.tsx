@@ -13,6 +13,7 @@ export default function StepCard({
   const [text, setText] = useState(question.default ?? "");
   const [multi, setMulti] = useState<string[]>([]);
   const [sel, setSel] = useState("");
+  const [recordId, setRecordId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Answering fires an async Inngest event and returns before the pipeline
@@ -207,6 +208,23 @@ export default function StepCard({
           >
             {submitting ? "Submitting..." : "Continue"}
           </button>
+          {question.context?.step === "associations" && question.context?.kind && (
+            <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid var(--dark-100)" }}>
+              <div style={{ fontSize: 12, color: "var(--dark-200)", marginBottom: 6 }}>
+                Not in the list (e.g. created recently)? Paste the HubSpot record ID or URL instead:
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input value={recordId} onChange={(e) => setRecordId(e.target.value)} placeholder="Record ID or HubSpot URL" />
+                <button
+                  className="btn-secondary"
+                  disabled={submitting || !/^\d+$|\/record\//.test(recordId.trim())}
+                  onClick={() => submit(recordId.trim())}
+                >
+                  Use this ID
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
