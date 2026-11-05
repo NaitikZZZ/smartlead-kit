@@ -543,6 +543,16 @@ def process_dataframe(df):
         df["Cleaned First Name"] = split.apply(lambda t: proper_case_name(t[0]))
         df["Cleaned Last Name"] = split.apply(lambda t: proper_case_name(t[1]))
         report.append(f"Split '{full_name_col}' into Cleaned First Name / Cleaned Last Name.")
+        # No usable First/Last columns in the sheet: also add plain "First Name" /
+        # "Last Name" columns so the sheet itself carries them (never overwrite
+        # a real one that already exists).
+        added = []
+        for plain, cleaned in (("First Name", "Cleaned First Name"), ("Last Name", "Cleaned Last Name")):
+            if find_column(df.columns, [plain.lower()]) is None:
+                df[plain] = df[cleaned]
+                added.append(plain)
+        if added:
+            report.append(f"Created {' / '.join(added)} column(s) from '{full_name_col}'.")
     else:
         report.append("No First/Last Name or Full Name column found -- skipped name normalization.")
 
