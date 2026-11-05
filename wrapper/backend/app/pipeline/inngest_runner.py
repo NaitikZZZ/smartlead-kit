@@ -78,7 +78,7 @@ from . import (
     github_pr, gtm_enrichment, gtm_narrative, heyreach, hubspot_exclusion, hubspot_import, hubspot_project_note,
     icp_mapper, input_sources, interakt, naming, normalize, outputs, web_completeness, web_scrape,
 )
-from .runner import COUNTRY_OPTIONS, REGION_OPTIONS, _map_existing_contact_columns
+from .runner import COUNTRY_OPTIONS, REGION_OPTIONS, _TITLE_COL_CANDIDATES, _map_existing_contact_columns, _unrecognized_names_hint
 
 _timing_log = hubspot_import.logger  # "import_timing" logger, handler set up in hubspot_import
 
@@ -1311,7 +1311,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         else:
             disc_answer = await _ask(
                 step, run_id, "people_discovery_needed", "yes_no",
-                f"No contacts in the sheet. Find decision-makers at the {len(ok_df)} account(s)? "
+                f"No contacts in the sheet{_unrecognized_names_hint(ok_df, email_col_existing)}. Find decision-makers at the {len(ok_df)} account(s)? "
                 "Search is free; revealing emails/phones later costs credits.",
                 default="yes", context={
                     "step": "discovery",
@@ -1689,7 +1689,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
                 icp_titles = [t.strip() for t in str(icp_titles_answer).split(",") if t.strip()]
                 icp_exact = True
 
-            title_col_for_filter = _guess_col(ok_df, ["title", "job title"])
+            title_col_for_filter = _guess_col(ok_df, _TITLE_COL_CANDIDATES)
             if not icp_titles:
                 await _set_stat(step, "stat_icp_filter_no_titles", run_id, "icp_title_filter",
                                  {"skipped": True, "reason": "no ICP titles provided"})
@@ -1725,7 +1725,7 @@ async def _run_pipeline(ctx: inngest.Context, step: inngest.Step) -> dict:
         # targets, without requiring the user to type an inclusion list.
         # Opt-in and off by default so it never silently changes who gets
         # reached out to unless asked for.
-        title_col_for_seniority = _guess_col(ok_df, ["title", "job title"])
+        title_col_for_seniority = _guess_col(ok_df, _TITLE_COL_CANDIDATES)
         seniority_col_for_filter = _guess_col(ok_df, ["seniority"])
         if title_col_for_seniority or seniority_col_for_filter:
             junior_mask = ok_df.apply(

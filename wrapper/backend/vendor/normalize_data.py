@@ -97,15 +97,27 @@ COMPANY_SUFFIXES = [
     "kk", "oy", "ab", "s.a.", "sa",
 ]
 
-FULL_NAME_COL_CANDIDATES = ["full name", "name", "contact name", "prospect name"]
-FIRST_NAME_COL_CANDIDATES = ["first name", "firstname", "given name"]
+FULL_NAME_COL_CANDIDATES = [
+    "full name", "name", "contact name", "prospect name", "contact person", "contact",
+    "person", "person name", "lead name", "employee name", "contact full name",
+]
+FIRST_NAME_COL_CANDIDATES = ["first name", "firstname", "given name", "forename"]
 LAST_NAME_COL_CANDIDATES = ["last name", "lastname", "surname", "family name"]
-COMPANY_COL_CANDIDATES = ["company name", "company", "organization", "organisation", "account name"]
+COMPANY_COL_CANDIDATES = [
+    "company name", "company", "organization", "organisation", "account name", "account",
+    "employer", "business name",
+]
+
+
+def _norm_header(c):
+    """Lowercase, and treat '_' / '-' / repeated whitespace as a single space."""
+    return re.sub(r"[\s_\-]+", " ", str(c)).strip().lower()
 
 
 def find_column(columns, candidates):
-    """Case-insensitive, whitespace-tolerant lookup of a column name."""
-    normalized = {c.strip().lower(): c for c in columns}
+    """Case-insensitive lookup of a column name, tolerant of whitespace,
+    underscores and hyphens ('Full_Name' / 'full-name' match 'full name')."""
+    normalized = {_norm_header(c): c for c in columns}
     for cand in candidates:
         if cand in normalized:
             return normalized[cand]
