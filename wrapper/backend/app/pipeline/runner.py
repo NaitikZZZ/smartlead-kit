@@ -388,6 +388,19 @@ def _company_domain_overlap(company, domain, min_token_len: int = 3):
 # before ever falling back to substring matching, so this ordering is what
 # actually decides which column wins when a sheet has several.
 _EMAIL_COL_CANDIDATES = ["final work email", "work email", "email address", "email"]
+_TITLE_COL_CANDIDATES = ["title", "job title", "designation", "position", "job role"]
+
+
+def _unrecognized_names_hint(df, email_col) -> str:
+    """Extra text for the "No contacts" prompt when the sheet clearly has
+    people (populated email column) but no First/Last/Full Name column was
+    recognized - so a header like "Contact Person" isn't silently read as
+    an accounts-only list."""
+    if not email_col or email_col not in df.columns or not df[email_col].notna().any():
+        return ""
+    return (f" (WARNING: {int(df[email_col].notna().sum())} row(s) have emails but no name column was "
+            f"recognized - headers: {', '.join(map(str, df.columns))}. Rename the name column to 'Full Name' "
+            "and start a new run if these are real contacts)")
 
 
 def _map_existing_contact_columns(df: pd.DataFrame, first_col: str, last_col: str, company_col: str) -> pd.DataFrame:
@@ -402,7 +415,7 @@ def _map_existing_contact_columns(df: pd.DataFrame, first_col: str, last_col: st
     # with "'DataFrame' object has no attribute 'str'". Keep the first
     # occurrence of any duplicate header, drop the rest.
     out = out.loc[:, ~out.columns.duplicated()]
-    title_col = _guess_col(out, ["title", "job title"])
+    title_col = _guess_col(out, _TITLE_COL_CANDIDATES)
     # Prefer an already-resolved canonical "linkedin_url" column (e.g. from
     # inngest_runner's linkedin_url passthrough) over re-guessing - otherwise
     # the loose "linkedin" substring fallback below can match an EARLIER,
@@ -1277,7 +1290,7 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
         else:
             disc_answer = ask(
                 run_id, "people_discovery_needed", "yes_no",
-                f"No contacts in the sheet. Find decision-makers at the {len(ok_df)} account(s)? "
+                f"No contacts in the sheet{_unrecognized_names_hint(ok_df, email_col_existing)}. Find decision-makers at the {len(ok_df)} account(s)? "
                 "Search is free; revealing emails/phones later costs credits.",
                 default="yes", context={"step": "discovery"},
             )
@@ -1383,7 +1396,7 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
                 icp_titles = [t.strip() for t in str(icp_titles_answer).split(",") if t.strip()]
                 icp_exact = True
 
-                title_col_for_filter = _guess_col(ok_df, ["title", "job title"])
+                title_col_for_filter = _guess_col(ok_df, _TITLE_COL_CANDIDATES)
                 if not icp_titles:
                     stats["icp_title_filter"] = {"skipped": True, "reason": "no ICP titles provided"}
                 elif not title_col_for_filter:
@@ -1408,7 +1421,7 @@ If not specified, use previous filters. Return ONLY JSON, no markdown."""
             # kit targets (e.g. "Associate", "Sales Executive"). Opt-in and
             # off by default so it never silently changes who gets reached
             # out to unless asked for.
-            title_col_for_seniority = _guess_col(ok_df, ["title", "job title"])
+            title_col_for_seniority = _guess_col(ok_df, _TITLE_COL_CANDIDATES)
             seniority_col_for_filter = _guess_col(ok_df, ["seniority"])
             if title_col_for_seniority or seniority_col_for_filter:
                 junior_mask = ok_df.apply(
