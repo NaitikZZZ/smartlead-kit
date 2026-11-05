@@ -118,7 +118,9 @@ def _invalid_emails_from_error(body: str) -> set[str]:
 # IMPORT_CHUNK_SIZE contacts is exactly _UPSERT_WORKERS batches in flight.
 _UPSERT_BATCH = 100
 _UPSERT_WORKERS = 10
-IMPORT_CHUNK_SIZE = 1000  # contacts per Inngest step; keeps each step well under the 300s limit
+# Contacts per Inngest step. Each step costs a fixed scheduling + replay overhead, so
+# fewer, bigger steps are faster; 3000 = 30 batches = 3 rounds of 10, still far under 300s.
+IMPORT_CHUNK_SIZE = 3000
 
 
 def _build_inputs(rows: list[dict]) -> list[dict]:
@@ -249,21 +251,35 @@ def import_chunk(inputs: list[dict], list_id: str, associations: list[dict]) -> 
     Every call is idempotent, so a retried chunk step just repeats it."""
     t0 = time.monotonic()
     results, rejected = upsert_inputs(inputs)
+    t_upsert = time.monotonic() - t0
     ids = [r["id"] for r in results]
     assoc_counts: dict[str, int] = {}
+    t_list = 0.0
+    t_assoc = 0.0
     if ids:
+        def _timed(fn, *a):
+            t = time.monotonic()
+            out = fn(*a)
+            return out, time.monotonic() - t
+
         with ThreadPoolExecutor(max_workers=1 + len(associations)) as pool:
-            add_f = pool.submit(hubspot_lists.add_members, list_id, ids)
+            add_f = pool.submit(_timed, hubspot_lists.add_members, list_id, ids)
             assoc_fs = {
-                a["kind"]: pool.submit(associate_contacts, ids, association_resolve.OBJECT_TYPE[a["kind"]], a["record_id"])
+                a["kind"]: pool.submit(_timed, associate_contacts, ids, association_resolve.OBJECT_TYPE[a["kind"]], a["record_id"])
                 for a in associations
             }
-            add_f.result()
-            assoc_counts = {kind: f.result() for kind, f in assoc_fs.items()}
-    logger.info("hubspot_import chunk: %d contacts upserted+listed+associated, %.1fs", len(ids), time.monotonic() - t0)
+            t_list = add_f.result()[1]
+            for kind, f in assoc_fs.items():
+                count, secs = f.result()
+                assoc_counts[kind] = count
+                t_assoc = max(t_assoc, secs)
+    total = time.monotonic() - t0
+    logger.info("hubspot_import chunk: %d contacts upserted+listed+associated, %.1fs", len(ids), total)
     return {
         "contact_ids": ids, "new": sum(1 for r in results if r.get("new")),
         "rejected": rejected, "associated": assoc_counts,
+        "timing": {"upsert_s": round(t_upsert, 1), "list_add_s": round(t_list, 1),
+                   "associate_s": round(t_assoc, 1), "total_s": round(total, 1)},
     }
 
 
@@ -282,6 +298,13 @@ def build_result(dropped: int, list_info: dict, chunk_results: list[dict], assoc
         # Surfaced so a dropped contact is visible, not silently missing.
         "rejected_invalid_email": rejected,
         "dropped_invalid_email": len(rejected),
+        # Persisted with the run (stdout logs expire in an hour on Hobby), so a
+        # slow import can be diagnosed afterwards: per-phase seconds summed over chunks.
+        "timing": {
+            "chunks": len(chunk_results),
+            **{k: round(sum(c.get("timing", {}).get(k, 0) for c in chunk_results), 1)
+               for k in ("upsert_s", "list_add_s", "associate_s", "total_s")},
+        },
     }
 
 

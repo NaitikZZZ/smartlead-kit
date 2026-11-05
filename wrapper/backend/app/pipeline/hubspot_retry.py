@@ -6,6 +6,7 @@ moment - is enough to trip HubSpot's "secondly limit". None of the call
 sites had any 429 handling, so a transient rate-limit hit became a hard
 failure instead of a retry. Honors Retry-After when HubSpot sends one."""
 from __future__ import annotations
+import random
 import time
 
 import requests
@@ -30,6 +31,7 @@ def request_with_retry(method: str, url: str, **kwargs) -> requests.Response:
                 return r
             retry_after = r.headers.get("Retry-After")
             delay = float(retry_after) if retry_after else (2 ** attempt)
+            delay += random.uniform(0, 1)  # jitter so concurrent workers don't retry in lockstep
             time.sleep(delay)
             continue
         return r
