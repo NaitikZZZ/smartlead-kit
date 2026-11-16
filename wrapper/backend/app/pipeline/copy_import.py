@@ -268,3 +268,88 @@ def parse_copy(channel: str, *, text: str | None = None, filename: str | None = 
         return {"status": "parse_error", "message": "No template body found (expected a 'Body:' line or a 'body' column)."}
 
     return {"status": "done", "mapped": mapped}
+
+
+# ---------------------------------------------------------------------------
+# Downloadable templates - the exact layout parse_copy() reads, pre-filled with
+# example copy so a teammate can see what a finished file looks like.
+# ---------------------------------------------------------------------------
+
+_EX_SMARTLEAD = [
+    (1, 0, "Quick question, {{first_name}}", "Hi {{first_name}},\nI work with teams like {{company_name}} on rewards and incentives.\nWould it be useful to compare notes?\nThanks,\nYour name"),
+    (2, 3, "Re: Quick question, {{first_name}}", "Hi {{first_name}},\nFollowing up on my note below. Worth a 15-min chat?\nYour name"),
+    (3, 6, "One idea for {{company_name}}", "Hi {{first_name}},\nOne idea that has worked for similar teams: ...\nOpen to a quick call?\nYour name"),
+]
+_EX_HEYREACH = [
+    ("dm1_connected", "Hi {FIRST_NAME}, since we're connected, wanted to share a quick idea for {COMPANY}.", ""),
+    ("dm1_not_connected", "Thanks for connecting, {FIRST_NAME}. Quick idea for {COMPANY}...", ""),
+    ("dm2", "Hi {FIRST_NAME}, following up with a bit more context on how this works.", ""),
+    ("dm3", "{FIRST_NAME}, a quick proof point from a team similar to {COMPANY}...", ""),
+    ("dm4", "Last note from me for now, {FIRST_NAME}. Happy to share more if useful.", ""),
+]
+_EX_INTERAKT = ("your_template_name", "Hi {{1}}, a quick note from Xoxoday about rewards for {{2}}.", "first_name, company_name")
+
+
+def build_template_xlsx(channels: list[str]) -> bytes:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    wb = Workbook()
+    wb.remove(wb.active)
+    head_fill, head_font = PatternFill("solid", fgColor="E8EFFD"), Font(bold=True)
+
+    def sheet(name, headers, rows, widths):
+        ws = wb.create_sheet(name)
+        ws.append(headers)
+        for r in rows:
+            ws.append(list(r))
+        for c in ws[1]:
+            c.fill, c.font = head_fill, head_font
+        for i, w in enumerate(widths):
+            ws.column_dimensions[chr(65 + i)].width = w
+        for row in ws.iter_rows(min_row=2):
+            for c in row:
+                c.alignment = Alignment(wrap_text=True, vertical="top")
+
+    if "smartlead" in channels:
+        sheet("smartlead", ["step", "delay_days", "subject", "body", "variant"],
+              [(*r, "A") for r in _EX_SMARTLEAD], [8, 12, 34, 70, 10])
+    if "heyreach" in channels:
+        sheet("heyreach", ["slot", "message", "fallback"], _EX_HEYREACH, [20, 80, 40])
+    if "interakt" in channels:
+        sheet("interakt", ["name", "body", "variables"], [_EX_INTERAKT], [26, 70, 30])
+    notes = wb.create_sheet("README")
+    for line in [
+        "How this file is read",
+        "One sheet per platform, named smartlead / heyreach / interakt. Delete the sheets you are not pushing.",
+        "smartlead: one row per email. step = order, delay_days = days after the previous email, body = line breaks become paragraphs, variant optional (A/B).",
+        "heyreach: exactly these 5 slots - dm1_connected, dm1_not_connected, dm2, dm3, dm4. fallback is optional.",
+        "interakt: one template. variables = comma-separated names, in order.",
+        "Merge tags: Smartlead {{first_name}} {{company_name}}; HeyReach {FIRST_NAME} {COMPANY} (single braces, uppercase).",
+        "Replace the example copy. Do not use em or en dashes.",
+    ]:
+        notes.append([line])
+    notes["A1"].font = head_font
+    notes.column_dimensions["A"].width = 120
+    import io as _io
+    buf = _io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def build_template_text(channels: list[str]) -> bytes:
+    out = ["# Replace the example copy below. One [CHANNEL] block per platform; delete the ones you don't need.",
+           "# Merge tags: Smartlead {{first_name}} {{company_name}}; HeyReach {FIRST_NAME} {COMPANY}.", ""]
+    if "smartlead" in channels:
+        out.append("[SMARTLEAD]")
+        for _, delay, subject, body in _EX_SMARTLEAD:
+            out += [f"Day {delay}:", f"Subject: {subject}", "Body:", body, ""]
+    if "heyreach" in channels:
+        out.append("[HEYREACH]")
+        headings = {"dm1_connected": "DM1 (connected):", "dm1_not_connected": "DM1 (not connected):",
+                    "dm2": "DM2:", "dm3": "DM3:", "dm4": "DM4:"}
+        for slot, message, _ in _EX_HEYREACH:
+            out += [headings[slot], f"Message: {message}", "Fallback:", ""]
+    if "interakt" in channels:
+        name, body, variables = _EX_INTERAKT
+        out += ["[INTERAKT]", f"Name: {name}", f"Body: {body}", f"Variables: {variables}", ""]
+    return "\n".join(out).encode()
