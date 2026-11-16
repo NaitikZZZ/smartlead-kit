@@ -19,7 +19,7 @@ from __future__ import annotations
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 
 from .. import audit, config, run_status
 from ..auth import Actor, require_user
@@ -43,6 +43,38 @@ _REGION_TAG_KEYWORD = {
 }
 
 
+# HeyReach workspace -> (label, region). The region is what the logged-in
+# teammate's workspace already implies, so the UI never asks for it: it picks
+# the Smartlead mailbox-group suggestion and the WhatsApp-region check.
+_WORKSPACE_INFO = {
+    "MAIN": ("Xoxoday (main)", "IND"), "US": ("Xoxoday US", "US"), "GCC": ("GCC", "GCC"),
+    "SEA": ("SEA", "PHL"), "AFRICA": ("Africa / KSA", "AFR"), "API": ("Global API", "GLOBAL"),
+}
+
+
+def _context_for(user: str) -> dict:
+    ws = heyreach.workspace_for(user) or "MAIN"
+    label, region = _WORKSPACE_INFO.get(ws, (ws, "GLOBAL"))
+    return {"user": user, "workspace": ws, "workspace_label": label, "region": region,
+            "whatsapp_eligible": region in config.COPY_PUSH_WHATSAPP_REGIONS}
+
+
+@router.get("/context")
+def copy_push_context(actor: Actor = Depends(require_user)):
+    return _context_for(actor.name)
+
+
+@router.get("/template")
+def copy_push_template(channels: str = "smartlead,heyreach,interakt", format: str = "xlsx"):
+    selected = [c for c in (x.strip() for x in channels.split(",")) if c in _VALID_CHANNELS] or sorted(_VALID_CHANNELS)
+    if format == "txt":
+        return Response(copy_import.build_template_text(selected), media_type="text/plain",
+                        headers={"Content-Disposition": 'attachment; filename="copy-template.txt"'})
+    return Response(copy_import.build_template_xlsx(selected),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": 'attachment; filename="copy-template.xlsx"'})
+
+
 @router.get("/defaults")
 def default_workflow():
     """What "default workflow" means on each platform, for the UI to display."""
@@ -56,11 +88,11 @@ def default_workflow():
 
 
 @router.get("/senders/heyreach")
-def heyreach_senders(search: Optional[str] = None):
+def heyreach_senders(search: Optional[str] = None, actor: Actor = Depends(require_user)):
     if not heyreach.is_configured():
         return {"status": "not_configured", "accounts": []}
     try:
-        accounts = heyreach.list_senders()
+        accounts = heyreach.list_senders(actor.name)
     except Exception as e:
         return {"status": "error", "message": f"Could not load HeyReach senders: {e}", "accounts": []}
     if search:
@@ -74,7 +106,8 @@ def heyreach_senders(search: Optional[str] = None):
 
 
 @router.get("/senders/smartlead/groups")
-def smartlead_sender_groups(region: Optional[str] = None):
+def smartlead_sender_groups(region: Optional[str] = None, actor: Actor = Depends(require_user)):
+    region = region or _context_for(actor.name)["region"]
     if not smartlead.is_configured():
         return {"status": "not_configured", "groups": []}
     try:
@@ -136,7 +169,6 @@ async def start_copy_push(
     copy_text: Optional[str] = Form(None),
     source_run_id: Optional[str] = Form(None),
     is_cxo: bool = Form(False),
-    region: Optional[str] = Form(None),
     copy_file: Optional[UploadFile] = File(None),
     actor: Actor = Depends(require_user),
 ):
@@ -186,9 +218,10 @@ async def start_copy_push(
             "in the HeyReach UI if this campaign needs it."
         )
 
-    if "interakt" in selected and (region or "").upper() not in config.COPY_PUSH_WHATSAPP_REGIONS:
+    ctx = _context_for(actor.name)
+    if "interakt" in selected and not ctx["whatsapp_eligible"]:
         warnings.append(
-            f"Region {region!r} is outside the standing-rule WhatsApp regions "
+            f"Your workspace region ({ctx['region']}) is outside the standing-rule WhatsApp regions "
             f"({', '.join(sorted(config.COPY_PUSH_WHATSAPP_REGIONS))}) - confirm this is intentional before pushing."
         )
 
@@ -253,13 +286,14 @@ def confirm_copy_push(push_id: str, body: CopyPushConfirmRequest, actor: Actor =
                 continue
             if heyreach_list_id is None:
                 try:
-                    heyreach_list_id = heyreach.create_list(campaign_title)
+                    heyreach_list_id = heyreach.create_list(campaign_title, actor.name)
                 except Exception as e:
                     result[channel] = {"status": "error", "message": f"Could not create the placeholder HeyReach list: {e}"}
                     continue
             result[channel] = heyreach.push_campaign_copy(campaign_title, heyreach_list_id, copy,
                                                               sender_ids=body.heyreach_sender_ids,
-                                                              use_default_sequence=body.use_default_workflow)
+                                                              use_default_sequence=body.use_default_workflow,
+                                                              user=actor.name)
         elif channel == "interakt":
             result[channel] = interakt.check_template(copy.get("name", campaign_title))
 

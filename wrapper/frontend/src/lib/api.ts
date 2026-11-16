@@ -355,7 +355,6 @@ export interface StartCopyPushParams {
   copyFile?: File;
   sourceRunId?: string;
   isCxo?: boolean;
-  region?: string;
 }
 
 export async function startCopyPush(params: StartCopyPushParams): Promise<CopyPushStatus> {
@@ -366,7 +365,6 @@ export async function startCopyPush(params: StartCopyPushParams): Promise<CopyPu
   if (params.copyFile) fd.append("copy_file", params.copyFile);
   if (params.sourceRunId) fd.append("source_run_id", params.sourceRunId);
   if (params.isCxo) fd.append("is_cxo", "true");
-  if (params.region) fd.append("region", params.region);
 
   const r = await apiFetch(`${API_BASE}/api/copy-push`, { method: "POST", body: fd });
   if (!r.ok) {
@@ -412,6 +410,31 @@ export async function confirmCopyPush(pushId: string, params: ConfirmCopyPushPar
   return r.json();
 }
 
+export interface CopyPushContext {
+  user: string;
+  workspace: string;
+  workspace_label: string;
+  region: string;
+  whatsapp_eligible: boolean;
+}
+
+export async function getCopyPushContext(): Promise<CopyPushContext> {
+  const r = await apiFetch(`${API_BASE}/api/copy-push/context`);
+  if (!r.ok) throw new Error(`Failed to load your workspace (${r.status})`);
+  return r.json();
+}
+
+export async function downloadCopyTemplate(channels: string[], format: "xlsx" | "txt"): Promise<void> {
+  const r = await apiFetch(`${API_BASE}/api/copy-push/template?${new URLSearchParams({ channels: channels.join(","), format })}`);
+  if (!r.ok) throw new Error(`Could not download the template (${r.status})`);
+  const url = URL.createObjectURL(await r.blob());
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `copy-template.${format}`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export async function getCopyPushDefaults(): Promise<DefaultWorkflow> {
   const r = await apiFetch(`${API_BASE}/api/copy-push/defaults`);
   if (!r.ok) throw new Error(`Failed to load the default workflow (${r.status})`);
@@ -432,9 +455,8 @@ export async function getHeyreachSenders(search?: string): Promise<SenderFetchRe
   return { status: body.status, items: body.accounts ?? [], message: body.message };
 }
 
-export async function getSmartleadSenderGroups(region?: string): Promise<SenderFetchResult<SenderGroup> & { suggestedTagId: number | null }> {
-  const params = region ? `?${new URLSearchParams({ region })}` : "";
-  const r = await apiFetch(`${API_BASE}/api/copy-push/senders/smartlead/groups${params}`);
+export async function getSmartleadSenderGroups(): Promise<SenderFetchResult<SenderGroup> & { suggestedTagId: number | null }> {
+  const r = await apiFetch(`${API_BASE}/api/copy-push/senders/smartlead/groups`);
   if (!r.ok) return { status: "error", items: [], suggestedTagId: null, message: `Failed to load Smartlead mailbox groups (${r.status})` };
   const body = await r.json();
   return { status: body.status, items: body.groups ?? [], suggestedTagId: body.suggested_tag_id ?? null, message: body.message };

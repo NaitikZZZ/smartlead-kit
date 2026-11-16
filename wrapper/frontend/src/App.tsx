@@ -155,7 +155,7 @@ function AppInner() {
 
   if (flow === "menu") {
     return (
-      <div className="app-shell">
+      <div className="app-shell app-shell-solo">
         <main className="main">
           <FlowChooser
             onChooseData={() => setFlow("data")}
@@ -168,7 +168,7 @@ function AppInner() {
 
   if (flow === "copy") {
     return (
-      <div className="app-shell">
+      <div className="app-shell app-shell-solo">
         <main className="main">
           <CopyPush
             sourceRunId={copyPushSourceRunId}

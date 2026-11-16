@@ -131,7 +131,7 @@ def add_leads(list_id: int, leads: list[dict], user: str | None = None) -> dict:
 _REQUIRED_COPY_KEYS = {"dm1_connected", "dm1_not_connected", "dm2", "dm3", "dm4"}
 
 
-def list_senders() -> list[dict]:
+def list_senders(user: str | None = None) -> list[dict]:
     """Available LinkedIn sender accounts in this HeyReach workspace - needed
     to pick sender_ids for push_campaign_copy(). GetAll paginates (response
     has "totalCount"/"items") and defaults to a 10-item page when no
@@ -140,7 +140,7 @@ def list_senders() -> list[dict]:
     this loops rather than assuming one page covers every workspace."""
     accounts, offset = [], 0
     while True:
-        r = requests.post(f"{BASE}/li_account/GetAll", headers=_headers(),
+        r = requests.post(f"{BASE}/li_account/GetAll", headers=_headers(user),
                           json={"offset": offset, "limit": 100}, timeout=30)
         _raise_with_body(r)
         body = r.json() if r.content else {}
@@ -153,14 +153,14 @@ def list_senders() -> list[dict]:
     return accounts
 
 
-def create_campaign(name: str, list_id: int, sender_ids: list[int]) -> int:
+def create_campaign(name: str, list_id: int, sender_ids: list[int], user: str | None = None) -> int:
     """Confirmed against HeyReach's own published docs (heyreach.io/blog/campaign-api,
     checked 2026-10-12) - scripts/17_heyreach_push_campaign.py's guess that
     {"name": ...} alone was enough was wrong: linkedInUserListId and
     linkedInAccountIds (1-100 items) are both REQUIRED on Create, not
     attachable afterward. Response is {"campaignId": ...}. Creates in DRAFT
     status; StartCampaign (not called here) is a separate, explicit step."""
-    r = requests.post(f"{BASE}/campaign/Create", headers=_headers(), json={
+    r = requests.post(f"{BASE}/campaign/Create", headers=_headers(user), json={
         "name": name, "linkedInUserListId": list_id, "linkedInAccountIds": sender_ids,
     }, timeout=30)
     _raise_with_body(r)
@@ -172,7 +172,7 @@ def create_campaign(name: str, list_id: int, sender_ids: list[int]) -> int:
 
 
 def update_schedule(campaign_id: int, timezone="Asia/Kolkata", start_hour="09:00:00", end_hour="17:00:00",
-                     days=("mon", "tue", "wed", "thu", "fri")) -> None:
+                     days=("mon", "tue", "wed", "thu", "fri"), user: str | None = None) -> None:
     """Confirmed shape (heyreach.io/blog/campaign-api, checked 2026-10-12):
     UpdateCampaignScheduleApiDto nests the actual schedule fields under a
     "schedule" object - they are NOT flat alongside campaignId, which is what
@@ -184,7 +184,7 @@ def update_schedule(campaign_id: int, timezone="Asia/Kolkata", start_hour="09:00
     enabled = {field: False for field in day_fields.values()}
     for d in days:
         enabled[day_fields[d]] = True
-    r = requests.post(f"{BASE}/campaign/UpdateSchedule", headers=_headers(), json={
+    r = requests.post(f"{BASE}/campaign/UpdateSchedule", headers=_headers(user), json={
         "campaignId": campaign_id,
         "schedule": {"dailyStartTime": start_hour, "dailyEndTime": end_hour, "timeZoneId": timezone, **enabled},
     }, timeout=15)
@@ -277,14 +277,14 @@ def describe_default_sequence() -> list[dict]:
     return out
 
 
-def update_sequence(campaign_id: int, copy: dict) -> None:
-    r = requests.post(f"{BASE}/campaign/UpdateSequence", headers=_headers(),
+def update_sequence(campaign_id: int, copy: dict, user: str | None = None) -> None:
+    r = requests.post(f"{BASE}/campaign/UpdateSequence", headers=_headers(user),
                       json={"campaignId": campaign_id, "sequence": build_sequence(copy)}, timeout=30)
     _raise_with_body(r)
 
 
 def push_campaign_copy(campaign_name: str, list_id: int, copy: dict, sender_ids: list[int] | None = None,
-                       use_default_sequence: bool = True) -> dict:
+                       use_default_sequence: bool = True, user: str | None = None) -> dict:
     """Create a DRAFT HeyReach campaign with the real DM cadence (the
     validated two-branch structure, not the unvalidated open-profile draft -
     see build_sequence's docstring) and attach it to list_id. Never raises.
@@ -304,15 +304,15 @@ def push_campaign_copy(campaign_name: str, list_id: int, copy: dict, sender_ids:
     if missing:
         return {"status": "error", "message": f"copy is missing required slot(s): {', '.join(sorted(missing))}"}
     try:
-        cid = create_campaign(campaign_name, list_id, sender_ids)
-        update_schedule(cid)
+        cid = create_campaign(campaign_name, list_id, sender_ids, user)
+        update_schedule(cid, user=user)
         if not use_default_sequence:
             return {
                 "status": "pushed", "campaign_id": cid, "campaign_name": campaign_name, "list_id": list_id,
                 "note": "Campaign created DRAFT with list, senders, and schedule only - no sequence, since you chose a "
                         "non-default workflow. Build the cadence by hand in the HeyReach UI, then start manually.",
             }
-        update_sequence(cid, copy)
+        update_sequence(cid, copy, user)
         return {
             "status": "pushed", "campaign_id": cid, "campaign_name": campaign_name, "list_id": list_id,
             "note": "Campaign created DRAFT with cadence, list, and senders attached. Review in the HeyReach UI, then start manually.",
