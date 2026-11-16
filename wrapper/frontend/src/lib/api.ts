@@ -1,4 +1,4 @@
-import type { AppConfig, IcpOptions, RunStatus, WizardTargeting } from "./types";
+import type { AppConfig, CopyPushStatus, DefaultWorkflow, SmartleadSchedule, IcpOptions, RunStatus, SenderAccount, SenderGroup, WizardTargeting } from "./types";
 
 // Falls back to same-origin ("") in a production build even if VITE_API_BASE
 // was never configured in Vercel - relying on that env var alone meant a
@@ -342,6 +342,110 @@ export function downloadProps(runId: string, filename: string) {
       URL.revokeObjectURL(url);
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Copy Push (CLAUDE.md "Flow 2") - see routes/copy_push.py
+// ---------------------------------------------------------------------------
+
+export interface StartCopyPushParams {
+  channels: string[];
+  campaignName: string;
+  copyText?: string;
+  copyFile?: File;
+  sourceRunId?: string;
+  isCxo?: boolean;
+  region?: string;
+}
+
+export async function startCopyPush(params: StartCopyPushParams): Promise<CopyPushStatus> {
+  const fd = new FormData();
+  fd.append("channels", params.channels.join(","));
+  fd.append("campaign_name", params.campaignName);
+  if (params.copyText) fd.append("copy_text", params.copyText);
+  if (params.copyFile) fd.append("copy_file", params.copyFile);
+  if (params.sourceRunId) fd.append("source_run_id", params.sourceRunId);
+  if (params.isCxo) fd.append("is_cxo", "true");
+  if (params.region) fd.append("region", params.region);
+
+  const r = await apiFetch(`${API_BASE}/api/copy-push`, { method: "POST", body: fd });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body.detail || `Failed to start copy push (${r.status})`);
+  }
+  return r.json();
+}
+
+export async function getCopyPush(pushId: string): Promise<CopyPushStatus> {
+  const r = await apiFetch(`${API_BASE}/api/copy-push/${pushId}`);
+  if (!r.ok) throw new Error("Failed to fetch copy push status");
+  return r.json();
+}
+
+export interface ConfirmCopyPushParams {
+  editedMapping?: Record<string, any>;
+  heyreachSenderIds?: number[];
+  smartleadSenderTagId?: number;
+  smartleadSenderAccountIds?: number[];
+  useDefaultWorkflow?: boolean;
+  smartleadSchedule?: SmartleadSchedule;
+}
+
+export async function confirmCopyPush(pushId: string, params: ConfirmCopyPushParams = {}): Promise<CopyPushStatus> {
+  const r = await apiFetch(`${API_BASE}/api/copy-push/${pushId}/confirm`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      confirm: true,
+      edited_mapping: params.editedMapping,
+      heyreach_sender_ids: params.heyreachSenderIds,
+      smartlead_sender_tag_id: params.smartleadSenderTagId,
+      smartlead_sender_account_ids: params.smartleadSenderAccountIds,
+      use_default_workflow: params.useDefaultWorkflow ?? true,
+      smartlead_schedule: params.smartleadSchedule,
+    }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body.detail || `Push failed (${r.status})`);
+  }
+  return r.json();
+}
+
+export async function getCopyPushDefaults(): Promise<DefaultWorkflow> {
+  const r = await apiFetch(`${API_BASE}/api/copy-push/defaults`);
+  if (!r.ok) throw new Error(`Failed to load the default workflow (${r.status})`);
+  return r.json();
+}
+
+export interface SenderFetchResult<T> {
+  status: string;
+  items: T[];
+  message?: string;
+}
+
+export async function getHeyreachSenders(search?: string): Promise<SenderFetchResult<SenderAccount>> {
+  const params = search ? `?${new URLSearchParams({ search })}` : "";
+  const r = await apiFetch(`${API_BASE}/api/copy-push/senders/heyreach${params}`);
+  if (!r.ok) return { status: "error", items: [], message: `Failed to load HeyReach sender accounts (${r.status})` };
+  const body = await r.json();
+  return { status: body.status, items: body.accounts ?? [], message: body.message };
+}
+
+export async function getSmartleadSenderGroups(region?: string): Promise<SenderFetchResult<SenderGroup> & { suggestedTagId: number | null }> {
+  const params = region ? `?${new URLSearchParams({ region })}` : "";
+  const r = await apiFetch(`${API_BASE}/api/copy-push/senders/smartlead/groups${params}`);
+  if (!r.ok) return { status: "error", items: [], suggestedTagId: null, message: `Failed to load Smartlead mailbox groups (${r.status})` };
+  const body = await r.json();
+  return { status: body.status, items: body.groups ?? [], suggestedTagId: body.suggested_tag_id ?? null, message: body.message };
+}
+
+export async function getSmartleadSenders(search?: string): Promise<SenderFetchResult<SenderAccount>> {
+  const params = search ? `?${new URLSearchParams({ search })}` : "";
+  const r = await apiFetch(`${API_BASE}/api/copy-push/senders/smartlead${params}`);
+  if (!r.ok) return { status: "error", items: [], message: `Failed to load Smartlead sender accounts (${r.status})` };
+  const body = await r.json();
+  return { status: body.status, items: body.accounts ?? [], message: body.message };
 }
 
 export async function confirmImport(runId: string) {

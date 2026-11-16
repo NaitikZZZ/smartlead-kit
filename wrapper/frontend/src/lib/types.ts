@@ -115,6 +115,56 @@ export interface RunStatus {
   pending_question?: PendingQuestion | null;
 }
 
+// Copy Push (CLAUDE.md "Flow 2") - pushes already-written copy into a
+// campaign, independent of any contact/lead data. See routes/copy_push.py.
+export type CopyPushChannel = "smartlead" | "heyreach" | "interakt";
+
+export type CopyPushStage = "queued" | "mapping" | "awaiting_review" | "pushing" | "done" | "failed";
+
+export interface CopyPushStatus {
+  push_id: string;
+  stage: CopyPushStage;
+  message: string;
+  error?: string | null;
+  channels: string[];
+  warnings: string[];
+  mapped: Record<string, { status: string; message?: string; mapped?: any }>;
+  result: Record<string, any>;
+}
+
+export interface SmartleadSchedule {
+  timezone: string;
+  days_of_the_week: number[];
+  start_hour: number;
+  end_hour: number;
+  min_time_btw_emails: number;
+  max_new_leads_per_day: number;
+}
+
+export interface DefaultWorkflow {
+  smartlead: {
+    schedule: SmartleadSchedule;
+    settings: Record<string, any>;
+    automated_extras: string[];
+    ui_only: string[];
+    cadence_days: number[];
+  };
+  heyreach: { sequence: { depth: number; branch: string; label: string; wait: string }[] };
+}
+
+export interface SenderAccount {
+  id: number;
+  name?: string;
+  email?: string;
+  active?: boolean;
+}
+
+export interface SenderGroup {
+  id: number;
+  name: string;
+  color?: string;
+}
+
 export interface AppConfig {
   account_mapping_sheet_configured: boolean;
   account_mapping_sheet_file?: string | null;
