@@ -65,14 +65,22 @@ def copy_push_context(actor: Actor = Depends(require_user)):
 
 
 @router.get("/template")
-def copy_push_template(channels: str = "smartlead,heyreach,interakt", format: str = "xlsx"):
+def copy_push_template(channels: str = "smartlead,heyreach,interakt", format: str = "xlsx", sales_nav: str = "no"):
     selected = [c for c in (x.strip() for x in channels.split(",")) if c in _VALID_CHANNELS] or sorted(_VALID_CHANNELS)
     if format == "txt":
-        return Response(copy_import.build_template_text(selected), media_type="text/plain",
+        return Response(copy_import.build_template_text(selected, sales_nav in ("yes", "both")), media_type="text/plain",
                         headers={"Content-Disposition": 'attachment; filename="copy-template.txt"'})
-    return Response(copy_import.build_template_xlsx(selected),
+    return Response(copy_import.build_template_xlsx(selected, sales_nav in ("yes", "both")),
                     media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": 'attachment; filename="copy-template.xlsx"'})
+
+
+@router.get("/prompt")
+def copy_push_prompt(channels: str = "smartlead,heyreach,interakt", sales_nav: str = "no"):
+    """A ready-to-paste brief for Claude: the structure, rules and output format
+    our Copy Push reads, so copy generated from it uploads without reformatting."""
+    selected = [c for c in (x.strip() for x in channels.split(",")) if c in _VALID_CHANNELS] or sorted(_VALID_CHANNELS)
+    return Response(copy_import.build_claude_prompt(selected, sales_nav in ("yes", "both")), media_type="text/plain")
 
 
 @router.get("/defaults")
@@ -83,7 +91,8 @@ def default_workflow():
             "schedule": smartlead.DEFAULT_SCHEDULE, "settings": smartlead.DEFAULT_SETTINGS,
             "automated_extras": smartlead.AUTOMATED_EXTRAS, "ui_only": smartlead.UI_ONLY_DEFAULTS, "cadence_days": copy_import.DEFAULT_DELAY_DAYS,
         },
-        "heyreach": {"sequence": heyreach.describe_default_sequence()},
+        "heyreach": {"sequence": heyreach.describe_default_sequence(),
+                     "sequence_sales_nav": heyreach.describe_default_sequence(open_profile=True)},
     }
 
 
@@ -168,7 +177,7 @@ async def start_copy_push(
     campaign_name: str = Form(...),
     copy_text: Optional[str] = Form(None),
     source_run_id: Optional[str] = Form(None),
-    is_cxo: bool = Form(False),
+    sales_nav: str = Form("no"),  # "no" | "yes" | "both" - yes/both use the Open Profile (InMail) HeyReach workflow
     copy_file: Optional[UploadFile] = File(None),
     actor: Actor = Depends(require_user),
 ):
@@ -210,12 +219,11 @@ async def start_copy_push(
             warnings.append("No existing list to attach to - an empty HeyReach list will be created on confirm. "
                             "Add the real contacts/list yourself in HeyReach before starting this campaign.")
 
-    if "heyreach" in selected and is_cxo:
+    if "heyreach" in selected and sales_nav in ("yes", "both"):
         warnings.append(
-            "CXO/exec targeting noted, but the Open Profile routing branch (InMail before connecting) is an "
-            "unvalidated draft (docs/heyreach-default-workflow.md) and isn't built here - the validated "
-            "CHECK_IS_CONNECTION cadence is used regardless. Build and test the open-profile branch by hand "
-            "in the HeyReach UI if this campaign needs it."
+            "Sales Navigator workflow (open profiles get InMails before the connection request) is an unvalidated draft "
+            "(docs/heyreach-default-workflow.md). If HeyReach rejects it you'll get the campaign shell and a message. "
+            "Open the draft in HeyReach and check the flow before starting it."
         )
 
     ctx = _context_for(actor.name)
@@ -225,15 +233,18 @@ async def start_copy_push(
             f"({', '.join(sorted(config.COPY_PUSH_WHATSAPP_REGIONS))}) - confirm this is intentional before pushing."
         )
 
+    open_profile = sales_nav in ("yes", "both")
     mapped = {}
     for channel in selected:
-        mapped[channel] = copy_import.parse_copy(channel, text=copy_text, filename=filename, file_bytes=file_bytes)
+        mapped[channel] = copy_import.parse_copy(channel, text=copy_text, filename=filename, file_bytes=file_bytes,
+                                                 open_profile=open_profile and channel == "heyreach")
+        warnings.extend(mapped[channel].pop("warnings", []))
 
     push_id = f"cp_{uuid.uuid4().hex[:12]}"
     job = {
         "stage": "awaiting_review", "channels": selected, "mapped": mapped, "warnings": warnings,
         "message": "Copy parsed - review before pushing.",
-        "_campaign_title": campaign_title, "_heyreach_list_id": heyreach_list_id,
+        "_campaign_title": campaign_title, "_heyreach_list_id": heyreach_list_id, "_open_profile": open_profile,
     }
     run_status.update(push_id, **job)
     audit.log(actor.name, "copy_push_start", ip=actor.ip, push_id=push_id, campaign_name=campaign_title,
@@ -293,7 +304,7 @@ def confirm_copy_push(push_id: str, body: CopyPushConfirmRequest, actor: Actor =
             result[channel] = heyreach.push_campaign_copy(campaign_title, heyreach_list_id, copy,
                                                               sender_ids=body.heyreach_sender_ids,
                                                               use_default_sequence=body.use_default_workflow,
-                                                              user=actor.name)
+                                                              user=actor.name, open_profile=bool(job.get("_open_profile")))
         elif channel == "interakt":
             result[channel] = interakt.check_template(copy.get("name", campaign_title))
 

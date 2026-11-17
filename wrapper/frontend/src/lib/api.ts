@@ -1,4 +1,4 @@
-import type { AppConfig, CopyPushStatus, DefaultWorkflow, SmartleadSchedule, IcpOptions, RunStatus, SenderAccount, SenderGroup, WizardTargeting } from "./types";
+import type { AppConfig, CopyPushStatus, DefaultWorkflow, SalesNav, SmartleadSchedule, IcpOptions, RunStatus, SenderAccount, SenderGroup, WizardTargeting } from "./types";
 
 // Falls back to same-origin ("") in a production build even if VITE_API_BASE
 // was never configured in Vercel - relying on that env var alone meant a
@@ -354,7 +354,7 @@ export interface StartCopyPushParams {
   copyText?: string;
   copyFile?: File;
   sourceRunId?: string;
-  isCxo?: boolean;
+  salesNav?: SalesNav;
 }
 
 export async function startCopyPush(params: StartCopyPushParams): Promise<CopyPushStatus> {
@@ -364,7 +364,7 @@ export async function startCopyPush(params: StartCopyPushParams): Promise<CopyPu
   if (params.copyText) fd.append("copy_text", params.copyText);
   if (params.copyFile) fd.append("copy_file", params.copyFile);
   if (params.sourceRunId) fd.append("source_run_id", params.sourceRunId);
-  if (params.isCxo) fd.append("is_cxo", "true");
+  if (params.salesNav) fd.append("sales_nav", params.salesNav);
 
   const r = await apiFetch(`${API_BASE}/api/copy-push`, { method: "POST", body: fd });
   if (!r.ok) {
@@ -424,8 +424,14 @@ export async function getCopyPushContext(): Promise<CopyPushContext> {
   return r.json();
 }
 
-export async function downloadCopyTemplate(channels: string[], format: "xlsx" | "txt"): Promise<void> {
-  const r = await apiFetch(`${API_BASE}/api/copy-push/template?${new URLSearchParams({ channels: channels.join(","), format })}`);
+export async function getCopyPrompt(channels: string[], salesNav: SalesNav): Promise<string> {
+  const r = await apiFetch(`${API_BASE}/api/copy-push/prompt?${new URLSearchParams({ channels: channels.join(","), sales_nav: salesNav })}`);
+  if (!r.ok) throw new Error(`Could not load the prompt (${r.status})`);
+  return r.text();
+}
+
+export async function downloadCopyTemplate(channels: string[], format: "xlsx" | "txt", salesNav: SalesNav = "no"): Promise<void> {
+  const r = await apiFetch(`${API_BASE}/api/copy-push/template?${new URLSearchParams({ channels: channels.join(","), format, sales_nav: salesNav })}`);
   if (!r.ok) throw new Error(`Could not download the template (${r.status})`);
   const url = URL.createObjectURL(await r.blob());
   const a = document.createElement("a");

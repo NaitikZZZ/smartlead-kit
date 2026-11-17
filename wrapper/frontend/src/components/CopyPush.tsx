@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import type { CopyPushStatus, DefaultWorkflow, SenderAccount, SenderGroup, SmartleadSchedule } from "../lib/types";
+import type { CopyPushStatus, DefaultWorkflow, SalesNav, SenderAccount, SenderGroup, SmartleadSchedule } from "../lib/types";
 import type { CopyPushContext } from "../lib/api";
 import {
-  confirmCopyPush, downloadCopyTemplate, getCopyPushContext, getCopyPushDefaults, getHeyreachSenders,
+  confirmCopyPush, downloadCopyTemplate, getCopyPrompt, getCopyPushContext, getCopyPushDefaults, getHeyreachSenders,
   getSmartleadSenderGroups, getSmartleadSenders, startCopyPush,
 } from "../lib/api";
 import DefaultWorkflowPanel from "./DefaultWorkflowPanel";
@@ -15,12 +15,12 @@ const CHANNELS: { key: string; title: string; desc: string }[] = [
 
 const HEYREACH_SLOT_LABELS: Record<string, string> = {
   dm1_connected: "DM 1 (already connected)", dm1_not_connected: "DM 1 (after they accept)",
-  dm2: "DM 2", dm3: "DM 3", dm4: "DM 4",
+  dm2: "DM 2", dm3: "DM 3", dm4: "DM 4", inmail1: "InMail 1", inmail2: "InMail 2",
 };
 
-type StepKey = "platforms" | "copy" | "workflow" | "review";
+type StepKey = "platforms" | "workflow" | "copy" | "review";
 const STEP_TITLES: Record<StepKey, string> = {
-  platforms: "Platforms", copy: "Your copy", workflow: "Workflow", review: "Review & send",
+  platforms: "Platforms", workflow: "Workflow", copy: "Your copy", review: "Review & send",
 };
 
 // "P1_EVENTS_PREEVENT_US_EMAIL_Naitik12OCT26_98765432" - 7 underscore-separated parts
@@ -37,12 +37,13 @@ export default function CopyPush({ sourceRunId, onDone }: { sourceRunId?: string
   const [copyText, setCopyText] = useState("");
   const [copyFile, setCopyFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
-  const [isCxo, setIsCxo] = useState(false);
+  const [salesNav, setSalesNav] = useState<SalesNav>("no");
+  const [promptCopied, setPromptCopied] = useState(false);
 
   const [ctx, setCtx] = useState<CopyPushContext | null>(null);
   const [defaults, setDefaults] = useState<DefaultWorkflow | null>(null);
   const [defaultsError, setDefaultsError] = useState<string | null>(null);
-  const [useDefault, setUseDefault] = useState(true);
+  const [useDefault, setUseDefault] = useState<boolean | null>(null); // null until the user answers the prompt
   const [schedule, setSchedule] = useState<SmartleadSchedule | null>(null);
 
   const [push, setPush] = useState<CopyPushStatus | null>(null);
@@ -66,7 +67,7 @@ export default function CopyPush({ sourceRunId, onDone }: { sourceRunId?: string
 
   const hasWorkflow = channels.includes("smartlead") || channels.includes("heyreach");
   const steps: StepKey[] = useMemo(
-    () => ["platforms", "copy", ...(hasWorkflow ? ["workflow" as StepKey] : []), "review"], [hasWorkflow]);
+    () => ["platforms", ...(hasWorkflow ? ["workflow" as StepKey] : []), "copy", "review"], [hasWorkflow]);
   const stepIdx = steps.indexOf(step);
 
   useEffect(() => {
@@ -110,7 +111,8 @@ export default function CopyPush({ sourceRunId, onDone }: { sourceRunId?: string
       if (!channels.length) return "Pick at least one platform.";
       if (!campaignName.trim()) return "Give the campaign a name.";
     }
-    if (from === "copy" || from === "workflow") {
+    if (from === "workflow" && useDefault === null) return "Choose whether to use the default workflow.";
+    if (from === "copy") {
       if (inputMode === "file" && !copyFile) return "Upload your copy file, or switch to pasting it.";
       if (inputMode === "paste" && !copyText.trim()) return "Paste your copy, or switch to uploading a file.";
     }
@@ -126,7 +128,7 @@ export default function CopyPush({ sourceRunId, onDone }: { sourceRunId?: string
     setBusy(true);
     try {
       setPush(await startCopyPush({
-        channels, campaignName, isCxo: isCxo && channels.includes("heyreach"), sourceRunId,
+        channels, campaignName, sourceRunId, salesNav: channels.includes("heyreach") && useDefault ? salesNav : "no",
         copyText: inputMode === "paste" ? copyText : undefined,
         copyFile: inputMode === "file" ? copyFile ?? undefined : undefined,
       }));
@@ -144,9 +146,37 @@ export default function CopyPush({ sourceRunId, onDone }: { sourceRunId?: string
     if (stepIdx > 0) setStep(steps[stepIdx - 1]);
   }
 
+  const effectiveNav: SalesNav = channels.includes("heyreach") && useDefault ? salesNav : "no";
+
+  async function copyPrompt() {
+    setError(null);
+    try {
+      await navigator.clipboard.writeText(await getCopyPrompt(channels, effectiveNav));
+      setPromptCopied(true);
+      setTimeout(() => setPromptCopied(false), 2500);
+    } catch (e: any) {
+      setError(e.message || "Could not copy the prompt");
+    }
+  }
+
   const parsedOk = (ch: string) => push?.mapped[ch]?.status === "done";
   const anyParsed = channels.some(parsedOk);
   const needsHrSender = channels.includes("heyreach") && parsedOk("heyreach") && hrSelected.length === 0;
+
+  const emailCount = push?.mapped.smartlead?.mapped?.sequences?.length ?? 0;
+  const dmCount = push?.mapped.heyreach?.mapped
+    ? ["dm2", "dm3", "dm4"].filter((k) => push.mapped.heyreach.mapped[k]).length + 1
+    : 0;
+  const defaultEmails = defaults?.smartlead.cadence_days.length ?? 5;
+  const shorter = [
+    emailCount && emailCount < defaultEmails ? `${emailCount} emails (the default is ${defaultEmails})` : "",
+    dmCount && dmCount < 4 ? `${dmCount} DM${dmCount > 1 ? "s" : ""} (the default is 4)` : "",
+  ].filter(Boolean);
+  const workflowNote = useDefault === false
+    ? "Your own schedule and settings are used, and HeyReach gets no automatic sequence."
+    : shorter.length
+      ? `Your copy has ${shorter.join(" and ")}, so each cadence simply ends after your last message. Everything else follows the default.`
+      : "Your copy fills the whole default cadence.";
 
   async function doConfirm() {
     if (!push) return;
@@ -157,8 +187,8 @@ export default function CopyPush({ sourceRunId, onDone }: { sourceRunId?: string
         heyreachSenderIds: channels.includes("heyreach") ? hrSelected : undefined,
         smartleadSenderTagId: channels.includes("smartlead") && slMode === "group" ? slTag ?? undefined : undefined,
         smartleadSenderAccountIds: channels.includes("smartlead") && slMode === "individual" ? slSelected : undefined,
-        useDefaultWorkflow: useDefault,
-        smartleadSchedule: !useDefault && channels.includes("smartlead") && schedule ? schedule : undefined,
+        useDefaultWorkflow: useDefault !== false,
+        smartleadSchedule: useDefault === false && channels.includes("smartlead") && schedule ? schedule : undefined,
       }));
     } catch (e: any) {
       setError(e.message || "Push failed");
@@ -234,17 +264,22 @@ export default function CopyPush({ sourceRunId, onDone }: { sourceRunId?: string
       {step === "copy" && (
         <>
           <h3 style={{ marginBottom: 6 }}>Add your copy</h3>
-          <div className="card" style={{ padding: 16, marginBottom: 20, display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
-            <div style={{ flex: "1 1 280px" }}>
-              <b style={{ fontSize: 14 }}>Not sure how the file should look?</b>
-              <p style={{ fontSize: 13, margin: "2px 0 0" }}>
-                Download the template for {channels.map((c) => CHANNELS.find((x) => x.key === c)?.title).join(", ")}. It has example copy and a how-to tab.
-              </p>
+          <div className="card" style={{ padding: 16, marginBottom: 14 }}>
+            <b style={{ fontSize: 14 }}>Use our layout</b>
+            <p style={{ fontSize: 13, margin: "2px 0 10px" }}>
+              Files that follow the template upload with no changes. Other layouts will not be read. Leave the signature off: no sign-off or name at the end of any message, the platform adds the sender's own.
+            </p>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button className="btn-secondary" onClick={() => downloadCopyTemplate(channels, "xlsx", effectiveNav).catch((e) => setError(e.message))}>Excel template</button>
+              <button className="btn-secondary" onClick={() => downloadCopyTemplate(channels, "txt", effectiveNav).catch((e) => setError(e.message))}>Text template</button>
             </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button className="btn-secondary" onClick={() => downloadCopyTemplate(channels, "xlsx").catch((e) => setError(e.message))}>Excel template</button>
-              <button className="btn-secondary" onClick={() => downloadCopyTemplate(channels, "txt").catch((e) => setError(e.message))}>Text template</button>
-            </div>
+          </div>
+          <div className="card" style={{ padding: 16, marginBottom: 20 }}>
+            <b style={{ fontSize: 14 }}>Don't have copy yet?</b>
+            <p style={{ fontSize: 13, margin: "2px 0 10px" }}>
+              Copy this brief into Claude. It has your workflow, the rules and the exact output layout, so what it writes uploads straight back here.
+            </p>
+            <button className="btn-secondary" onClick={copyPrompt}>{promptCopied ? "Copied" : "Copy the prompt for Claude"}</button>
           </div>
 
           <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
@@ -287,13 +322,8 @@ export default function CopyPush({ sourceRunId, onDone }: { sourceRunId?: string
           <DefaultWorkflowPanel
             channels={channels} defaults={defaults} loadError={defaultsError}
             useDefault={useDefault} onUseDefault={setUseDefault} schedule={schedule} onSchedule={setSchedule}
+            salesNav={salesNav} onSalesNav={setSalesNav}
           />
-          {channels.includes("heyreach") && (
-            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
-              <input type="checkbox" checked={isCxo} onChange={(e) => setIsCxo(e.target.checked)} />
-              This LinkedIn campaign targets CXO / executive profiles
-            </label>
-          )}
         </>
       )}
 
@@ -301,8 +331,18 @@ export default function CopyPush({ sourceRunId, onDone }: { sourceRunId?: string
         <>
           <h3 style={{ marginBottom: 4 }}>Review before anything is sent</h3>
           <p style={{ marginBottom: 16, fontSize: 13 }}>
-            Campaign <b>{campaignName}</b>. {useDefault ? "Default workflow." : "Custom workflow."} Nothing reaches a platform until you press the button at the bottom.
+            Campaign <b>{campaignName}</b>. {useDefault === false ? "Custom workflow." : "Default workflow."} Nothing reaches a platform until you press the button at the bottom.
           </p>
+
+          {hasWorkflow && (
+            <div className="card" style={{ padding: 12, fontSize: 13, marginBottom: 12, display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
+              <span>
+                <b>{useDefault === false ? "Custom workflow" : "Default workflow"}.</b> {workflowNote}
+              </span>
+              <button className="btn-secondary" style={{ fontSize: 12, padding: "2px 10px", whiteSpace: "nowrap" }}
+                onClick={() => { setPush(null); setStep("workflow"); }}>Change</button>
+            </div>
+          )}
 
           {push.warnings.map((w, i) => (
             <p key={i} className="card" style={{ padding: 12, fontSize: 13, marginBottom: 10 }}><span className="tag-warning">Heads up</span> {w}</p>
@@ -427,9 +467,10 @@ function CopyPreview({ channel, mapped }: { channel: string; mapped: any }) {
   if (channel === "heyreach") {
     return (
       <div>
-        {Object.entries(HEYREACH_SLOT_LABELS).map(([slot, label]) => (
+        {Object.entries(HEYREACH_SLOT_LABELS).filter(([slot]) => mapped[slot]).map(([slot, label]) => (
           <div key={slot} className="cp-mail">
             <div className="meta">{label}</div>
+            {mapped[slot]?.subject && <div className="subj">{mapped[slot].subject}</div>}
             <div style={{ whiteSpace: "pre-wrap" }}>{mapped[slot]?.message}</div>
           </div>
         ))}
