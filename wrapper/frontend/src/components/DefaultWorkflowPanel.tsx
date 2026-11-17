@@ -9,7 +9,7 @@ export default function DefaultWorkflowPanel({
   channels: string[];
   defaults: DefaultWorkflow | null;
   loadError: string | null;
-  useDefault: boolean;
+  useDefault: boolean | null;
   onUseDefault: (v: boolean) => void;
   schedule: SmartleadSchedule | null;
   onSchedule: (s: SmartleadSchedule) => void;
@@ -29,14 +29,14 @@ export default function DefaultWorkflowPanel({
       <h5 style={{ marginBottom: 10 }}>Use the default workflow?</h5>
       <div style={{ display: "flex", gap: 20, fontSize: 14, marginBottom: 10 }}>
         <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <input type="radio" checked={useDefault} onChange={() => onUseDefault(true)} /> Yes, use the default
+          <input type="radio" checked={useDefault === true} onChange={() => onUseDefault(true)} /> Yes, use the default <span className="tag-success">Recommended</span>
         </label>
         <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <input type="radio" checked={!useDefault} onChange={() => onUseDefault(false)} /> No, customize
+          <input type="radio" checked={useDefault === false} onChange={() => onUseDefault(false)} /> No, customize
         </label>
       </div>
 
-      {hasHeyreach && useDefault && (
+      {hasHeyreach && useDefault === true && (
         <div style={{ margin: "4px 0 14px", padding: "12px 14px", background: "var(--blue-100)", borderRadius: 8 }}>
           <b style={{ fontSize: 14 }}>Does the LinkedIn account have Sales Navigator?</b>
           <div style={{ display: "flex", gap: 18, fontSize: 14, margin: "8px 0 4px", flexWrap: "wrap" }}>
@@ -100,7 +100,7 @@ export default function DefaultWorkflowPanel({
         </div>
       )}
 
-      {!useDefault && (
+      {useDefault === false && (
         <div style={{ marginTop: 14, borderTop: "1px solid var(--blue-100)", paddingTop: 12 }}>
           {hasSmartlead && schedule && (
             <div style={{ marginBottom: hasHeyreach ? 14 : 0 }}>

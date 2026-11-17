@@ -43,7 +43,7 @@ export default function CopyPush({ sourceRunId, onDone }: { sourceRunId?: string
   const [ctx, setCtx] = useState<CopyPushContext | null>(null);
   const [defaults, setDefaults] = useState<DefaultWorkflow | null>(null);
   const [defaultsError, setDefaultsError] = useState<string | null>(null);
-  const [useDefault, setUseDefault] = useState(true);
+  const [useDefault, setUseDefault] = useState<boolean | null>(null); // null until the user answers the prompt
   const [schedule, setSchedule] = useState<SmartleadSchedule | null>(null);
 
   const [push, setPush] = useState<CopyPushStatus | null>(null);
@@ -111,6 +111,7 @@ export default function CopyPush({ sourceRunId, onDone }: { sourceRunId?: string
       if (!channels.length) return "Pick at least one platform.";
       if (!campaignName.trim()) return "Give the campaign a name.";
     }
+    if (from === "workflow" && useDefault === null) return "Choose whether to use the default workflow.";
     if (from === "copy") {
       if (inputMode === "file" && !copyFile) return "Upload your copy file, or switch to pasting it.";
       if (inputMode === "paste" && !copyText.trim()) return "Paste your copy, or switch to uploading a file.";
@@ -162,6 +163,21 @@ export default function CopyPush({ sourceRunId, onDone }: { sourceRunId?: string
   const anyParsed = channels.some(parsedOk);
   const needsHrSender = channels.includes("heyreach") && parsedOk("heyreach") && hrSelected.length === 0;
 
+  const emailCount = push?.mapped.smartlead?.mapped?.sequences?.length ?? 0;
+  const dmCount = push?.mapped.heyreach?.mapped
+    ? ["dm2", "dm3", "dm4"].filter((k) => push.mapped.heyreach.mapped[k]).length + 1
+    : 0;
+  const defaultEmails = defaults?.smartlead.cadence_days.length ?? 5;
+  const shorter = [
+    emailCount && emailCount < defaultEmails ? `${emailCount} emails (the default is ${defaultEmails})` : "",
+    dmCount && dmCount < 4 ? `${dmCount} DM${dmCount > 1 ? "s" : ""} (the default is 4)` : "",
+  ].filter(Boolean);
+  const workflowNote = useDefault === false
+    ? "Your own schedule and settings are used, and HeyReach gets no automatic sequence."
+    : shorter.length
+      ? `Your copy has ${shorter.join(" and ")}, so each cadence simply ends after your last message. Everything else follows the default.`
+      : "Your copy fills the whole default cadence.";
+
   async function doConfirm() {
     if (!push) return;
     setError(null);
@@ -171,8 +187,8 @@ export default function CopyPush({ sourceRunId, onDone }: { sourceRunId?: string
         heyreachSenderIds: channels.includes("heyreach") ? hrSelected : undefined,
         smartleadSenderTagId: channels.includes("smartlead") && slMode === "group" ? slTag ?? undefined : undefined,
         smartleadSenderAccountIds: channels.includes("smartlead") && slMode === "individual" ? slSelected : undefined,
-        useDefaultWorkflow: useDefault,
-        smartleadSchedule: !useDefault && channels.includes("smartlead") && schedule ? schedule : undefined,
+        useDefaultWorkflow: useDefault !== false,
+        smartleadSchedule: useDefault === false && channels.includes("smartlead") && schedule ? schedule : undefined,
       }));
     } catch (e: any) {
       setError(e.message || "Push failed");
@@ -315,8 +331,18 @@ export default function CopyPush({ sourceRunId, onDone }: { sourceRunId?: string
         <>
           <h3 style={{ marginBottom: 4 }}>Review before anything is sent</h3>
           <p style={{ marginBottom: 16, fontSize: 13 }}>
-            Campaign <b>{campaignName}</b>. {useDefault ? "Default workflow." : "Custom workflow."} Nothing reaches a platform until you press the button at the bottom.
+            Campaign <b>{campaignName}</b>. {useDefault === false ? "Custom workflow." : "Default workflow."} Nothing reaches a platform until you press the button at the bottom.
           </p>
+
+          {hasWorkflow && (
+            <div className="card" style={{ padding: 12, fontSize: 13, marginBottom: 12, display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
+              <span>
+                <b>{useDefault === false ? "Custom workflow" : "Default workflow"}.</b> {workflowNote}
+              </span>
+              <button className="btn-secondary" style={{ fontSize: 12, padding: "2px 10px", whiteSpace: "nowrap" }}
+                onClick={() => { setPush(null); setStep("workflow"); }}>Change</button>
+            </div>
+          )}
 
           {push.warnings.map((w, i) => (
             <p key={i} className="card" style={{ padding: 12, fontSize: 13, marginBottom: 10 }}><span className="tag-warning">Heads up</span> {w}</p>
