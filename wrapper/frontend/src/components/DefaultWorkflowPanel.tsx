@@ -1,10 +1,10 @@
 import { useState } from "react";
-import type { DefaultWorkflow, SmartleadSchedule } from "../lib/types";
+import type { DefaultWorkflow, SalesNav, SmartleadSchedule } from "../lib/types";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 export default function DefaultWorkflowPanel({
-  channels, defaults, loadError, useDefault, onUseDefault, schedule, onSchedule,
+  channels, defaults, loadError, useDefault, onUseDefault, schedule, onSchedule, salesNav, onSalesNav,
 }: {
   channels: string[];
   defaults: DefaultWorkflow | null;
@@ -13,6 +13,8 @@ export default function DefaultWorkflowPanel({
   onUseDefault: (v: boolean) => void;
   schedule: SmartleadSchedule | null;
   onSchedule: (s: SmartleadSchedule) => void;
+  salesNav: SalesNav;
+  onSalesNav: (v: SalesNav) => void;
 }) {
   const [open, setOpen] = useState(false);
   const hasSmartlead = channels.includes("smartlead");
@@ -34,6 +36,24 @@ export default function DefaultWorkflowPanel({
         </label>
       </div>
 
+      {hasHeyreach && useDefault && (
+        <div style={{ margin: "4px 0 14px", padding: "12px 14px", background: "var(--blue-100)", borderRadius: 8 }}>
+          <b style={{ fontSize: 14 }}>Does the LinkedIn account have Sales Navigator?</b>
+          <div style={{ display: "flex", gap: 18, fontSize: 14, margin: "8px 0 4px", flexWrap: "wrap" }}>
+            {([["no", "No"], ["yes", "Yes"], ["both", "Some do, some don't"]] as [SalesNav, string][]).map(([v, label]) => (
+              <label key={v} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <input type="radio" checked={salesNav === v} onChange={() => onSalesNav(v)} /> {label}
+              </label>
+            ))}
+          </div>
+          <p style={{ fontSize: 12, margin: 0 }}>
+            {salesNav === "no"
+              ? "Standard cadence: connection request, then 4 DMs."
+              : "Open Profile cadence: open profiles get 2 InMails first, everyone else follows the standard path. This is an unvalidated draft, so check the draft in HeyReach before starting it."}
+          </p>
+        </div>
+      )}
+
       <button className="btn-secondary" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => setOpen(!open)}>
         {open ? "Hide" : "See"} what the default workflow looks like
       </button>
@@ -46,7 +66,7 @@ export default function DefaultWorkflowPanel({
               <h5 style={{ marginBottom: 6 }}>Smartlead</h5>
               <ul style={{ fontSize: 13, paddingLeft: 18, margin: 0 }}>
                 <li>Created PAUSED, nothing sends until you start it</li>
-                <li>Sequence: your copy, sent on day {defaults.smartlead.cadence_days.join(", ")} (unless your file sets its own delays)</li>
+                <li>Sequence: your emails, on the delays in your file (day {defaults.smartlead.cadence_days.join(", ")} if it gives none)</li>
                 <li>
                   Schedule: {defaults.smartlead.schedule.days_of_the_week.map((d) => DAYS[d - 1]).join(", ")},{" "}
                   {defaults.smartlead.schedule.start_hour}:00 to {defaults.smartlead.schedule.end_hour}:00 {defaults.smartlead.schedule.timezone},{" "}
@@ -72,7 +92,7 @@ export default function DefaultWorkflowPanel({
                 Created as a DRAFT. Connection requests carry no note. Waits are in hours (h) or days (d).
               </p>
               <pre style={{ fontSize: 12, background: "var(--blue-100)", padding: 10, borderRadius: 6, maxHeight: 320, overflow: "auto", margin: 0 }}>
-                {defaults.heyreach.sequence.map((n) =>
+                {(salesNav === "no" ? defaults.heyreach.sequence : defaults.heyreach.sequence_sales_nav).map((n) =>
                   `${"    ".repeat(n.depth)}${n.branch ? `[${n.branch}] ` : ""}${n.label}${n.wait ? ` (wait ${n.wait})` : ""}`).join("\n")}
               </pre>
             </div>

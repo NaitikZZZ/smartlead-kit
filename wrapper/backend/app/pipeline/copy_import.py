@@ -39,12 +39,44 @@ import re
 from .._lazy import pd
 
 _HEYREACH_SLOTS = ["dm1_connected", "dm1_not_connected", "dm2", "dm3", "dm4"]
+_INMAIL_SLOTS = ["inmail1", "inmail2"]  # extra slots for the Open Profile (Sales Navigator) workflow
 _HEYREACH_HEADING_TO_SLOT = {
     "dm1 (connected)": "dm1_connected", "dm1 connected": "dm1_connected",
     "dm1 (not connected)": "dm1_not_connected", "dm1 not connected": "dm1_not_connected",
     "dm2": "dm2", "dm3": "dm3", "dm4": "dm4",
+    "inmail 1": "inmail1", "inmail1": "inmail1", "inmail 2": "inmail2", "inmail2": "inmail2",
 }
 DEFAULT_DELAY_DAYS = [0, 3, 6, 9, 11]  # this kit's standard 5-step cadence, used when a sheet/doc omits delay_days
+
+
+# Warnings collected while parsing one channel (e.g. a removed sign-off).
+# parse_copy() resets it per call and runs synchronously, so a module-level
+# list is safe here.
+_WARN: list[str] = []
+
+
+_DASH_RE = re.compile(r"\s*[\u2014\u2013]\s*")
+
+
+def _replace_dashes(obj) -> int:
+    """Swap every em/en dash in the parsed copy for a spaced hyphen, in place.
+    Returns how many were replaced."""
+    count = 0
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(v, str):
+                obj[k], c = _DASH_RE.subn(" - ", v)
+                count += c
+            else:
+                count += _replace_dashes(v)
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            if isinstance(v, str):
+                obj[i], c = _DASH_RE.subn(" - ", v)
+                count += c
+            else:
+                count += _replace_dashes(v)
+    return count
 
 
 def is_excel(filename: str) -> bool:
@@ -55,6 +87,22 @@ def _s(v) -> str:
     if v is None or (isinstance(v, float) and pd.isna(v)):
         return ""
     return str(v).strip()
+
+
+_SIGNOFF_RE = re.compile(r"^\s*(thanks|thank you|best|best regards|kind regards|warm regards|regards|cheers|sincerely|"
+                         r"talk soon|speak soon|many thanks)[,.!]?\s*$", re.IGNORECASE)
+
+
+def strip_signoff(text: str) -> tuple[str, bool]:
+    """Copy must not carry a signature (the sender's own is added by the
+    platform). Drops a trailing sign-off line plus up to two short name/title
+    lines after it, and reports whether it did. Only touches the very end of
+    the text, and only when a recognised sign-off word is there."""
+    lines = text.rstrip().splitlines()
+    for i in range(len(lines) - 1, max(len(lines) - 4, -1), -1):
+        if _SIGNOFF_RE.match(lines[i]) and all(len(l.strip()) <= 40 for l in lines[i + 1:]):
+            return "\n".join(lines[:i]).rstrip(), True
+    return text, False
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +125,9 @@ def _smartlead_from_excel(df) -> dict:
         delay = row.get("delay_days")
         delay = int(delay) if pd.notna(delay) else DEFAULT_DELAY_DAYS[min(i, len(DEFAULT_DELAY_DAYS) - 1)]
         body = _s(row.get("body")) or _s(row.get("email_body"))
+        body, stripped = strip_signoff(body)
+        if stripped:
+            _WARN.append(f"Email {i + 1}: removed a sign-off (copy should not include a signature).")
         paragraphs = "".join(f"<p>{line}</p>" for line in body.splitlines() if line.strip())
         variant = _s(row.get("variant")) or "A"
         sequences.append({
@@ -91,8 +142,11 @@ def _heyreach_from_excel(df) -> dict:
     copy = {}
     for _, row in df.iterrows():
         slot = _s(row.get("slot")).lower()
-        if slot in _HEYREACH_SLOTS:
-            copy[slot] = {"message": _s(row.get("message")), "fallback": _s(row.get("fallback"))}
+        if slot in _HEYREACH_SLOTS + _INMAIL_SLOTS:
+            msg, stripped = strip_signoff(_s(row.get("message")))
+            if stripped:
+                _WARN.append(f"{slot}: removed a sign-off (copy should not include a signature).")
+            copy[slot] = {"message": msg, "fallback": _s(row.get("fallback")), "subject": _s(row.get("subject"))}
     return copy
 
 
@@ -109,16 +163,46 @@ def _interakt_from_excel(df) -> dict:
 _CHANNEL_HEADER_RE = re.compile(r"^\s*\[(smartlead|heyreach|interakt)\]\s*$", re.IGNORECASE)
 _LABEL_RE = re.compile(r"^\s*(subject|body|message|fallback|name|variables)\s*:\s*(.*)$", re.IGNORECASE)
 _SMARTLEAD_HEADING_RE = re.compile(r"^\s*(day|step)\s+(\d+)\s*:?\s*$", re.IGNORECASE)
-_HEYREACH_HEADING_RE = re.compile(r"^\s*(dm1\s*\(connected\)|dm1\s*\(not connected\)|dm1 connected|dm1 not connected|dm2|dm3|dm4)\s*:?\s*$", re.IGNORECASE)
+_HEYREACH_HEADING_RE = re.compile(r"^\s*(dm1\s*\(connected\)|dm1\s*\(not connected\)|dm1 connected|dm1 not connected|dm2|dm3|dm4|inmail\s*1|inmail\s*2)\s*:?\s*$", re.IGNORECASE)
 
 
 def extract_text(filename: str, file_bytes: bytes) -> str:
-    """Plain text from an uploaded .docx/.txt copy file."""
+    """Plain text from an uploaded .docx/.txt copy file (paragraphs only -
+    tables are read separately by _docx_tables)."""
     if filename.lower().endswith(".docx"):
         from docx import Document
         doc = Document(io.BytesIO(file_bytes))
         return "\n".join(p.text for p in doc.paragraphs)
     return file_bytes.decode("utf-8", errors="replace")
+
+
+def _docx_tables(file_bytes: bytes) -> list:
+    """Each Word table whose first row looks like a header, as a DataFrame -
+    so a table with the template's column names reads exactly like an Excel
+    sheet. Cell line breaks are kept."""
+    from docx import Document
+    frames = []
+    for t in Document(io.BytesIO(file_bytes)).tables:
+        rows = [[c.text.strip() for c in r.cells] for r in t.rows]
+        if len(rows) >= 2:
+            frames.append(pd.DataFrame(rows[1:], columns=[h.strip().lower() for h in rows[0]]))
+    return frames
+
+
+_TABLE_SIGNATURES = {
+    "smartlead": ({"subject"}, {"body", "email_body"}),
+    "heyreach": ({"slot"}, {"message"}),
+    "interakt": ({"name"}, {"body", "variables"}),
+}
+
+
+def _table_for_channel(frames: list, channel: str):
+    must, any_of = _TABLE_SIGNATURES[channel]
+    for df in frames:
+        cols = set(df.columns)
+        if must <= cols and cols & any_of and not (channel == "smartlead" and "name" in cols):
+            return df
+    return None
 
 
 def _channel_sections(text: str) -> dict[str, list[str]]:
@@ -142,7 +226,10 @@ def _parse_smartlead_text(lines: list[str]) -> dict:
     delay, subject, body_lines, current_label = None, "", [], None
     def _flush():
         if delay is not None or subject or body_lines:
-            paragraphs = "".join(f"<p>{l}</p>" for l in body_lines if l.strip())
+            clean, stripped = strip_signoff("\n".join(body_lines))
+            if stripped:
+                _WARN.append(f"Email {len(sequences) + 1}: removed a sign-off (copy should not include a signature).")
+            paragraphs = "".join(f"<p>{l}</p>" for l in clean.splitlines() if l.strip())
             d = delay if delay is not None else DEFAULT_DELAY_DAYS[min(len(sequences), len(DEFAULT_DELAY_DAYS) - 1)]
             sequences.append({"seq_number": len(sequences) + 1, "seq_delay_details": {"delay_in_days": d},
                               "seq_variants": [{"subject": subject, "email_body": paragraphs, "variant_label": "A"}]})
@@ -178,22 +265,27 @@ def _parse_smartlead_text(lines: list[str]) -> dict:
 
 def _parse_heyreach_text(lines: list[str]) -> dict:
     copy = {}
-    slot, message, fallback, current_label = None, "", "", None
+    slot, message, fallback, subject, current_label = None, "", "", "", None
     def _flush():
         if slot:
-            copy[slot] = {"message": message.strip(), "fallback": fallback.strip()}
+            msg, stripped = strip_signoff(message.strip())
+            if stripped:
+                _WARN.append(f"{slot}: removed a sign-off (copy should not include a signature).")
+            copy[slot] = {"message": msg, "fallback": fallback.strip(), "subject": subject.strip()}
 
     for line in lines:
         heading = _HEYREACH_HEADING_RE.match(line)
         if heading:
             _flush()
-            slot = _HEYREACH_HEADING_TO_SLOT.get(heading.group(1).lower().replace(" ", " "))
-            message, fallback, current_label = "", "", None
+            slot = _HEYREACH_HEADING_TO_SLOT.get(re.sub(r"\s+", " ", heading.group(1).lower()))
+            message, fallback, subject, current_label = "", "", "", None
             continue
         label = _LABEL_RE.match(line)
-        if label and label.group(1).lower() in ("message", "fallback"):
+        if label and label.group(1).lower() in ("message", "fallback", "subject"):
             current_label = label.group(1).lower()
-            if current_label == "message":
+            if current_label == "subject":
+                subject = label.group(2)
+            elif current_label == "message":
                 message = label.group(2)
             else:
                 fallback = label.group(2)
@@ -228,16 +320,18 @@ def _parse_interakt_text(lines: list[str]) -> dict:
 
 _TEXT_PARSERS = {"smartlead": _parse_smartlead_text, "heyreach": _parse_heyreach_text, "interakt": _parse_interakt_text}
 _EXCEL_PARSERS = {"smartlead": _smartlead_from_excel, "heyreach": _heyreach_from_excel, "interakt": _interakt_from_excel}
-_REQUIRED_HEYREACH_KEYS = set(_HEYREACH_SLOTS)
+_REQUIRED_HEYREACH_KEYS = {"dm1_connected", "dm1_not_connected"}  # the rest are optional, see heyreach.build_sequence
 
 
-def parse_copy(channel: str, *, text: str | None = None, filename: str | None = None, file_bytes: bytes | None = None) -> dict:
+def parse_copy(channel: str, *, text: str | None = None, filename: str | None = None, file_bytes: bytes | None = None,
+               open_profile: bool = False) -> dict:
     """Parse one channel's copy out of either pasted text, a .docx/.txt upload
     (text/filename+file_bytes with a non-excel name), or an .xlsx upload
     (filename+file_bytes). Returns {"status": "done", "mapped": {...}} or
     {"status": "error", "message": ...} - never raises."""
     if channel not in _TEXT_PARSERS:
         return {"status": "error", "message": f"Unknown channel {channel!r}"}
+    _WARN.clear()
 
     try:
         if filename and file_bytes is not None and is_excel(filename):
@@ -245,6 +339,9 @@ def parse_copy(channel: str, *, text: str | None = None, filename: str | None = 
             if df is None:
                 return {"status": "error", "message": f"No sheet named {channel!r} found in the uploaded workbook."}
             mapped = _EXCEL_PARSERS[channel](df)
+        elif filename and file_bytes is not None and filename.lower().endswith(".docx") and \
+                (table := _table_for_channel(_docx_tables(file_bytes), channel)) is not None:
+            mapped = _EXCEL_PARSERS[channel](table)
         else:
             source = text if text is not None else extract_text(filename or "copy.txt", file_bytes or b"")
             if not source or not source.strip():
@@ -258,7 +355,12 @@ def parse_copy(channel: str, *, text: str | None = None, filename: str | None = 
         return {"status": "error", "message": f"Could not parse copy for {channel}: {e}"}
 
     if channel == "heyreach":
-        missing = _REQUIRED_HEYREACH_KEYS - mapped.keys()
+        # One opener is enough: reuse it for the other case rather than fail.
+        for have, lack in (("dm1_connected", "dm1_not_connected"), ("dm1_not_connected", "dm1_connected")):
+            if have in mapped and lack not in mapped:
+                mapped[lack] = dict(mapped[have])
+                _WARN.append(f"Only {have} was provided, so it is also used for {lack}.")
+        missing = (_REQUIRED_HEYREACH_KEYS | ({"inmail1"} if open_profile else set())) - mapped.keys()
         if missing:
             return {"status": "parse_error",
                      "message": f"Parsed copy is missing required slot(s): {', '.join(sorted(missing))}"}
@@ -267,7 +369,10 @@ def parse_copy(channel: str, *, text: str | None = None, filename: str | None = 
     if channel == "interakt" and not mapped.get("body"):
         return {"status": "parse_error", "message": "No template body found (expected a 'Body:' line or a 'body' column)."}
 
-    return {"status": "done", "mapped": mapped}
+    n = _replace_dashes(mapped)
+    if n:
+        _WARN.append(f"Replaced {n} em/en dash(es) with hyphens (copy should not use them).")
+    return {"status": "done", "mapped": mapped, "warnings": list(_WARN)}
 
 
 # ---------------------------------------------------------------------------
@@ -276,21 +381,25 @@ def parse_copy(channel: str, *, text: str | None = None, filename: str | None = 
 # ---------------------------------------------------------------------------
 
 _EX_SMARTLEAD = [
-    (1, 0, "Quick question, {{first_name}}", "Hi {{first_name}},\nI work with teams like {{company_name}} on rewards and incentives.\nWould it be useful to compare notes?\nThanks,\nYour name"),
-    (2, 3, "Re: Quick question, {{first_name}}", "Hi {{first_name}},\nFollowing up on my note below. Worth a 15-min chat?\nYour name"),
-    (3, 6, "One idea for {{company_name}}", "Hi {{first_name}},\nOne idea that has worked for similar teams: ...\nOpen to a quick call?\nYour name"),
+    (1, 0, "Quick question, {{first_name}}", "Hi {{first_name}},\nI work with teams like {{company_name}} on rewards and incentives.\nWould it be useful to compare notes?"),
+    (2, 3, "Re: Quick question, {{first_name}}", "Hi {{first_name}},\nFollowing up on my note below. Worth a 15-min chat?"),
+    (3, 6, "One idea for {{company_name}}", "Hi {{first_name}},\nOne idea that has worked for similar teams: ...\nOpen to a quick call?"),
 ]
 _EX_HEYREACH = [
     ("dm1_connected", "Hi {FIRST_NAME}, since we're connected, wanted to share a quick idea for {COMPANY}.", ""),
     ("dm1_not_connected", "Thanks for connecting, {FIRST_NAME}. Quick idea for {COMPANY}...", ""),
     ("dm2", "Hi {FIRST_NAME}, following up with a bit more context on how this works.", ""),
     ("dm3", "{FIRST_NAME}, a quick proof point from a team similar to {COMPANY}...", ""),
-    ("dm4", "Last note from me for now, {FIRST_NAME}. Happy to share more if useful.", ""),
+    ("dm4", "{FIRST_NAME}, happy to share a short example if useful.", ""),
+]
+_EX_INMAIL = [
+    ("inmail1", "Quick question, {FIRST_NAME}", "Hi {FIRST_NAME}, I work with teams like {COMPANY} on rewards. Worth a short conversation?"),
+    ("inmail2", "Following up, {FIRST_NAME}", "Following up in case my last note got buried. Happy to share a quick example."),
 ]
 _EX_INTERAKT = ("your_template_name", "Hi {{1}}, a quick note from Xoxoday about rewards for {{2}}.", "first_name, company_name")
 
 
-def build_template_xlsx(channels: list[str]) -> bytes:
+def build_template_xlsx(channels: list[str], open_profile: bool = False) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
     wb = Workbook()
@@ -314,18 +423,24 @@ def build_template_xlsx(channels: list[str]) -> bytes:
         sheet("smartlead", ["step", "delay_days", "subject", "body", "variant"],
               [(*r, "A") for r in _EX_SMARTLEAD], [8, 12, 34, 70, 10])
     if "heyreach" in channels:
-        sheet("heyreach", ["slot", "message", "fallback"], _EX_HEYREACH, [20, 80, 40])
+        rows = [(slot, msg, fb, "") for slot, msg, fb in _EX_HEYREACH]
+        if open_profile:
+            rows += [(slot, msg, "", subj) for slot, subj, msg in _EX_INMAIL]
+        sheet("heyreach", ["slot", "message", "fallback", "subject"], rows, [20, 80, 40, 30])
     if "interakt" in channels:
         sheet("interakt", ["name", "body", "variables"], [_EX_INTERAKT], [26, 70, 30])
     notes = wb.create_sheet("README")
+    readme = {
+        "smartlead": "smartlead: one row per email. step = order, delay_days = days after the previous email, body = line breaks become paragraphs, variant optional (A/B). Merge tags: {{first_name}} {{company_name}}.",
+        "heyreach": "heyreach: slots dm1_connected and dm1_not_connected are required; dm2, dm3, dm4 are optional (the cadence ends after the last one you give)" + ("; inmail1 is required and inmail2 optional, both with a subject" if open_profile else "") + ". fallback is optional. Merge tags: {FIRST_NAME} {COMPANY} (single braces, uppercase).",
+        "interakt": "interakt: one template. variables = comma-separated names, in order.",
+    }
     for line in [
         "How this file is read",
-        "One sheet per platform, named smartlead / heyreach / interakt. Delete the sheets you are not pushing.",
-        "smartlead: one row per email. step = order, delay_days = days after the previous email, body = line breaks become paragraphs, variant optional (A/B).",
-        "heyreach: exactly these 5 slots - dm1_connected, dm1_not_connected, dm2, dm3, dm4. fallback is optional.",
-        "interakt: one template. variables = comma-separated names, in order.",
-        "Merge tags: Smartlead {{first_name}} {{company_name}}; HeyReach {FIRST_NAME} {COMPANY} (single braces, uppercase).",
-        "Replace the example copy. Do not use em or en dashes.",
+        ("One sheet per platform, named " + " / ".join(c for c in ("smartlead", "heyreach", "interakt") if c in channels) + "." if len(channels) > 1
+         else f"One sheet, named {channels[0]}."),
+        *[readme[c] for c in ("smartlead", "heyreach", "interakt") if c in channels],
+        "Replace the example copy. No signature or sign-off at the end (the platform adds the sender's own). No em or en dashes.",
     ]:
         notes.append([line])
     notes["A1"].font = head_font
@@ -336,9 +451,12 @@ def build_template_xlsx(channels: list[str]) -> bytes:
     return buf.getvalue()
 
 
-def build_template_text(channels: list[str]) -> bytes:
-    out = ["# Replace the example copy below. One [CHANNEL] block per platform; delete the ones you don't need.",
-           "# Merge tags: Smartlead {{first_name}} {{company_name}}; HeyReach {FIRST_NAME} {COMPANY}.", ""]
+def build_template_text(channels: list[str], open_profile: bool = False) -> bytes:
+    tags = {"smartlead": "Smartlead {{first_name}} {{company_name}}", "heyreach": "HeyReach {FIRST_NAME} {COMPANY}",
+            "interakt": "Interakt {{1}} {{2}}"}
+    out = ["# Replace the example copy below." + (" One [CHANNEL] block per platform." if len(channels) > 1 else ""),
+           "# No signature or sign-off at the end of any message.",
+           "# Merge tags: " + "; ".join(tags[c] for c in ("smartlead", "heyreach", "interakt") if c in channels) + ".", ""]
     if "smartlead" in channels:
         out.append("[SMARTLEAD]")
         for _, delay, subject, body in _EX_SMARTLEAD:
@@ -349,7 +467,43 @@ def build_template_text(channels: list[str]) -> bytes:
                     "dm2": "DM2:", "dm3": "DM3:", "dm4": "DM4:"}
         for slot, message, _ in _EX_HEYREACH:
             out += [headings[slot], f"Message: {message}", "Fallback:", ""]
+        if open_profile:
+            for (slot, subj, msg), n in zip(_EX_INMAIL, (1, 2)):
+                out += [f"InMail {n}:", f"Subject: {subj}", f"Message: {msg}", ""]
     if "interakt" in channels:
         name, body, variables = _EX_INTERAKT
         out += ["[INTERAKT]", f"Name: {name}", f"Body: {body}", f"Variables: {variables}", ""]
     return "\n".join(out).encode()
+
+
+def build_claude_prompt(channels: list[str], open_profile: bool = False) -> str:
+    """The brief a teammate pastes into Claude to get copy in exactly the
+    layout Copy Push reads. Only layout, merge tags and the two hard rules
+    (no signature, no em/en dashes) are prescribed - length, count and style
+    of the copy are the writer's call. The workflow outline is generated from
+    the real sequence builder so it can't drift from what gets pushed."""
+    from . import heyreach
+    L = ["You are writing outbound copy for Xoxoday. Write it in the exact layout at the bottom so it can be uploaded as-is.",
+         "", "FIRST, ask me for anything not given below, then write:",
+         "- Product: Plum, Empuls or Loyalife", "- Who we are writing to, and the region",
+         "- The reason for reaching out", "- Any proof points you may use", "", "RULES FOR EVERY MESSAGE",
+         "- No signature or sign-off at the end (no Thanks, Best, Regards, no name). The sender's own is added by the platform.",
+         "- No em dashes or en dashes anywhere. Use commas, periods or hyphens.",
+         "- Everything else (length, number of messages, tone) is up to you and the brief above.", ""]
+    if "smartlead" in channels:
+        L += ["EMAIL (Smartlead)", "- Write as many emails as the campaign needs. Give each a 'Day N:' heading, N being the day it is sent.",
+              "- Merge tags use double braces: {{first_name}} {{company_name}}. Never {{sender_first_name}}.", ""]
+    if "heyreach" in channels:
+        L += ["LINKEDIN (HeyReach)", "- Connection requests carry no note, so there is nothing to write for that step.",
+              "- Merge tags use single braces, uppercase: {FIRST_NAME} {COMPANY}. Never double braces.",
+              "- Slots: dm1_connected and dm1_not_connected are required. dm2, dm3 and dm4 are optional, write only as many as you want (the cadence ends after the last one)."
+              + (" Also inmail1 (required) and inmail2 (optional), each with a subject, under 1900 characters." if open_profile else ""),
+              "- The workflow these messages sit in (each wait is hours or days):", ""]
+        for n in heyreach.describe_default_sequence(open_profile):
+            L.append("    " * n["depth"] + (f"[{n['branch']}] " if n["branch"] else "") + n["label"] + (f" (wait {n['wait']})" if n["wait"] else ""))
+        L.append("")
+    if "interakt" in channels:
+        L += ["WHATSAPP (Interakt)", "- One template with numbered variables {{1}}, {{2}}. List the variable names in order.", ""]
+    L += ["OUTPUT FORMAT (return exactly this, in one code block, no commentary; the example copy is only to show the layout)", "",
+          build_template_text(channels, open_profile).decode()]
+    return "\n".join(L)

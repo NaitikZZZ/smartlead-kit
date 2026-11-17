@@ -141,6 +141,9 @@ export interface SmartleadSchedule {
   max_new_leads_per_day: number;
 }
 
+export type SalesNav = "no" | "yes" | "both";
+export interface HeyreachNode { depth: number; branch: string; label: string; wait: string }
+
 export interface DefaultWorkflow {
   smartlead: {
     schedule: SmartleadSchedule;
@@ -149,7 +152,7 @@ export interface DefaultWorkflow {
     ui_only: string[];
     cadence_days: number[];
   };
-  heyreach: { sequence: { depth: number; branch: string; label: string; wait: string }[] };
+  heyreach: { sequence: HeyreachNode[]; sequence_sales_nav: HeyreachNode[] };
 }
 
 export interface SenderAccount {

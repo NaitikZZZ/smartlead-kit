@@ -11,6 +11,7 @@ LinkedIn file becomes a HeyReach list, ready to attach to a campaign in HeyReach
 from __future__ import annotations
 
 import os
+import re
 
 from .._lazy import pd
 import requests
@@ -128,7 +129,12 @@ def add_leads(list_id: int, leads: list[dict], user: str | None = None) -> dict:
     return {"added": added, "updated": updated, "failed": failed}
 
 
-_REQUIRED_COPY_KEYS = {"dm1_connected", "dm1_not_connected", "dm2", "dm3", "dm4"}
+# Only the two openers are required; DM 2 to 4 and InMail 2 are used when the copy has them,
+# and the cadence simply ends after the last message provided.
+REQUIRED_COPY_KEYS = {"dm1_connected", "dm1_not_connected"}
+_ALL_DM_SLOTS = ["dm1_connected", "dm1_not_connected", "dm2", "dm3", "dm4"]
+# Extra slots the Open Profile (Sales Navigator) workflow needs on top of the DM chain.
+INMAIL_COPY_KEYS = {"inmail1", "inmail2"}
 
 
 def list_senders(user: str | None = None) -> list[dict]:
@@ -200,10 +206,36 @@ def update_accounts(campaign_id: int, sender_ids: list[int]) -> None:
     _raise_with_body(r)
 
 
+_TOKEN_FALLBACKS = {"{FIRST_NAME}": "there", "{LAST_NAME}": "", "{COMPANY}": "your company", "{POSITION}": "your role"}
+
+
+def _fallback_for(entry: dict) -> str:
+    """HeyReach requires a fallback that reads naturally without the merge
+    tags. Use the one in the copy; if it's blank, derive one from the message
+    so a missing field never sends a literal "{FIRST_NAME}"."""
+    if (entry.get("fallback") or "").strip():
+        return entry["fallback"]
+    text = entry["message"]
+    for tok, repl in _TOKEN_FALLBACKS.items():
+        text = text.replace(tok, repl)
+    return re.sub(r"\{[A-Z_]+\}", "", text).replace("  ", " ").strip()
+
+
 def _dm(copy: dict, key: str, delay: int, unit: str, external_ref: str, conditional: dict, unconditional: dict) -> dict:
     return {
         "nodeType": "MESSAGE", "actionDelay": delay, "actionDelayUnit": unit,
-        "payload": {"messages": [copy[key]["message"]], "fallbackMessage": copy[key]["fallback"]},
+        "payload": {"messages": [copy[key]["message"]], "fallbackMessage": _fallback_for(copy[key])},
+        "externalReference": external_ref, "conditionalNode": conditional, "unconditionalNode": unconditional,
+    }
+
+
+def _inmail(copy: dict, key: str, delay: int, unit: str, external_ref: str, conditional: dict, unconditional: dict) -> dict:
+    entry = copy[key]
+    subject = entry.get("subject") or "Quick question"
+    return {
+        "nodeType": "INMAIL", "actionDelay": delay, "actionDelayUnit": unit,
+        "payload": {"messages": [{"subject": subject, "message": entry["message"]}],
+                    "fallbackMessage": {"subject": subject, "message": _fallback_for(entry)}},
         "externalReference": external_ref, "conditionalNode": conditional, "unconditionalNode": unconditional,
     }
 
@@ -212,25 +244,45 @@ def _end(delay: int, unit: str = "DAY") -> dict:
     return {"nodeType": "END", "actionDelay": delay, "actionDelayUnit": unit}
 
 
+def _has(copy: dict, key: str) -> bool:
+    return bool((copy.get(key) or {}).get("message", "").strip())
+
+
 def _dm2_onward(copy: dict, dm2_delay_days: int) -> dict:
-    dm4 = _dm(copy, "dm4", 3, "DAY", "dm4", _end(1), _end(15))
-    view_profile_2 = {"nodeType": "VIEW_PROFILE", "actionDelay": 1, "actionDelayUnit": "DAY",
-                       "externalReference": "view-profile-2", "unconditionalNode": dm4}
-    dm3 = _dm(copy, "dm3", 7, "DAY", "dm3", _end(1), view_profile_2)
-    return _dm(copy, "dm2", dm2_delay_days, "DAY", "dm2", _end(1), dm3)
+    """DM 2, 3, 4 with the default delays, built back to front from whichever
+    of them the copy actually has. A second profile visit sits before DM 4.
+    After the last message, the lead ends after 15 days."""
+    node = _end(15)
+    for key, delay in (("dm4", 3), ("dm3", 7), ("dm2", dm2_delay_days)):
+        if not _has(copy, key):
+            continue
+        if key == "dm4":
+            node = _dm(copy, key, delay, "DAY", key, _end(1), node)
+            node = {"nodeType": "VIEW_PROFILE", "actionDelay": 1, "actionDelayUnit": "DAY",
+                    "externalReference": "view-profile-2", "unconditionalNode": node}
+        else:
+            node = _dm(copy, key, delay, "DAY", key, _end(1), node)
+    return node
 
 
-def build_sequence(copy: dict) -> dict:
-    """The validated default from docs/heyreach-default-workflow.md:
-    CHECK_IS_CONNECTION entry, no open-profile/InMail branch (that extension
-    is documented there as an unvalidated draft - not built here)."""
-    connected_branch = _dm(copy, "dm1_connected", 3, "HOUR", "dm1-connected", _end(1), _dm2_onward(copy, 5))
-    connection_request = {
+def _connection_request(copy: dict) -> dict:
+    return {
         "nodeType": "CONNECTION_REQUEST", "actionDelay": 1, "actionDelayUnit": "DAY",
         "externalReference": "connect", "payload": {"messages": [], "toBeWithdrawnAfterDays": 30},
         "conditionalNode": _dm(copy, "dm1_not_connected", 1, "DAY", "dm1-not-connected", _end(1), _dm2_onward(copy, 6)),
         "unconditionalNode": _end(50),
     }
+
+
+def build_sequence(copy: dict, open_profile: bool = False) -> dict:
+    """The validated default from docs/heyreach-default-workflow.md:
+    CHECK_IS_CONNECTION entry. open_profile=True (accounts with Sales
+    Navigator) swaps in that doc's "Open Profile routing" extension: not-yet-
+    connected leads split on CHECK_IS_OPEN_PROFILE, open profiles get two
+    InMails before the usual connection request. That extension is documented
+    as NOT yet validated against the live HeyReach API."""
+    connected_branch = _dm(copy, "dm1_connected", 3, "HOUR", "dm1-connected", _end(1), _dm2_onward(copy, 5))
+    connection_request = _connection_request(copy)
     like_post = {
         "nodeType": "LIKE_POST", "actionDelay": 3, "actionDelayUnit": "HOUR",
         "externalReference": "like-post",
@@ -239,6 +291,14 @@ def build_sequence(copy: dict) -> dict:
     }
     not_connected_branch = {"nodeType": "VIEW_PROFILE", "actionDelay": 3, "actionDelayUnit": "HOUR",
                             "externalReference": "view-profile-1", "unconditionalNode": like_post}
+    if open_profile:
+        after_inmails = _connection_request(copy)
+        if _has(copy, "inmail2"):
+            after_inmails = _inmail(copy, "inmail2", 3, "DAY", "inmail-2", _end(1), after_inmails)
+        inmail1 = _inmail(copy, "inmail1", 3, "HOUR", "inmail-1", _end(1), after_inmails)
+        not_connected_branch = {"nodeType": "CHECK_IS_OPEN_PROFILE", "actionDelay": 3, "actionDelayUnit": "HOUR",
+                                "externalReference": "open-profile", "conditionalNode": inmail1,
+                                "unconditionalNode": not_connected_branch}
     return {"nodeType": "CHECK_IS_CONNECTION", "actionDelay": 0, "externalReference": "entry",
             "conditionalNode": connected_branch, "unconditionalNode": not_connected_branch}
 
@@ -246,45 +306,47 @@ def build_sequence(copy: dict) -> dict:
 _NODE_LABELS = {
     "CHECK_IS_CONNECTION": "Check: already connected?", "VIEW_PROFILE": "View profile", "LIKE_POST": "Like a recent post",
     "CONNECTION_REQUEST": "Connection request (no note)", "MESSAGE": "Send DM", "END": "End",
+    "CHECK_IS_OPEN_PROFILE": "Check: open profile?", "INMAIL": "Send InMail",
 }
 
 
-def describe_default_sequence() -> list[dict]:
+def describe_default_sequence(open_profile: bool = False) -> list[dict]:
     """The default cadence as a flat, display-ready list, walked straight off
     build_sequence() so what the team sees can never drift from what is pushed.
     Each item: {depth, branch, label, wait}. branch is how the step is reached
     from its parent ("yes"/"no" for CHECK_IS_CONNECTION, "accepted"/"not accepted"
     for the request, "replied"/"no reply" for DMs, or "" for a straight line)."""
-    placeholder = {k: {"message": f"[{k} copy]", "fallback": ""} for k in _REQUIRED_COPY_KEYS}
+    placeholder = {k: {"message": f"[{k} copy]", "fallback": ""} for k in _ALL_DM_SLOTS + sorted(INMAIL_COPY_KEYS)}
     out: list[dict] = []
 
     def walk(node: dict, depth: int, branch: str):
         ref = node.get("externalReference", "")
         label = _NODE_LABELS.get(node["nodeType"], node["nodeType"])
-        if node["nodeType"] == "MESSAGE":
-            label = f"DM: {ref.replace('-', ' ')}"
+        if node["nodeType"] in ("MESSAGE", "INMAIL"):
+            label = f"InMail {ref[-1]}" if node["nodeType"] == "INMAIL" else f"DM: {ref.replace('-', ' ')}"
         wait = f"{node['actionDelay']}{'h' if node.get('actionDelayUnit') == 'HOUR' else 'd'}" if node.get("actionDelay") else ""
         out.append({"depth": depth, "branch": branch, "label": label, "wait": wait})
         cond, uncond = node.get("conditionalNode"), node.get("unconditionalNode")
         names = {"CHECK_IS_CONNECTION": ("yes", "no"), "CONNECTION_REQUEST": ("accepted", "not accepted"),
-                 "MESSAGE": ("replied", "no reply")}.get(node["nodeType"], ("", ""))
+                 "CHECK_IS_OPEN_PROFILE": ("open", "not open"),
+                 "MESSAGE": ("replied", "no reply"), "INMAIL": ("replied", "no reply")}.get(node["nodeType"], ("", ""))
         if cond:
             walk(cond, depth + 1, names[0])
         if uncond:
             walk(uncond, depth + 1, names[1])
 
-    walk(build_sequence(placeholder), 0, "")
+    walk(build_sequence(placeholder, open_profile), 0, "")
     return out
 
 
-def update_sequence(campaign_id: int, copy: dict, user: str | None = None) -> None:
+def update_sequence(campaign_id: int, copy: dict, user: str | None = None, open_profile: bool = False) -> None:
     r = requests.post(f"{BASE}/campaign/UpdateSequence", headers=_headers(user),
-                      json={"campaignId": campaign_id, "sequence": build_sequence(copy)}, timeout=30)
+                      json={"campaignId": campaign_id, "sequence": build_sequence(copy, open_profile)}, timeout=30)
     _raise_with_body(r)
 
 
 def push_campaign_copy(campaign_name: str, list_id: int, copy: dict, sender_ids: list[int] | None = None,
-                       use_default_sequence: bool = True, user: str | None = None) -> dict:
+                       use_default_sequence: bool = True, user: str | None = None, open_profile: bool = False) -> dict:
     """Create a DRAFT HeyReach campaign with the real DM cadence (the
     validated two-branch structure, not the unvalidated open-profile draft -
     see build_sequence's docstring) and attach it to list_id. Never raises.
@@ -300,7 +362,7 @@ def push_campaign_copy(campaign_name: str, list_id: int, copy: dict, sender_ids:
         return {"status": "needs_sender_accounts",
                 "message": "HeyReach requires at least one sender LinkedIn account to create a campaign - "
                            "none selected yet. Use heyreach.list_senders() (GetAll) to see available accounts."}
-    missing = _REQUIRED_COPY_KEYS - copy.keys()
+    missing = (REQUIRED_COPY_KEYS | ({"inmail1"} if open_profile else set())) - copy.keys()
     if missing:
         return {"status": "error", "message": f"copy is missing required slot(s): {', '.join(sorted(missing))}"}
     try:
@@ -312,10 +374,19 @@ def push_campaign_copy(campaign_name: str, list_id: int, copy: dict, sender_ids:
                 "note": "Campaign created DRAFT with list, senders, and schedule only - no sequence, since you chose a "
                         "non-default workflow. Build the cadence by hand in the HeyReach UI, then start manually.",
             }
-        update_sequence(cid, copy, user)
+        try:
+            update_sequence(cid, copy, user, open_profile)
+        except Exception as e:
+            return {
+                "status": "partial", "campaign_id": cid, "campaign_name": campaign_name, "list_id": list_id,
+                "message": f"Campaign shell created (list, senders, schedule) but HeyReach rejected the sequence: {e}. "
+                           "Build the cadence by hand in the HeyReach UI, or fix the copy and retry.",
+            }
         return {
             "status": "pushed", "campaign_id": cid, "campaign_name": campaign_name, "list_id": list_id,
-            "note": "Campaign created DRAFT with cadence, list, and senders attached. Review in the HeyReach UI, then start manually.",
+            "note": ("Campaign created DRAFT with the Open Profile (Sales Navigator) cadence. That branch is an unvalidated draft: "
+                     "open it in HeyReach and check the flow before starting. " if open_profile else
+                     "Campaign created DRAFT with cadence, list, and senders attached. Review in the HeyReach UI, then start manually."),
         }
     except requests.HTTPError as e:
         return {"status": "error", "message": str(e), "raw_response": e.response.text[:1000] if e.response is not None else None}
