@@ -66,6 +66,10 @@ CRON_SECRET = os.environ.get("CRON_SECRET", "")
 APP_USERS = os.environ.get("APP_USERS", "")
 ADMIN_NAME = os.environ.get("ADMIN_NAME", "")
 
+# Open profile check (app/routes/open_profile.py): shared secret for the worker machine that runs
+# the checks in Chrome and reports back. The worker routes reject every request while this is unset.
+OPEN_PROFILE_WORKER_TOKEN = os.environ.get("OPEN_PROFILE_WORKER_TOKEN", "")
+
 # Inngest - durable workflow engine replacing the in-memory JOBS dict +
 # blocked-thread ask/answer mechanism in runner.py (see app/inngest_client.py).
 INNGEST_EVENT_KEY = os.environ.get("INNGEST_EVENT_KEY", "")

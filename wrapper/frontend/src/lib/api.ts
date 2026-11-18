@@ -1,4 +1,4 @@
-import type { AppConfig, CopyPushStatus, DefaultWorkflow, SalesNav, SmartleadSchedule, IcpOptions, RunStatus, SenderAccount, SenderGroup, WizardTargeting } from "./types";
+import type { AppConfig, CopyPushStatus, OpenProfileJob, OpenProfilePreview, DefaultWorkflow, SalesNav, SmartleadSchedule, IcpOptions, RunStatus, SenderAccount, SenderGroup, WizardTargeting } from "./types";
 
 // Falls back to same-origin ("") in a production build even if VITE_API_BASE
 // was never configured in Vercel - relying on that env var alone meant a
@@ -487,4 +487,62 @@ export async function confirmImport(runId: string) {
     throw new Error(body.detail || `Import failed (${r.status})`);
   }
   return r.json();
+}
+
+
+// ---- Open profile check ----
+
+async function opcJson<T>(r: Response): Promise<T> {
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Something went wrong. Try again.");
+  return data as T;
+}
+
+export async function listOpenProfileJobs(): Promise<OpenProfileJob[]> {
+  const r = await apiFetch(`${API_BASE}/api/open-profile/jobs`);
+  return (await opcJson<{ jobs: OpenProfileJob[] }>(r)).jobs;
+}
+
+export async function createOpenProfileJob(url: string, name: string): Promise<{ job: OpenProfileJob; duplicate: boolean }> {
+  const r = await apiFetch(`${API_BASE}/api/open-profile/jobs`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, name: name || null }),
+  });
+  return opcJson(r);
+}
+
+export async function getOpenProfileJob(id: string): Promise<OpenProfileJob> {
+  const r = await apiFetch(`${API_BASE}/api/open-profile/jobs/${id}`);
+  return (await opcJson<{ job: OpenProfileJob }>(r)).job;
+}
+
+export async function cancelOpenProfileJob(id: string): Promise<void> {
+  await opcJson(await apiFetch(`${API_BASE}/api/open-profile/jobs/${id}/cancel`, { method: "POST" }));
+}
+
+export async function previewOpenProfileList(id: string, kind: "open-profile" | "not-open"): Promise<OpenProfilePreview> {
+  return opcJson(await apiFetch(`${API_BASE}/api/open-profile/jobs/${id}/preview/${kind}`));
+}
+
+/** Result files are stored in parts (the server cannot return one big body), so fetch every part,
+ * stitch them together in the browser, and save the result as one file. */
+export async function downloadOpenProfileFile(id: string, kind: string): Promise<void> {
+  const chunks: ArrayBuffer[] = [];
+  let parts = 1;
+  let filename = `${kind}.csv`;
+  for (let i = 0; i < parts; i++) {
+    const r = await apiFetch(`${API_BASE}/api/open-profile/jobs/${id}/files/${kind}/${i}`);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "Download failed. Try again.");
+    parts = Number(r.headers.get("X-Parts") || 1);
+    filename = r.headers.get("X-Filename") || filename;
+    chunks.push(await r.arrayBuffer());
+  }
+  const url = URL.createObjectURL(new Blob(chunks, { type: kind === "summary" ? "text/markdown" : "text/csv" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }

@@ -10,6 +10,7 @@ import ReviewUpload from "./components/ReviewUpload";
 import ActivityLog from "./components/ActivityLog";
 import Tooltip from "./components/Tooltip";
 import CopyPush from "./components/CopyPush";
+import OpenProfileCheck from "./components/OpenProfileCheck";
 
 const REVIEW_STAGES = new Set(["awaiting_import_confirmation", "importing_to_hubspot", "done"]);
 // Only stop polling at truly terminal states. We must KEEP polling through
@@ -69,7 +70,7 @@ function writeRunIdToUrl(id: string | null) {
 // "menu" asks Enrich+Push vs Push-only before anything starts (CLAUDE.md Step
 // -1, re-enabled 2026-10-12); skipped when resuming an already-started run
 // via URL/localStorage, since that choice was already made.
-type Flow = "menu" | "data" | "copy";
+type Flow = "menu" | "data" | "copy" | "openprofile";
 
 function AppInner() {
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
@@ -160,7 +161,18 @@ function AppInner() {
           <FlowChooser
             onChooseData={() => setFlow("data")}
             onChoosePushOnly={() => { setCopyPushSourceRunId(undefined); setFlow("copy"); }}
+            onChooseOpenProfile={() => setFlow("openprofile")}
           />
+        </main>
+      </div>
+    );
+  }
+
+  if (flow === "openprofile") {
+    return (
+      <div className="app-shell app-shell-solo">
+        <main className="main">
+          <OpenProfileCheck onBack={() => setFlow("menu")} />
         </main>
       </div>
     );
@@ -301,7 +313,7 @@ function AppInner() {
   );
 }
 
-function FlowChooser({ onChooseData, onChoosePushOnly }: { onChooseData: () => void; onChoosePushOnly: () => void }) {
+function FlowChooser({ onChooseData, onChoosePushOnly, onChooseOpenProfile }: { onChooseData: () => void; onChoosePushOnly: () => void; onChooseOpenProfile: () => void }) {
   return (
     <div>
       <h1 style={{ marginBottom: 6 }}>What do you want to do?</h1>
@@ -322,6 +334,14 @@ function FlowChooser({ onChooseData, onChoosePushOnly }: { onChooseData: () => v
             No contact or lead data in this flow.
           </p>
           <button className="btn-primary" style={{ marginTop: 16 }} onClick={onChoosePushOnly}>Push copy only</button>
+        </div>
+        <div className="card" style={{ padding: 20, flex: "1 1 320px", display: "flex", flexDirection: "column" }}>
+          <h3 style={{ marginBottom: 8 }}>Open profile check</h3>
+          <p style={{ fontSize: 13, color: "var(--dark-200)", flex: 1 }}>
+            Paste a Sales Navigator search link and get two lists, open profile and not open, plus a summary.
+            Takes about an hour for every 1,500 leads.
+          </p>
+          <button className="btn-primary" style={{ marginTop: 16 }} onClick={onChooseOpenProfile}>Open profile check</button>
         </div>
       </div>
     </div>
