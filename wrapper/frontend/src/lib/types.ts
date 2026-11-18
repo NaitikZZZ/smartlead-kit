@@ -206,3 +206,31 @@ export interface WizardTargeting {
   industries?: string[];
   company_names?: string[];
 }
+
+// Open profile check (see backend app/routes/open_profile.py)
+export interface OpenProfileJob {
+  id: string;
+  url: string;
+  name: string;
+  requester: string;
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
+  stage: "queued" | "sizing" | "importing" | "merging" | "done";
+  percent: number;
+  message: string;
+  eta_minutes: number | null;
+  open_count: number | null;
+  not_open_count: number | null;
+  unique_leads: number | null;
+  expected_total: number | null;
+  error: string | null;
+  cancelling: boolean;
+  queue_ahead: number;
+  files: string[];
+  created_at: string;
+  events?: { ts: string; message: string }[];
+}
+
+export interface OpenProfilePreview {
+  columns: string[];
+  rows: Record<string, string>[];
+}

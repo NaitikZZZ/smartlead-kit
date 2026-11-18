@@ -9,7 +9,7 @@ from .auth import Actor, require_admin, require_user
 from .inngest_client import client as inngest_client
 from .inngest_functions import connectivity_test, wait_test, refresh_exclusion_cache
 from .pipeline.inngest_runner import run_pipeline_slice1
-from .routes import copy_push, cron, runs
+from .routes import copy_push, cron, open_profile, runs
 
 app = FastAPI(title="ABM Enrichment Wrapper", version="0.1.0")
 
@@ -23,6 +23,8 @@ app.add_middleware(
 app.include_router(runs.router)
 app.include_router(cron.router)
 app.include_router(copy_push.router)
+app.include_router(open_profile.router)
+app.include_router(open_profile.worker_router)
 inngest.fast_api.serve(app, inngest_client,
                        [connectivity_test, wait_test, run_pipeline_slice1, refresh_exclusion_cache])
 
